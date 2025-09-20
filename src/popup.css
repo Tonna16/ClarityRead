@@ -1,0 +1,155 @@
+/* src/popup.css - responsive, roomy popup layout */
+
+/* Base variables */
+:root{
+  --popup-padding: 14px;
+  --gap: 12px;
+  --panel-bg: #fff;
+  --muted: #666;
+  --accent: #4caf50;
+  --card-bg: #fbfbfb;
+  --card-border: #e6e6e6;
+}
+
+/* Reset */
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;padding:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial;font-size:13px}
+body{
+  background:var(--panel-bg);
+  color:#111;
+  padding:var(--popup-padding);
+  /* be roomy but flexible: prefer wide windows but don't force fixed width */
+  min-width:600px;
+  max-width:1000px;
+  width:auto;
+}
+
+/* Layout: two-column grid */
+.container{
+  display:grid;
+  grid-template-columns: 1fr 360px;
+  gap:var(--gap);
+  align-items:start;
+  height: calc(100vh - 32px); /* let columns scroll internally rather than compress content */
+}
+
+/* Card style used for blocks */
+.card{
+  background:var(--card-bg);
+  border:1px solid var(--card-border);
+  border-radius:8px;
+  padding:10px;
+  box-shadow: 0 1px 0 rgba(0,0,0,0.02);
+}
+
+/* Controls column: scrollable independently */
+.controls{
+  display:flex;
+  flex-direction:column;
+  gap:12px;
+  overflow:auto;
+  padding-right:4px;
+}
+
+/* Header */
+.header{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+}
+.header h3{margin:0;font-size:16px}
+.readingStatus{
+  font-size:12px;
+  color:var(--muted);
+  margin-top:6px;
+}
+
+/* Sidebar: scrollable independently */
+.sidebar{
+  display:flex;
+  flex-direction:column;
+  gap:12px;
+  overflow:auto;
+  padding-left:4px;
+  min-width:280px;
+}
+
+/* Toggles & small UI */
+.toggles label, .checkbox, .profiles label{display:block;margin:6px 0}
+.sizeOptions{margin-left:6px;margin-top:8px}
+.row{display:flex;gap:8px;align-items:center;margin-bottom:6px}
+.fullwidth{flex:1}
+
+/* Read area and controls */
+.readArea h4, .profiles h4, .shortcuts h4, .statsPanel h4{margin:0 0 8px 0;font-size:14px}
+.form-row{margin:6px 0}
+.form-row.smalls{display:flex;gap:8px}
+.form-row.smalls label{flex:1}
+
+/* Buttons row */
+.controls-row{display:flex;gap:10px;flex-wrap:wrap}
+button{
+  padding:6px 10px;
+  border-radius:6px;
+  border:1px solid #ccc;
+  background:#f6f6f6;
+  cursor:pointer;
+}
+button:active{transform:translateY(1px)}
+button:focus{outline:2px solid rgba(76,175,80,0.25);outline-offset:2px}
+
+/* Theme row */
+.themeRow{display:flex;justify-content:flex-end;margin-bottom:6px}
+
+/* Chart wrapper and canvas */
+.chartWrapper{
+  width:100%;
+  height:220px;          /* prevents the chart from being squashed */
+  padding:6px;
+}
+#statsChart{
+  width:100% !important;
+  height:100% !important; /* canvas will fill the wrapper; Chart.js maintainAspectRatio:false in JS will follow this */
+  display:block;
+  border-radius:6px;
+  background:transparent;
+}
+
+/* Stats rows */
+#statsPanel{display:flex;flex-direction:column;gap:8px;margin-top:6px}
+#statsPanel div{display:flex;justify-content:space-between;font-size:13px}
+
+/* Badges */
+.badges{display:flex;flex-wrap:wrap;gap:8px}
+.badges span{padding:6px 8px;border-radius:6px;background:rgba(0,0,0,0.06);font-size:12px}
+
+/* Export/import and shortcuts */
+.exportImport{display:flex;gap:8px;align-items:center}
+.shortcuts ul{padding-left:18px;margin:6px 0}
+
+/* Footer */
+.footer{margin-top:8px;color:var(--muted);font-size:12px}
+
+/* Inputs*/
+input[type="range"]{width:180px}
+input[type="number"],select{padding:4px}
+
+/* Dark theme */
+body.dark-theme{background:#222;color:#eee}
+body.dark-theme .card{background:#2a2a2a;border-color:#333}
+body.dark-theme button{background:#333;border-color:#444;color:#eee}
+
+/* Responsive: stack columns on narrow widths */
+@media (max-width: 760px){
+  .container{grid-template-columns:1fr; height:auto}
+  body{min-width:320px}
+  .chartWrapper{height:180px}
+  .sidebar{order:2}
+  .controls{order:1}
+}
+
+/* Very small */
+@media (max-width: 380px){
+  .chartWrapper{height:140px}
+  button{font-size:12px;padding:6px}
+}

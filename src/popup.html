@@ -1,0 +1,146 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="stylesheet" href="popup.css" />
+  <title>ClarityRead</title>
+</head>
+<body>
+  <div class="container">
+    <!-- LEFT: Controls -->
+    <section class="controls" aria-label="Controls">
+      <header class="header">
+        <div class="header-left">
+          <h3>ClarityRead</h3>
+          <div id="readingStatus" class="readingStatus" aria-live="polite" title="Current status"></div>
+        </div>
+      </header>
+
+      <div class="toggles card">
+        <label><input id="dyslexicToggle" type="checkbox"> Dyslexia font</label>
+        <label><input id="reflowToggle" type="checkbox"> Reading mode (reflow)</label>
+        <label><input id="invertToggle" type="checkbox"> Full Invert Mode</label>
+
+        <div id="sizeOptions" class="sizeOptions" hidden>
+          <label class="sizeLabel">Font size:
+            <span id="fontSizeValue" class="fontSizeValue">20px</span>
+          </label>
+          <input id="fontSizeSlider" type="range" min="14" max="30" step="1" value="20" />
+        </div>
+
+        <label><input id="contrastToggle" type="checkbox"> High contrast</label>
+      </div>
+
+      <div class="profiles card">
+        <h4>Profiles</h4>
+        <div class="row">
+          <select id="profileSelect" class="fullwidth">
+            <option value="">Select a profile</option>
+          </select>
+          <button id="saveProfileBtn">Save</button>
+        </div>
+      </div>
+
+      <div id="readAloudSettings" class="readArea card">
+        <h4>Read Aloud</h4>
+        <div class="form-row">
+          <label>Voice:
+            <select id="voiceSelect" class="wide"></select>
+          </label>
+        </div>
+
+        <div class="form-row smalls">
+          <label>Rate:
+            <input type="number" id="rateInput" value="1" min="0.5" max="2" step="0.1">
+          </label>
+          <label>Pitch:
+            <input type="number" id="pitchInput" value="1" min="0.5" max="2" step="0.1">
+          </label>
+        </div>
+
+        <label class="checkbox"><input type="checkbox" id="highlightReading"> Highlight while reading</label>
+
+        <div class="controls-row">
+          <button id="readBtn">Read ▶</button>
+          <button id="pauseBtn">Pause</button>
+          <button id="stopBtn">Stop ◼</button>
+        </div>
+      </div>
+
+      <div id="speedReadingSettings" class="card">
+        <h4>Speed reading</h4>
+        <label><input id="speedToggle" type="checkbox"> Enable speed-reading (visual)</label>
+        <div class="form-row smalls">
+          <label>Chunk size:
+            <input id="chunkSize" type="number" value="3" min="1" max="12" step="1">
+          </label>
+          <label>Rate:
+            <input id="speedRate" type="number" value="1" min="0.5" max="3" step="0.1">
+          </label>
+        </div>
+      </div>
+
+      <div class="exportImport card">
+        <button id="exportProfilesBtn">Export Profiles</button>
+        <input type="file" id="importProfilesInput" accept=".json" style="display:none;">
+        <button id="importProfilesBtn">Import</button>
+      </div>
+
+      <div class="savedReads card">
+        <h4>Saved reads</h4>
+        <div style="display:flex;gap:8px;margin-bottom:8px;">
+          <button id="saveSelectionBtn">Save Selection</button>
+          <button id="openSavedManagerBtn">Manage</button>
+        </div>
+        <div id="savedList" style="max-height:120px; overflow:auto; font-size:13px; color:#222;"></div>
+      </div>
+
+      <div class="shortcuts card">
+        <h4>Keyboard Shortcuts</h4>
+        <ul>
+          <li>Start: <kbd>Alt+R</kbd></li>
+          <li>Stop: <kbd>Alt+S</kbd></li>
+        </ul>
+      </div>
+
+      <footer class="footer">
+        <small>Tip: select text on the page to read only that selection.</small>
+      </footer>
+    </section>
+
+    <!-- RIGHT: Stats / Theme -->
+    <aside class="sidebar" aria-label="Reading stats">
+      <div class="themeRow">
+        <button id="themeToggleBtn">Toggle Dark/Light</button>
+      </div>
+
+      <div id="stats" class="statsPanel card">
+        <h4>Reading Stats</h4>
+
+        <!-- Chart wrapper has fixed height to prevent smushing -->
+        <div class="chartWrapper" aria-hidden="false" style="height:180px;">
+          <canvas id="statsChart" role="img" aria-label="Pages read chart"></canvas>
+        </div>
+
+        <div id="statsPanel" class="statsRows" style="margin-top:8px;">
+          <div><span>Pages read</span><strong id="pagesRead">0</strong></div>
+          <div><span>Total time</span><strong id="timeRead">0m 0s</strong></div>
+          <div><span>Average session</span><strong id="avgSession">0m 0s</strong></div>
+        </div>
+
+        <div id="badgesContainer" class="badges" aria-hidden="false" style="margin-top:8px;"></div>
+
+        <div style="margin-top:8px; display:flex; gap:8px;">
+          <button id="resetStatsBtn">Reset Stats</button>
+          <button id="shareStatsBtn">Share Stats</button>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- Chart.js local UMD build to satisfy CSP -->
+  <script src="lib/chart.umd.min.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

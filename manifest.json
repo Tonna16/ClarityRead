@@ -1,0 +1,63 @@
+{
+  "manifest_version": 3,
+  "name": "ClarityRead — Reading Mode + Dyslexia Support",
+  "version": "0.1",
+  "description": "Toggle dyslexia-friendly font, reflow text, contrast, and read-aloud on any page.",
+  "icons": {
+    "16": "assets/icons/icon16.png",
+    "48": "assets/icons/icon48.png",
+    "128": "assets/icons/icon128.png"
+  },
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://*/*",
+    "http://*/*"
+  ],
+  "optional_host_permissions": [
+    "<all_urls>"
+  ],
+  "action": {
+    "default_icon": {
+      "16": "assets/icons/icon16.png",
+      "48": "assets/icons/icon48.png"
+    }
+  },
+  "background": {
+    "service_worker": "src/background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://*/*", "http://*/*"],
+      "js": ["src/contentScript.js"],
+      "css": ["src/inject.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "src/fonts/OpenDyslexic-Regular.woff2",
+        "src/fonts/OpenDyslexic-Regular.woff",
+        "src/inject.css",
+        "lib/chart.umd.min.js"
+      ],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "commands": {
+    "read-aloud": {
+      "suggested_key": { "default": "Alt+R" },
+      "description": "Start reading aloud the main content"
+    },
+    "stop-reading": {
+      "suggested_key": { "default": "Alt+S" },
+      "description": "Stop reading aloud"
+    }
+  }
+}

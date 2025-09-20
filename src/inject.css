@@ -1,0 +1,115 @@
+/* inject.css - ReadEasy injected styling (copy-paste ready)
+   This file assumes the font is injected at runtime by the content script.
+   Use the class on the HTML element: <html class="readeasy-dyslexic"> ... */
+
+/* Apply dyslexia font to the entire document when the html has the class.
+   Use both `html.readeasy-dyslexic` and `.readeasy-dyslexic` for broad coverage. */
+html.readeasy-dyslexic,
+html.readeasy-dyslexic *,
+/* fallback if class is put on other elements */
+.readeasy-dyslexic,
+.readeasy-dyslexic * {
+  font-family: 'OpenDyslexic', Arial, sans-serif !important;
+}
+
+/* Reflow / reading mode
+   We target html.readeasy-reflow so toggling the class on the root is effective. */
+html.readeasy-reflow body,
+html.readeasy-reflow article,
+html.readeasy-reflow main,
+.readeasy-reflow body,
+.readeasy-reflow article,
+.readeasy-reflow main {
+  max-width: 760px !important;
+  margin: 18px auto !important;
+  line-height: 1.8 !important;
+  padding: 0 18px !important;
+  word-break: break-word !important;
+  overflow-wrap: break-word !important;
+}
+
+/* Size presets (applies when reflow class is present) */
+.readeasy-reflow.readeasy-size-small { font-size: 18px !important; }
+.readeasy-reflow.readeasy-size-medium { font-size: 20px !important; }
+.readeasy-reflow.readeasy-size-large { font-size: 24px !important; }
+
+.readeasy-reflow p { margin-bottom: 1.1em !important; }
+
+/* High contrast mode: strong overrides */
+.readeasy-contrast body,
+.readeasy-contrast main,
+.readeasy-contrast article,
+.readeasy-contrast section,
+.readeasy-contrast div,
+.readeasy-contrast p,
+.readeasy-contrast span {
+  background: #000 !important;
+  color: #fff !important;
+}
+
+/* Make links clearly visible */
+.readeasy-contrast a { color: #00ffff !important; text-decoration: underline !important; }
+
+/* Form elements in contrast mode */
+.readeasy-contrast button,
+.readeasy-contrast input,
+.readeasy-contrast textarea,
+.readeasy-contrast select {
+  background: #111 !important;
+  color: #fff !important;
+  border: 2px solid #fff !important;
+  padding: 4px !important;
+}
+
+/* Images dimmed slightly for better focus */
+.readeasy-contrast img { opacity: 0.85 !important; filter: grayscale(60%) contrast(130%) !important; }
+
+/* Full invert mode */
+.readeasy-invert { filter: invert(100%) hue-rotate(180deg) !important; }
+
+/* Fix images/videos so they aren’t inverted twice */
+.readeasy-invert img,
+.readeasy-invert video {
+  filter: invert(100%) hue-rotate(180deg) !important;
+}
+
+/* Prefer invert when both are present */
+.readeasy-invert.readeasy-contrast { filter: invert(100%) hue-rotate(180deg) !important; }
+
+/* Ensure word spans behave like normal text and preserve spacing */
+.readeasy-word {
+  display: inline !important;
+  white-space: pre-wrap !important;
+  line-height: inherit !important;
+}
+
+/* Highlighted/current word — readable across modes */
+.readeasy-highlight {
+  background-color: #ffec3d !important; /* bright yellow-ish */
+  color: #000 !important;
+  transition: background-color 0.12s linear !important;
+  padding: 0 0.06em !important;
+  box-decoration-break: clone !important;
+  -webkit-box-decoration-break: clone !important;
+}
+
+/* If invert is active, ensure highlight remains visible */
+.readeasy-invert .readeasy-highlight,
+.readeasy-invert.readeasy-contrast .readeasy-highlight {
+  background-color: #ffec3d !important;
+  color: #000 !important;
+  filter: none !important;
+}
+
+/* Reader overlay styles (when overlay fallback is used) */
+#readeasy-reader-overlay {
+  font-family: 'OpenDyslexic', system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif !important;
+  box-sizing: border-box !important;
+}
+
+/* ensure highlight spans inside overlay also follow the same highlight rules */
+#readeasy-reader-overlay .readeasy-highlight {
+  background-color: #ffec3d !important;
+  color: #000 !important;
+  padding: 0 0.06em !important;
+}
