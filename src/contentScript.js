@@ -355,71 +355,79 @@
 
   // --- Utterance attach handlers
   function attachUtterHandlers(utter) {
-    try {
-      utter.onstart = () => {
-        if (fallbackTicker) { clearInterval(fallbackTicker); fallbackTicker = null; fallbackTickerRunning = false; }
-        errorFallbackAttempted = false;
-      };
+  try {
+    utter.onstart = () => {
+      if (fallbackTicker) { clearInterval(fallbackTicker); fallbackTicker = null; fallbackTickerRunning = false; }
+      errorFallbackAttempted = false;
 
-      utter.onboundary = (e) => {
-        if (!e || typeof e.charIndex !== 'number') return;
-        if (fallbackTicker) { clearInterval(fallbackTicker); fallbackTicker = null; fallbackTickerRunning = false; }
-        try { mapCharIndexToSpanAndHighlight(e.charIndex); } catch (err) {}
-      };
-    } catch (ex) { console.warn('onboundary attach failed', ex); }
-
-    utter.onpause = () => {
-      try { chrome.runtime.sendMessage({ action: 'readingPaused' }, () => {}); } catch(e) {}
-    };
-    utter.onresume = () => {
-      try { chrome.runtime.sendMessage({ action: 'readingResumed' }, () => {}); } catch(e) {}
-    };
-
-    utter.onerror = (errEvent) => {
-      // If error event mentions "interrupt" or "interrupted", treat as benign (often caused by cancel/retry).
-      let msg = '';
-      try {
-        msg = (errEvent && (errEvent.error || errEvent.message || String(errEvent))) ? String(errEvent.error || errEvent.message || errEvent) : '';
-      } catch (e) { msg = String(errEvent); }
-      if (msg && /interrupt/i.test(msg)) {
-        safeLog('utter errored with interrupt (expected during cancel/retry):', msg);
-        return;
-      }
-
-      console.warn('utterance error', errEvent);
-      try { chrome.runtime.sendMessage({ action: 'readingStopped', error: String(errEvent) }, () => {}); } catch(e){}
-
-      // attempt a single fallback: lower rate and retry without highlighting
-      if (!errorFallbackAttempted) {
-        errorFallbackAttempted = true;
-        try { window.speechSynthesis.cancel(); } catch(e){}
-        removeReaderOverlay();
-        clearHighlights();
-        const fallbackText = utter.text || '';
-        if (fallbackText) {
-          const newUtter = new SpeechSynthesisUtterance(fallbackText);
-          // choose first available voice
-          const voices = window.speechSynthesis.getVoices() || [];
-          newUtter.voice = (utter.voice && utter.voice.name) ? voices.find(v => v.name === utter.voice.name) || voices[0] : (voices[0] || null);
-          newUtter.rate = Math.max(0.8, (utter.rate || 1) - 0.25);
-          newUtter.pitch = utter.pitch || 1;
-          attachUtterHandlers(newUtter);
-          try { window.speechSynthesis.speak(newUtter); currentUtterance = newUtter; } catch (e) { console.warn('fallback speak failed', e); try { chrome.runtime.sendMessage({ action: 'readingStopped', error: String(e) }, ()=>{}); } catch(e){} }
-          return;
+      // --- Fallback highlighting (if onboundary doesn't fire)
+      if (!fallbackTickerRunning && highlightSpans.length) {
+        let wordCount = (utter.text.match(/\S+/g) || []).length;
+        if (wordCount > 0) {
+          let estDuration = (utter.text.length / 10) / (utter.rate || 1); // crude duration estimate
+          let interval = Math.max(120, estDuration * 1000 / wordCount);   // ms per word
+          let i = 0;
+          fallbackTicker = setInterval(() => {
+            if (i < highlightSpans.length) {
+              advanceHighlightByOne();
+              i++;
+            } else {
+              clearInterval(fallbackTicker);
+              fallbackTickerRunning = false;
+            }
+          }, interval);
+          fallbackTickerRunning = true;
         }
       }
-      removeReaderOverlay();
-      clearHighlights();
     };
 
-    utter.onend = () => {
+    utter.onboundary = (e) => {
+      if (!e || typeof e.charIndex !== 'number') return;
+      if (fallbackTicker) { clearInterval(fallbackTicker); fallbackTicker = null; fallbackTickerRunning = false; }
+      try { mapCharIndexToSpanAndHighlight(e.charIndex); } catch (err) {}
+    };
+  } catch (ex) { console.warn('onboundary attach failed', ex); } 
+
+  utter.onpause = () => {
+    try { chrome.runtime.sendMessage({ action: 'readingPaused' }, () => {}); } catch(e) {}
+  };
+  utter.onresume = () => {
+    try { chrome.runtime.sendMessage({ action: 'readingResumed' }, () => {}); } catch(e) {}
+  };
+
+  utter.onerror = (errEvent) => {
+    console.warn('utterance error', errEvent);
+    try { chrome.runtime.sendMessage({ action: 'readingStopped', error: String(errEvent) }, () => {}); } catch(e){}
+    // attempt a single fallback: lower rate and retry without highlighting
+    if (!errorFallbackAttempted) {
+      errorFallbackAttempted = true;
+      try { window.speechSynthesis.cancel(); } catch(e){}
       removeReaderOverlay();
       clearHighlights();
-      try { chrome.runtime.sendMessage({ action: 'readingStopped' }, () => {}); } catch(e){}
-      // send remaining stats
-      finalizeStatsAndSend();
-    };
-  }
+      const fallbackText = utter.text || '';
+      if (fallbackText) {
+        const newUtter = new SpeechSynthesisUtterance(fallbackText);
+        const voices = window.speechSynthesis.getVoices() || [];
+        newUtter.voice = (utter.voice && utter.voice.name) ? voices.find(v => v.name === utter.voice.name) || voices[0] : (voices[0] || null);
+        newUtter.rate = Math.max(0.8, (utter.rate || 1) - 0.25);
+        newUtter.pitch = utter.pitch || 1;
+        attachUtterHandlers(newUtter);
+        try { window.speechSynthesis.speak(newUtter); currentUtterance = newUtter; } catch (e) { console.warn('fallback speak failed', e); try { chrome.runtime.sendMessage({ action: 'readingStopped', error: String(e) }, ()=>{}); } catch(e){} }
+        return;
+      }
+    }
+    removeReaderOverlay();
+    clearHighlights();
+  };
+
+  utter.onend = () => {
+    if (fallbackTicker) { clearInterval(fallbackTicker); fallbackTicker = null; fallbackTickerRunning = false; }
+    removeReaderOverlay();
+    clearHighlights();
+    try { chrome.runtime.sendMessage({ action: 'readingStopped' }, () => {}); } catch(e){}
+    finalizeStatsAndSend();
+  };
+}
 
   // --- Stats timer
   function startAutoStatsTimer() {
