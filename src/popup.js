@@ -90,28 +90,31 @@ document.addEventListener('DOMContentLoaded', () => {
     return arr;
   }
 
- // Robust send helper - improved tab selection + diagnostics
-// ---------- popup -> background forward wrapper ----------
-// Robust send helper - popup -> background forward wrapper
-async function sendMessageToActiveTabWithInject(message) {
-  return new Promise((resolve) => {
-    chrome.tabs.query({active: true, lastFocusedWindow: true}, (tabs) => {
-      const tab = tabs && tabs[0];
-      if (tab && tab.id && tab.url) {
-        message._targetTabId = tab.id;
-        message._targetTabUrl = tab.url;
-       } 
-       chrome.runtime.sendMessage(message, (re) => {
-        if (chrome.runtime.lastError) {
-          console.warn('popup > background send error:', chrome.runtime.lastError.message);
-          return resolve({ok: false, error: chrome.runtime.lastError.message });
+  // Robust send helper - popup -> background forward wrapper
+  async function sendMessageToActiveTabWithInject(message) {
+    return new Promise((resolve) => {
+      chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
+        const tab = tabs && tabs[0];
+        if (tab && tab.id && tab.url) {
+          message._targetTabId = tab.id;
+          message._targetTabUrl = tab.url;
         }
-        if (!res) return resolve({ ok: false, error: 'no-response' });
-        resolve(res);
+        try {
+          chrome.runtime.sendMessage(message, (res) => {
+            if (chrome.runtime.lastError) {
+              console.warn('popup > background send error:', chrome.runtime.lastError.message);
+              return resolve({ ok: false, error: chrome.runtime.lastError.message });
+            }
+            if (!res) return resolve({ ok: false, error: 'no-response' });
+            return resolve(res);
+          });
+        } catch (ex) {
+          console.error('popup send wrapper threw', ex);
+          return resolve({ ok: false, error: String(ex) });
+        }
       });
     });
-  });
-}
+  }
 
   // --- Stats / badges / chart (unchanged)
   function build7DaySeries(daily = []) {
