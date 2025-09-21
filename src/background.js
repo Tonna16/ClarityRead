@@ -195,6 +195,23 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case 'getSelection': {
       (async () => {
         try {
+          // --- 0) If popup provided an explicit target tab id, prefer that (from send helper)
+          if (msg && msg._targetTabId) {
+            try {
+              const targetId = Number(msg._targetTabId);
+              const tabObj = await new Promise((resolve) => chrome.tabs.get(targetId, resolve));
+              if (tabObj && isWebUrl(tabObj.url || '')) {
+                const res = await sendMessageToTabWithInjection(targetId, msg);
+                sendResponse(res);
+                return;
+              } else {
+                console.warn('background: _targetTabId provided but tab invalid or unsupported:', msg._targetTabId);
+              }
+            } catch (e) {
+              console.warn('background: failed to use _targetTabId, falling back to discovery:', e);
+            }
+          }
+
           // 1) If message came from a tab (content script), use that
           if (sender && sender.tab && sender.tab.id && isWebUrl(sender.tab.url || '')) {
             const res = await sendMessageToTabWithInjection(sender.tab.id, msg);
