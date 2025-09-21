@@ -1,4 +1,3 @@
-// src/background.js
 // MV3 service worker background - robust message delivery + keyboard shortcuts + centralized stats
 
 function safeRuntimeSendMessage(message) {
@@ -91,8 +90,6 @@ chrome.commands.onCommand.addListener(async (command) => {
   }
 });
 
-
-
 // --- Centralized stat updater
 function persistStatsUpdate(addPages = 0, addSeconds = 0) {
   chrome.storage.local.get(['stats'], (res) => {
@@ -128,7 +125,6 @@ function resetStats() {
   });
 }
 
-// --- Message handler (content and popup post here)
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || !msg.action) {
     sendResponse({ ok: false });
@@ -149,7 +145,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse({ success: true });
       break;
     case 'readingStopped':
-      // broadcast to popups
       safeRuntimeSendMessage({ action: 'readingStopped' });
       sendResponse({ ok: true });
       break;
