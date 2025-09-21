@@ -90,203 +90,28 @@ document.addEventListener('DOMContentLoaded', () => {
     return arr;
   }
 
-  // ---------------- Robust send helper (uses lastFocusedWindow to avoid picking popup tab) ----------------
-   // ---------------- Robust send helper (replaces earlier version) ----------------
-  async function sendMessageToActiveTabWithInject(message) {
-    // return a promise that resolves to { ok, error, detail, response }
-    return new Promise((resolve) => {
-      const isUnsupportedUrl = (url) => {
-        if (!url) return true;
-        const u = url.toLowerCase();
-        return u.startsWith('chrome://') || u.startsWith('edge://') || u.startsWith('about:') ||
-               u.startsWith('chrome-extension://') || u.startsWith('file://') || u.startsWith('view-source:');
-      };
-
-      const runInlineFallbackOnTab = (tabId, payload) => {
-        // This runner executes in page context and performs TTS actions if possible.
-        const runner = (payload) => {
-          try {
-            const safeGetMainText = () => {
-              try {
-                const prefer = ['article', 'main', '[role="main"]', '#content', '#primary', '.post', '.article', '#mw-content-text'];
-                for (const s of prefer) {
-                  const el = document.querySelector(s);
-                  if (el && el.innerText && el.innerText.length > 200) return el.innerText.trim().slice(0, 20000);
-                }
-                return (document.body && document.body.innerText ? document.body.innerText : '').trim().slice(0, 20000);
-              } catch (e) { return ''; }
-            };
-
-            const clampRate = (r) => {
-              r = Number(r) || 1; return Math.max(0.5, Math.min(1.6, r));
-            };
-
-            const speak = (text, opts = {}) => {
-              if (!text || !('speechSynthesis' in window)) return { ok: false, error: 'no-tts' };
-              try { window.speechSynthesis.cancel(); } catch (e) {}
-              const u = new SpeechSynthesisUtterance(text);
-              const voices = window.speechSynthesis.getVoices() || [];
-              if (opts.voiceName) {
-                const v = voices.find(x => x.name === opts.voiceName);
-                if (v) u.voice = v;
-              } else {
-                u.voice = voices.find(v => v.lang && v.lang.startsWith('en')) || voices[0];
-              }
-              if (typeof opts.rate !== 'undefined') u.rate = clampRate(opts.rate);
-              if (typeof opts.pitch !== 'undefined') u.pitch = Number(opts.pitch) || 1;
-              try { window.speechSynthesis.speak(u); } catch (e) { return { ok: false, error: String(e) }; }
-              return { ok: true };
-            };
-
-            if (!payload || !payload.action) return { ok: false, error: 'no-action' };
-
-            if (payload.action === 'readAloud') {
-              const text = (payload._savedText && payload._savedText.length) ? payload._savedText : safeGetMainText();
-              if (!text) return { ok: false, error: 'no-text' };
-              return speak(text, { voiceName: payload.voice, rate: payload.rate, pitch: payload.pitch });
-            }
-            if (payload.action === 'speedRead') {
-              const chunkSize = Number(payload.chunkSize) || 3;
-              const rate = Number(payload.rate) || 1;
-              const text = (payload.text || payload._savedText) ? (payload.text || payload._savedText) : safeGetMainText();
-              if (!text) return { ok: false, error: 'no-text' };
-              // simple chunk speaker (non-highlighting)
-              const words = text.trim().split(/\s+/).filter(Boolean);
-              let i = 0;
-              const speakChunk = () => {
-                if (i >= words.length) return;
-                const chunk = words.slice(i, i + chunkSize).join(' ');
-                i += chunkSize;
-                const u = new SpeechSynthesisUtterance(chunk);
-                const voices = window.speechSynthesis.getVoices() || [];
-                u.voice = (voices.find(v => v.lang && v.lang.startsWith('en')) || voices[0]);
-                u.rate = clampRate(rate);
-                u.onend = () => setTimeout(speakChunk, Math.max(60, Math.round(200 / Math.max(0.1, rate))));
-                try { window.speechSynthesis.speak(u); } catch (e) { /* stop */ }
-              };
-              speakChunk();
-              return { ok: true };
-            }
-            if (payload.action === 'stopReading') { try { window.speechSynthesis.cancel(); } catch (e) {} return { ok: true }; }
-            if (payload.action === 'pauseReading') { try { window.speechSynthesis.pause(); } catch (e) {} return { ok: true }; }
-            if (payload.action === 'resumeReading') { try { window.speechSynthesis.resume(); } catch (e) {} return { ok: true }; }
-            if (payload.action === 'applySettings') {
-              // minimal apply: add/remove reflow/dys classes and font-size variable
-              try {
-                if (payload.dys) {
-                  document.documentElement.classList.add('readeasy-dyslexic');
-                } else {
-                  document.documentElement.classList.remove('readeasy-dyslexic');
-                }
-                if (typeof payload.fontSize !== 'undefined') {
-                  const fs = (typeof payload.fontSize === 'number') ? `${payload.fontSize}px` : String(payload.fontSize);
-                  document.documentElement.style.setProperty('--readeasy-font-size', fs);
-                }
-                if (payload.reflow) document.documentElement.classList.add('readeasy-reflow'); else document.documentElement.classList.remove('readeasy-reflow');
-                if (payload.contrast) document.documentElement.classList.add('readeasy-contrast'); else document.documentElement.classList.remove('readeasy-contrast');
-                if (payload.invert) document.documentElement.classList.add('readeasy-invert'); else document.documentElement.classList.remove('readeasy-invert');
-                return { ok: true };
-              } catch (e) { return { ok: false, error: String(e) }; }
-            }
-
-            return { ok: false, error: 'unsupported-action' };
-          } catch (err) {
-            return { ok: false, error: String(err) };
-          }
-        };
-
-        try {
-          chrome.scripting.executeScript({
-            target: { tabId },
-            func: runner,
-            args: [payload]
-          }, (res) => {
-            if (chrome.runtime.lastError) {
-              return resolve({ ok: false, error: 'runner-failed', detail: chrome.runtime.lastError.message });
-            }
-            const out = (res && res[0] && res[0].result) || { ok: false, error: 'no-result' };
-            return resolve(out);
-          });
-        } catch (ex) {
-          return resolve({ ok: false, error: 'runner-exception', detail: String(ex) });
+ // Robust send helper - improved tab selection + diagnostics
+// ---------- popup -> background forward wrapper ----------
+async function sendMessageToActiveTabWithInject(message) {
+  // Forward all requests to background; background chooses the active tab and tries injection/fallbacks.
+  return new Promise((resolve) => {
+    try {
+      chrome.runtime.sendMessage(message, (res) => {
+        if (chrome.runtime.lastError) {
+          // Could be that background returned an error or runtime error
+          console.warn('popup -> background send error:', chrome.runtime.lastError.message);
+          return resolve({ ok: false, error: chrome.runtime.lastError.message });
         }
-      };
-
-      // ask for last-focused active tab in the *lastFocusedWindow*
-      try {
-        chrome.windows.getLastFocused({ populate: true }, (lastWin) => {
-          let candidateTab = null;
-          if (lastWin && Array.isArray(lastWin.tabs)) {
-            candidateTab = lastWin.tabs.find(t => t.active && t.id && t.url && !isUnsupportedUrl(t.url));
-          }
-
-          const trySendTo = (tab) => {
-            if (!tab || !tab.id) return resolve({ ok: false, error: 'no-tab' });
-            // quick send
-            chrome.tabs.sendMessage(tab.id, message, (response) => {
-              if (!chrome.runtime.lastError) return resolve({ ok: true, response });
-              const errMsg = chrome.runtime.lastError && chrome.runtime.lastError.message || '';
-              // If there is no receiver, try injection (only if host is allowed) otherwise fallback runner
-              if (errMsg.includes('Receiving end does not exist')) {
-                // ensure tab url is safe for injection
-                if (!tab.url || isUnsupportedUrl(tab.url)) {
-                  return resolve({ ok: false, error: 'unsupported-page', detail: tab.url || '' });
-                }
-                // attempt to inject content script file (manifest-declared pages often already have it)
-                chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['src/contentScript.js'] }, (execRes) => {
-                  if (chrome.runtime.lastError) {
-                    const msgLow = (chrome.runtime.lastError.message || '').toLowerCase();
-                    // Can't access or no permission => fallback to inline runner (but if url is unsupported it will earlier have been rejected)
-                    if (msgLow.includes('cannot access') || msgLow.includes('must request permission')) {
-                      return resolve({ ok: false, error: 'no-host-permission', detail: chrome.runtime.lastError.message });
-                    }
-                    // fallback attempt using inline runner
-                    return runInlineFallbackOnTab(tab.id, message);
-                  }
-                  // try injecting CSS too (best-effort) then send normal message again
-                  chrome.scripting.insertCSS({ target: { tabId: tab.id }, files: ['src/inject.css'] }, () => {
-                    chrome.tabs.sendMessage(tab.id, message, (resp2) => {
-                      if (!chrome.runtime.lastError) return resolve({ ok: true, response: resp2 });
-                      // still no receiver => run inline fallback runner
-                      return runInlineFallbackOnTab(tab.id, message);
-                    });
-                  });
-                });
-                return;
-              } else {
-                if (errMsg && errMsg.includes('Cannot access contents of the page')) {
-                  return resolve({ ok: false, error: 'no-host-permission', detail: errMsg });
-                }
-                return resolve({ ok: false, error: errMsg || 'unknown-send-error' });
-              }
-            });
-          };
-
-          if (candidateTab) {
-            // send to that one
-            trySendTo(candidateTab);
-            return;
-          }
-
-          // else scan for any usable web tab in the current window first
-          chrome.tabs.query({ currentWindow: true }, (tabs) => {
-            const candidate = (tabs || []).find(t => t && t.url && !isUnsupportedUrl(t.url));
-            if (candidate) return trySendTo(candidate);
-
-            // last resort: scan all tabs
-            chrome.tabs.query({}, (allTabs) => {
-              const fallback = (allTabs || []).find(t => t && t.url && !isUnsupportedUrl(t.url));
-              if (!fallback) return resolve({ ok: false, error: 'no-tab' });
-              return trySendTo(fallback);
-            });
-          });
-        });
-      } catch (ex) {
-        return resolve({ ok: false, error: 'exception', detail: String(ex) });
-      }
-    });
-  }
-
+        // Normalize undefined -> error
+        if (!res) return resolve({ ok: false, error: 'no-response' });
+        return resolve(res);
+      });
+    } catch (ex) {
+      console.error('popup send wrapper threw', ex);
+      return resolve({ ok: false, error: String(ex) });
+    }
+  });
+}
 
   // --- Stats / badges / chart (unchanged)
   function build7DaySeries(daily = []) {
@@ -573,6 +398,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Read button: persist settings, ensure voices, then message tab
   safeOn(readBtn, 'click', () => {
+    if (isReading) { // already running — avoid double-start
+      alert('Reading already in progress. Pause or stop it before starting new read.');
+      return;
+    }
     const settings = gatherSettingsObject();
     chrome.storage.sync.set({ voice: settings.voice, rate: settings.rate, pitch: settings.pitch, highlight: settings.highlight }, async () => {
       const voices = await ensureVoicesLoaded(500);
