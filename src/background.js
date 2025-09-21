@@ -1,4 +1,4 @@
-// src/background.js - improved tab selection + injection/fallback handling
+/// src/background.js - improved tab selection + injection/fallback handling
 
 // Utility: safe runtime.sendMessage (silently ignores "no receiver" errors)
 function safeRuntimeSendMessage(message) {
