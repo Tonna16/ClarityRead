@@ -30,6 +30,7 @@
   const MAX_OVERLAY_CHARS = 10000;
   const MAX_SPANS_BEFORE_OVERLAY = 3000;
   const DYS_STYLE_ID = 'clarityread-dysfont';
+  const RATE_SCALE = 0.85; // slightly slower baseline so UI rate=1 feels natural
 
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, Number(v) || lo));
   const safeLog = (...a) => { try { console.log(...a); } catch (e) {} };
@@ -43,32 +44,47 @@
   // --- Font injection for OpenDyslexic
   function ensureDysFontInjected() {
     if (document.getElementById(DYS_STYLE_ID)) return;
-    try {
-      const urlWoff2 = chrome.runtime.getURL('src/fonts/OpenDyslexic-Regular.woff2');
-      const urlWoff  = chrome.runtime.getURL('src/fonts/OpenDyslexic-Regular.woff');
-      const style = document.createElement('style');
-      style.id = DYS_STYLE_ID;
-      style.textContent = `
-        @font-face {
-          font-family: 'OpenDyslexic';
-          src: url("${urlWoff2}") format("woff2"), url("${urlWoff}") format("woff");
-          font-weight: normal; font-style: normal; font-display: swap;
-        }
-        html.readeasy-dyslexic, html.readeasy-dyslexic * { font-family: 'OpenDyslexic', system-ui, Arial, sans-serif !important; }
-      `;
-      document.head.appendChild(style);
-      if ('FontFace' in window) {
-        try {
-          const ff = new FontFace('OpenDyslexic', `url(${urlWoff2}) format("woff2"), url(${urlWoff}) format("woff")`, { display: 'swap' });
-          ff.load().then(loaded => { try { document.fonts.add(loaded); safeLog('OpenDyslexic loaded'); } catch(e){} }).catch(()=>{/*ignore*/});
-        } catch(e){}
+
+    const urlWoff2 = chrome.runtime.getURL('src/fonts/OpenDyslexic-Regular.woff2');
+    const urlWoff  = chrome.runtime.getURL('src/fonts/OpenDyslexic-Regular.woff');
+
+    const style = document.createElement('style');
+    style.id = DYS_STYLE_ID;
+    style.textContent = `
+      @font-face {
+        font-family: 'OpenDyslexic';
+        src: url("${urlWoff2}") format("woff2"),
+             url("${urlWoff}") format("woff");
+        font-weight: normal;
+        font-style: normal;
+        font-display: swap;
       }
-    } catch (e) {
-      console.warn('ensureDysFontInjected error', e);
+
+      html.readeasy-dyslexic, 
+      html.readeasy-dyslexic body, 
+      html.readeasy-dyslexic * {
+        font-family: 'OpenDyslexic', system-ui, Arial, sans-serif !important;
+      }
+    `;
+    document.head.appendChild(style);
+
+    // Load font into document.fonts to reduce flash
+    if ('fonts' in document) {
+      try {
+        const ff = new FontFace('OpenDyslexic',
+          `url(${urlWoff2}) format("woff2"), url(${urlWoff}) format("woff")`,
+          { display: 'swap' });
+        ff.load().then(f => document.fonts.add(f)).catch(()=>{});
+      } catch(e){}
     }
   }
+
   function removeDysFontInjected() {
-    try { const el = document.getElementById(DYS_STYLE_ID); if (el) el.remove(); } catch (e) {}
+    try {
+      const el = document.getElementById(DYS_STYLE_ID);
+      if (el) el.remove();
+    } catch(e){}
+    document.documentElement.classList.remove('readeasy-dyslexic');
   }
 
   // --- Heuristics: choose main content node
@@ -340,14 +356,15 @@
   // --- Utterance attach handlers
   function attachUtterHandlers(utter) {
     try {
+      utter.onstart = () => {
+        if (fallbackTicker) { clearInterval(fallbackTicker); fallbackTicker = null; fallbackTickerRunning = false; }
+        errorFallbackAttempted = false;
+      };
+
       utter.onboundary = (e) => {
         if (!e || typeof e.charIndex !== 'number') return;
-        // reset fallback ticker if running
         if (fallbackTicker) { clearInterval(fallbackTicker); fallbackTicker = null; fallbackTickerRunning = false; }
-        // map char index to span highlight
-        try {
-          mapCharIndexToSpanAndHighlight(e.charIndex);
-        } catch (err) {}
+        try { mapCharIndexToSpanAndHighlight(e.charIndex); } catch (err) {}
       };
     } catch (ex) { console.warn('onboundary attach failed', ex); }
 
@@ -359,8 +376,19 @@
     };
 
     utter.onerror = (errEvent) => {
+      // If error event mentions "interrupt" or "interrupted", treat as benign (often caused by cancel/retry).
+      let msg = '';
+      try {
+        msg = (errEvent && (errEvent.error || errEvent.message || String(errEvent))) ? String(errEvent.error || errEvent.message || errEvent) : '';
+      } catch (e) { msg = String(errEvent); }
+      if (msg && /interrupt/i.test(msg)) {
+        safeLog('utter errored with interrupt (expected during cancel/retry):', msg);
+        return;
+      }
+
       console.warn('utterance error', errEvent);
       try { chrome.runtime.sendMessage({ action: 'readingStopped', error: String(errEvent) }, () => {}); } catch(e){}
+
       // attempt a single fallback: lower rate and retry without highlighting
       if (!errorFallbackAttempted) {
         errorFallbackAttempted = true;
@@ -428,92 +456,105 @@
     }
   }
 
-  // --- Speech: primary speakText()
-  function speakText(text, { voiceName, rate = 1, pitch = 1, highlight = false } = {}) {
+  // --- Speech: robust speakText() with auto-chunking
+  function speakText(fullText, { voiceName, rate = 1, pitch = 1, highlight = false } = {}) {
     if (!('speechSynthesis' in window)) {
       console.warn('TTS not supported here.');
       try { chrome.runtime.sendMessage({ action: 'readingStopped', error: 'no-tts' }, () => {}); } catch(e){}
       return;
     }
 
-    text = sanitizeForTTS(text || '');
-    if (!text) { console.warn('No text to read'); return; }
+    fullText = sanitizeForTTS(fullText || '');
+    if (!fullText) { console.warn('No text to read'); return; }
 
-    // normalize inputs
-    rate = clamp(rate, 0.5, 1.6); // keep stable range
+    // normalize
+    rate = clamp(rate, 0.5, 1.6);
     pitch = clamp(pitch, 0.5, 2);
 
-    // cancel any previous
+    // start fresh
     try { window.speechSynthesis.cancel(); } catch(e){}
     clearHighlights();
     errorFallbackAttempted = false;
 
     // prepare highlighting if requested
-    let utterText = text;
+    let utterText = fullText;
     if (highlight) {
-      const prep = prepareSpansForHighlighting(text);
+      const prep = prepareSpansForHighlighting(fullText);
       if (prep && prep.mode === 'overlay') {
-        utterText = prep.overlayText || overlayTextSplice || text.slice(0, MAX_OVERLAY_CHARS);
+        utterText = prep.overlayText || overlayTextSplice || fullText.slice(0, MAX_OVERLAY_CHARS);
       } else if (prep && prep.mode === 'inplace') {
-        // build a concatenated string based on spans to ensure .onboundary char indices map
         utterText = highlightSpans.map(s => s.textContent || '').join('');
-        const norm = s => (s || '').replace(/\s+/g, ' ').trim();
-        if (!selectionRestore && norm(utterText) !== norm(text)) {
-          // if mismatch, fallback to overlay
-          const snippet = text.length > MAX_OVERLAY_CHARS ? text.slice(0, MAX_OVERLAY_CHARS) : text;
-          const ov = createReaderOverlay(snippet);
-          const container = ov.querySelector('#clarityread-overlay-inner');
-          highlightSpans = Array.from(container.querySelectorAll('span'));
-          overlayTextSplice = snippet;
-          overlayActive = true;
-          utterText = snippet;
-        }
       } else {
-        // no spans - leave utterText as text but highlight disabled
         highlight = false;
       }
     }
 
-    const utter = new SpeechSynthesisUtterance(utterText);
+    // split into safe chunks (~1800 chars each)
+    const CHUNK_SIZE = 1800;
+    const chunks = [];
+    let pos = 0;
+    while (pos < utterText.length) {
+      chunks.push(utterText.slice(pos, pos + CHUNK_SIZE));
+      pos += CHUNK_SIZE;
+    }
+
     const voices = window.speechSynthesis.getVoices() || [];
     let chosen = null;
     if (voiceName) chosen = voices.find(v => v.name === voiceName) || null;
     if (!chosen) chosen = voices.find(v => v.lang && v.lang.startsWith((document.documentElement.lang || navigator.language || 'en').split('-')[0])) || voices[0] || null;
-    if (chosen) utter.voice = chosen;
-    utter.rate = rate;
-    utter.pitch = pitch;
 
-    currentUtterance = utter;
-    // attach handlers
-    attachUtterHandlers(utter);
-
-    // start timers / stats
+    // timers / stats
     readStartTs = Date.now();
     accumulatedElapsed = 0;
     pendingSecondsForSend = 0;
     lastStatsSendTs = Date.now();
     startAutoStatsTimer();
 
-    try {
-      window.speechSynthesis.speak(utter);
-      try { chrome.runtime.sendMessage({ action: 'readingResumed' }, () => {}); } catch (e) {}
-      // if onboundary never fires we start a safe fallback ticker after short delay
-      setTimeout(() => {
-        if (!fallbackTickerRunning && highlight && highlightSpans && highlightSpans.length && !utter.onboundary) {
-          // attempt to use time-per-word fallback
-          const msPerWord = Math.max(150, Math.round(400 / Math.max(0.1, utter.rate)));
-          fallbackTickerRunning = true;
-          fallbackTicker = setInterval(() => {
-            advanceHighlightByOne();
-          }, msPerWord);
-          safeLog('fallback ticker started', msPerWord);
+    let chunkIndex = 0;
+    function speakNext() {
+      if (chunkIndex >= chunks.length) {
+        removeReaderOverlay();
+        clearHighlights();
+        try { chrome.runtime.sendMessage({ action: 'readingStopped' }, () => {}); } catch (e) {}
+        finalizeStatsAndSend();
+        return;
+      }
+      const text = chunks[chunkIndex++];
+      const utter = new SpeechSynthesisUtterance(text);
+      if (chosen) utter.voice = chosen;
+      // map UI rate to a safer actual rate, then clamp
+      utter.rate = clamp((Number(rate) || 1) * RATE_SCALE, 0.5, 1.6);
+      utter.pitch = pitch;
+      currentUtterance = utter;
+
+      attachUtterHandlers(utter);
+
+      // onend -> next chunk
+      utter.onend = () => {
+        setTimeout(() => speakNext(), 50);
+      };
+      utter.onerror = (err) => {
+        // treat interrupt as benign and continue to next chunk
+        let m = '';
+        try { m = (err && (err.error || err.message)) ? String(err.error || err.message) : String(err); } catch(e) { m = String(err); }
+        if (m && /interrupt/i.test(m)) {
+          safeLog('chunk utter interrupted (benign):', m);
+          setTimeout(() => speakNext(), 60);
+          return;
         }
-      }, 600);
-    } catch (e) {
-      console.warn('speak failed', e);
-      try { chrome.runtime.sendMessage({ action: 'readingStopped', error: String(e) }, () => {}); } catch (ex) {}
-      finalizeStatsAndSend();
+
+        console.warn('chunk utterance error', err);
+        try { chrome.runtime.sendMessage({ action: 'readingStopped', error: String(err) }, () => {}); } catch(e){}
+        finalizeStatsAndSend();
+      };
+
+      try { window.speechSynthesis.speak(utter); } catch (e) {
+        console.warn('speak failed', e);
+        finalizeStatsAndSend();
+      }
     }
+
+    speakNext();
   }
 
   // --- Speed-read: chunked sequential speaking
@@ -544,17 +585,55 @@
       if (voiceName) chosen = voices.find(v => v.name === voiceName) || null;
       if (!chosen) chosen = voices.find(v => v.lang && v.lang.startsWith((document.documentElement.lang || navigator.language || 'en').split('-')[0])) || voices[0] || null;
       if (chosen) u.voice = chosen;
-      u.rate = clamp(rate, 0.5, 1.6);
+      u.rate = clamp(rate * RATE_SCALE, 0.5, 1.6);
       u.pitch = 1;
       u.onend = () => {
         setTimeout(() => speakNext(), Math.max(60, Math.round(200 / Math.max(0.1, u.rate))));
       };
+
       u.onerror = (err) => {
+        // treat interrupt as benign and continue; otherwise try one retry with reduced rate
+        let m = '';
+        try { m = (err && (err.error || err.message)) ? String(err.error || err.message) : String(err); } catch(e) { m = String(err); }
+        if (m && /interrupt/i.test(m)) {
+          safeLog('speedRead chunk interrupted (benign):', m);
+          setTimeout(() => speakNext(), 60);
+          return;
+        }
+
         console.warn('speedRead chunk error', err);
+        if (!u._retryAttempted) {
+          u._retryAttempted = true;
+          const reducedRate = Math.max(0.6, (u.rate || 1) - 0.2);
+          console.info('Retrying speed chunk with reduced rate', reducedRate);
+          // perform a retry without aggressively cancelling other utterances
+          try {
+            const retryU = new SpeechSynthesisUtterance(chunkText);
+            if (chosen) retryU.voice = chosen;
+            retryU.rate = reducedRate;
+            retryU.pitch = 1;
+            retryU.onend = () => setTimeout(() => speakNext(), Math.max(60, Math.round(200 / Math.max(0.1, retryU.rate))));
+            retryU.onerror = (e2) => {
+              console.warn('speedRead retry failed', e2);
+              speedActive = false;
+              try { chrome.runtime.sendMessage({ action: 'readingStopped', error: String(e2) }, () => {}); } catch(e){}
+              finalizeStatsAndSend();
+            };
+            window.speechSynthesis.speak(retryU);
+            try { chrome.runtime.sendMessage({ action: 'readingResumed' }, () => {}); } catch(e){}
+          } catch (e) {
+            console.warn('retry speak failed', e);
+            speedActive = false;
+            finalizeStatsAndSend();
+          }
+          return;
+        }
+
         speedActive = false;
         try { chrome.runtime.sendMessage({ action: 'readingStopped', error: String(err) }, () => {}); } catch(e){}
         finalizeStatsAndSend();
       };
+
       try { window.speechSynthesis.speak(u); try { chrome.runtime.sendMessage({ action: 'readingResumed' }, () => {}); } catch(e){} } catch (e) { console.warn('speak chunk failed', e); speedActive = false; finalizeStatsAndSend(); }
     };
     speakNext();
@@ -610,18 +689,32 @@
       switch (msg.action) {
         case 'applySettings':
           try {
-            if (msg.dys) ensureDysFontInjected(); else removeDysFontInjected();
+            // ensure the font style exists when enabling; remove when disabling
+            if (msg.dys) {
+              ensureDysFontInjected();
+              try { document.documentElement.classList.add('readeasy-dyslexic'); } catch(e){}
+            } else {
+              try { document.documentElement.classList.remove('readeasy-dyslexic'); } catch(e){}
+              removeDysFontInjected();
+            }
+
+            // reflow / contrast / invert / font size logic
             if (msg.reflow) document.documentElement.classList.add('readeasy-reflow'); else document.documentElement.classList.remove('readeasy-reflow');
             if (msg.contrast) document.documentElement.classList.add('readeasy-contrast'); else document.documentElement.classList.remove('readeasy-contrast');
             if (msg.invert) document.documentElement.classList.add('readeasy-invert'); else document.documentElement.classList.remove('readeasy-invert');
+
             if (typeof msg.fontSize !== 'undefined') {
               const fs = (typeof msg.fontSize === 'number') ? `${msg.fontSize}px` : String(msg.fontSize);
               document.documentElement.style.setProperty('--readeasy-font-size', fs);
               if (document.documentElement.classList.contains('readeasy-reflow')) {
-                const m = getMainNode(); if (m) m.style.fontSize = fs;
+                const m = getMainNode();
+                if (m) try { m.style.fontSize = fs; } catch(e) {}
               }
             }
-          } catch (e) { console.warn('applySettings failed', e); }
+            console.info('ClarityRead: applySettings', msg && typeof msg === 'object' ? { dys: !!msg.dys, reflow: !!msg.reflow, fontSize: msg.fontSize } : msg);
+          } catch (e) {
+            console.warn('applySettings failed', e);
+          }
           sendResponse({ ok: true });
           break;
 

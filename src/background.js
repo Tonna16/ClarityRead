@@ -1,7 +1,6 @@
-// src/background.js
-// MV3 service worker background - robust message delivery + keyboard shortcuts + centralized stats
+// src/background.js - improved tab selection + injection/fallback handling
 
-// --- Utility: safe runtime.sendMessage (silently ignores "no receiver" errors)
+// Utility: safe runtime.sendMessage (silently ignores "no receiver" errors)
 function safeRuntimeSendMessage(message) {
   try {
     chrome.runtime.sendMessage(message, () => {
@@ -14,8 +13,14 @@ function safeRuntimeSendMessage(message) {
   }
 }
 
-// Helper: try sending a message to the tab; if no receiver, inject content script and retry once
-async function sendMessageToTabWithInjection(tabId, message, options = {}) {
+function isWebUrl(u = '') {
+  if (!u) return false;
+  const s = u.toLowerCase();
+  return !/^(chrome:\/\/|about:|chrome-extension:\/\/|edge:\/\/|file:\/\/|view-source:|moz-extension:\/\/)/.test(s);
+}
+
+// Try sending a message to a tab; if there's no receiver, try to inject the content script then retry.
+async function sendMessageToTabWithInjection(tabId, message) {
   return new Promise((resolve) => {
     chrome.tabs.sendMessage(tabId, message, (response) => {
       if (!chrome.runtime.lastError) {
@@ -29,18 +34,17 @@ async function sendMessageToTabWithInjection(tabId, message, options = {}) {
         if (chrome.runtime.lastError || !tab || !tab.url) {
           return resolve({ ok: false, error: 'invalid-tab' });
         }
-        const url = tab.url;
-        if (url.startsWith('chrome://') || url.startsWith('about:') || url.startsWith('chrome-extension://')) {
-          return resolve({ ok: false, error: 'unsupported-page' });
+        if (!isWebUrl(tab.url)) {
+          return resolve({ ok: false, error: 'unsupported-page', detail: tab.url });
         }
 
+        // Try to inject the content script (manifest-declared file).
         const jsFile = 'src/contentScript.js';
         const cssFile = 'src/inject.css';
 
         chrome.scripting.executeScript({ target: { tabId }, files: [jsFile] }, (injectionResults) => {
           if (chrome.runtime.lastError) {
-            console.warn('background: Injection failed:', chrome.runtime.lastError.message);
-            // If injection fails because of host permission / inaccessible page, report that
+            console.warn('background: injection failed:', chrome.runtime.lastError.message);
             const msgLow = (chrome.runtime.lastError.message || '').toLowerCase();
             if (msgLow.includes('cannot access contents of the page') || msgLow.includes('must request permission')) {
               return resolve({ ok: false, error: 'no-host-permission', detail: chrome.runtime.lastError.message });
@@ -48,7 +52,7 @@ async function sendMessageToTabWithInjection(tabId, message, options = {}) {
             return resolve({ ok: false, error: 'injection-failed', detail: chrome.runtime.lastError.message });
           }
 
-          // Optionally insert CSS (best-effort)
+          // best-effort insert CSS then retry messaging
           chrome.scripting.insertCSS({ target: { tabId }, files: [cssFile] }, () => {
             chrome.tabs.sendMessage(tabId, message, (resp2) => {
               if (chrome.runtime.lastError) {
@@ -68,7 +72,7 @@ async function sendMessageToTabWithInjection(tabId, message, options = {}) {
   });
 }
 
-// --- Open full popup window (instead of default small popup)
+// open full popup window behavior
 chrome.action.onClicked.addListener(async () => {
   try {
     await chrome.windows.create({
@@ -82,14 +86,14 @@ chrome.action.onClicked.addListener(async () => {
   }
 });
 
-// --- Keyboard commands (registered in manifest)
+// keyboard commands
 chrome.commands.onCommand.addListener(async (command) => {
   try {
     const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     const tab = tabs && tabs[0];
     if (!tab) return;
 
-    if (!tab.url || tab.url.startsWith("chrome://") || tab.url.startsWith("about:") || tab.url.startsWith("chrome-extension://")) {
+    if (!isWebUrl(tab.url)) {
       chrome.action.setBadgeText({ tabId: tab.id, text: "!" });
       chrome.action.setTitle({ tabId: tab.id, title: "ClarityRead shortcuts not available here." });
       return;
@@ -107,7 +111,7 @@ chrome.commands.onCommand.addListener(async (command) => {
   }
 });
 
-// --- Centralized stat updater
+// centralized stats
 function persistStatsUpdate(addPages = 0, addSeconds = 0) {
   chrome.storage.local.get(['stats'], (res) => {
     const stats = res && res.stats ? res.stats : { totalPagesRead: 0, totalTimeReadSec: 0, sessions: 0, daily: [] };
@@ -142,15 +146,13 @@ function resetStats() {
   });
 }
 
-// --- Message handler (content and popup post here)
-// This now forwards UI actions (read/pause/stop/applySettings/etc.) to the active tab's content script
+// message handler - forwards UI actions to a sensible web tab
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || !msg.action) {
     sendResponse({ ok: false });
     return true;
   }
 
-  // Stats-related / background-only actions handled directly
   switch (msg.action) {
     case 'updateStats':
       persistStatsUpdate(1, Number(msg.duration) || 0);
@@ -182,7 +184,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse({ ok: true });
       return true;
 
-    // Actions that should be forwarded to the active tab
+    // Forwarded UI actions
     case 'readAloud':
     case 'stopReading':
     case 'pauseReading':
@@ -191,32 +193,67 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case 'speedRead':
     case 'detectLanguage':
     case 'getSelection': {
-      // Keep the message channel open for async response
       (async () => {
         try {
-          const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-          const tab = tabs && tabs[0];
-          if (!tab || !tab.id) {
-            sendResponse({ ok: false, error: 'no-tab' });
+          // 1) If message came from a tab (content script), use that
+          if (sender && sender.tab && sender.tab.id && isWebUrl(sender.tab.url || '')) {
+            const res = await sendMessageToTabWithInjection(sender.tab.id, msg);
+            sendResponse(res);
             return;
           }
 
-          // Guard internal pages
-          const url = tab.url || '';
-          if (/^(chrome:\/\/|about:|chrome-extension:\/\/|edge:\/\/)/.test(url)) {
-            sendResponse({ ok: false, error: 'unsupported-page' });
+          // 2) Try last-focused normal window (preferred)
+          const lastWin = await new Promise((resolve) => chrome.windows.getLastFocused({ populate: true }, resolve));
+          if (lastWin && Array.isArray(lastWin.tabs)) {
+            const candidate = lastWin.tabs.find(t => t && t.active && isWebUrl(t.url));
+            if (candidate && candidate.id) {
+              const res = await sendMessageToTabWithInjection(candidate.id, msg);
+              sendResponse(res);
+              return;
+            }
+          }
+
+          // 3) Current active tab in lastFocusedWindow
+          const activeTabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+          if (activeTabs && activeTabs[0] && isWebUrl(activeTabs[0].url || '')) {
+            const res = await sendMessageToTabWithInjection(activeTabs[0].id, msg);
+            sendResponse(res);
             return;
           }
 
-          const result = await sendMessageToTabWithInjection(tab.id, msg);
-          sendResponse(result);
+          // 4) Scan all windows for a focused normal window first, then any web tab
+          const allWins = await new Promise(resolve => chrome.windows.getAll({ populate: true }, resolve));
+          if (Array.isArray(allWins)) {
+            // prefer a focused normal window's active tab
+            const focusedWin = allWins.find(w => w.focused && Array.isArray(w.tabs));
+            if (focusedWin) {
+              const tab = (focusedWin.tabs || []).find(t => t && isWebUrl(t.url) && t.active);
+              if (tab && tab.id) {
+                const res = await sendMessageToTabWithInjection(tab.id, msg);
+                sendResponse(res);
+                return;
+              }
+            }
+            // fallback: first web tab anywhere
+            for (const w of allWins) {
+              for (const t of (w.tabs || [])) {
+                if (t && isWebUrl(t.url)) {
+                  const res = await sendMessageToTabWithInjection(t.id, msg);
+                  sendResponse(res);
+                  return;
+                }
+              }
+            }
+          }
+
+          sendResponse({ ok: false, error: 'no-tab' });
         } catch (err) {
           console.error('background forward error:', err);
           sendResponse({ ok: false, error: String(err) });
         }
       })();
 
-      return true; // async
+      return true;
     }
 
     default:
