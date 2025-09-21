@@ -92,19 +92,24 @@ document.addEventListener('DOMContentLoaded', () => {
 
  // Robust send helper - improved tab selection + diagnostics
 // ---------- popup -> background forward wrapper ----------
+// Robust send helper - popup -> background forward wrapper
 async function sendMessageToActiveTabWithInject(message) {
-  // Forward all requests to background; background chooses the active tab and tries injection/fallbacks.
   return new Promise((resolve) => {
     try {
-      chrome.runtime.sendMessage(message, (res) => {
-        if (chrome.runtime.lastError) {
-          // Could be that background returned an error or runtime error
-          console.warn('popup -> background send error:', chrome.runtime.lastError.message);
-          return resolve({ ok: false, error: chrome.runtime.lastError.message });
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        const activeTab = tabs && tabs[0];
+        if (activeTab && activeTab.id) {
+          message._targetTabId = activeTab.id; // <-- 🔑 one line improvement
         }
-        // Normalize undefined -> error
-        if (!res) return resolve({ ok: false, error: 'no-response' });
-        return resolve(res);
+
+        chrome.runtime.sendMessage(message, (res) => {
+          if (chrome.runtime.lastError) {
+            console.warn('popup -> background send error:', chrome.runtime.lastError.message);
+            return resolve({ ok: false, error: chrome.runtime.lastError.message });
+          }
+          if (!res) return resolve({ ok: false, error: 'no-response' });
+          return resolve(res);
+        });
       });
     } catch (ex) {
       console.error('popup send wrapper threw', ex);
