@@ -19,19 +19,25 @@ body{
   color:#111;
   padding:var(--popup-padding);
   /* be roomy but flexible: prefer wide windows but don't force fixed width */
-  min-width:600px;
+  min-width:320px;   /* reduced from 600 -> more tolerant */
   max-width:1000px;
   width:auto;
 }
 
+/* auto;
 /* Layout: two-column grid */
 .container{
   display:grid;
   grid-template-columns: 1fr 360px;
   gap:var(--gap);
   align-items:start;
-  height: calc(100vh - 32px); /* let columns scroll internally rather than compress content */
+  height: calc(100vh - 32px);
+  /* allow the second column to shrink gracefully */
+  grid-auto-columns: minmax(0, 360px)
+
 }
+
+
 
 /* Card style used for blocks */
 .card{
@@ -140,9 +146,9 @@ body.dark-theme .card{background:#2a2a2a;border-color:#333}
 body.dark-theme button{background:#333;border-color:#444;color:#eee}
 
 /* Responsive: stack columns on narrow widths */
-@media (max-width: 760px){
-  .container{grid-template-columns:1fr; height:auto}
-  body{min-width:320px}
+@media (max-width: 920px){
+  .container{ grid-template-columns: 1fr; height:auto }
+  body{ min-width:320px }
   .chartWrapper{height:180px}
   .sidebar{order:2}
   .controls{order:1}
