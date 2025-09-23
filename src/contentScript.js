@@ -29,7 +29,7 @@
   const STATS_SEND_INTERVAL_MS = 10000;
   const MAX_OVERLAY_CHARS = 10000;
   const MAX_SPANS_BEFORE_OVERLAY = 3000;
-  const DYS_STYLE_ID = 'clarityread-dysfont';
+  const DYS_STYLE_ID = 'readeasy-dysfont';
   const RATE_SCALE = 0.85; // slightly slower baseline so UI rate=1 feels natural
 
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, Number(v) || lo));
@@ -128,7 +128,7 @@
   function createReaderOverlay(text) {
     removeReaderOverlay();
     const overlay = document.createElement('div');
-    overlay.id = 'clarityread-overlay';
+    overlay.id = 'readeasy-reader-overlay';
     overlay.setAttribute('role','dialog');
     overlay.setAttribute('aria-label','Reader overlay');
     const dys = document.documentElement.classList.contains('readeasy-dyslexic');
@@ -159,7 +159,7 @@
     overlay.appendChild(close);
 
     const inner = document.createElement('div');
-    inner.id = 'clarityread-overlay-inner';
+    inner.id = 'readeasy-reader-inner';
     inner.style.whiteSpace = 'pre-wrap';
 
     const wordRe = /(\S+)(\s*)/g;
@@ -168,7 +168,7 @@
     while ((m = wordRe.exec(text)) !== null) {
       const sp = document.createElement('span');
       sp.textContent = (m[1] || '') + (m[2] || '');
-      sp.classList.add('clarityread-word');
+      sp.classList.add('readeasy-word');
       inner.appendChild(sp);
     }
     overlay.appendChild(inner);
@@ -177,7 +177,7 @@
     return overlay;
   }
   function removeReaderOverlay() {
-    const old = document.getElementById('clarityread-overlay');
+    const old = document.getElementById('readeasy-reader-overlay');
     if (old) try { old.remove(); } catch(e){}
     overlayActive = false;
     overlayTextSplice = null;
@@ -187,14 +187,13 @@
   function clearHighlights() {
     if (fallbackTicker) { clearInterval(fallbackTicker); fallbackTicker = null; fallbackTickerRunning = false; }
 
-    // If we wrapped a selection, restore its original HTML (best-effort)
+    // selection restore (best-effort)
     if (selectionRestore && selectionRestore.wrapperSelector) {
       try {
         const wrapper = document.querySelector(selectionRestore.wrapperSelector);
         if (wrapper && selectionRestore.originalHtml != null) {
           const container = document.createElement('div');
           container.innerHTML = selectionRestore.originalHtml;
-          // insert restored nodes before wrapper
           while (container.firstChild) wrapper.parentNode.insertBefore(container.firstChild, wrapper);
           wrapper.parentNode.removeChild(wrapper);
         }
@@ -208,12 +207,10 @@
     try {
       highlightSpans.forEach(s => {
         if (s && s.parentNode) {
-          // replace with plain text preserving content as text
           s.parentNode.replaceChild(document.createTextNode(s.textContent || ''), s);
         }
       });
     } catch(e){
-      // swallow errors but log
       console.warn('clearHighlights replace error', e);
     }
 
@@ -249,8 +246,8 @@
     for (let i = 0; i < highlightSpans.length; i++) {
       const s = highlightSpans[i];
       if (!s) continue;
-      if (i === highlightIndex) s.classList.add('clarityread-highlight');
-      else s.classList.remove('clarityread-highlight');
+      if (i === highlightIndex) s.classList.add('readeasy-highlight');
+      else s.classList.remove('readeasy-highlight');
     }
     const cur = highlightSpans[highlightIndex];
     if (cur) try { cur.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) {}
@@ -262,7 +259,7 @@
     for (let i = 0; i < highlightSpans.length; i++) {
       const s = highlightSpans[i];
       if (!s) continue;
-      if (i === highlightIndex) s.classList.add('clarityread-highlight'); else s.classList.remove('clarityread-highlight');
+      if (i === highlightIndex) s.classList.add('readeasy-highlight'); else s.classList.remove('readeasy-highlight');
     }
     const cur = highlightSpans[highlightIndex];
     if (cur) try { cur.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) {}
@@ -282,8 +279,8 @@
         const tmp = document.createElement('div'); tmp.appendChild(cloned);
         const originalHtml = tmp.innerHTML;
         const wrapper = document.createElement('span');
-        const uid = 'clarityread-selection-' + Date.now() + '-' + Math.floor(Math.random()*1000);
-        wrapper.setAttribute('data-clarity-selection', uid);
+        const uid = 'readeasy-selection-' + Date.now() + '-' + Math.floor(Math.random()*1000);
+        wrapper.setAttribute('data-readeasy-selection', uid);
         wrapper.style.whiteSpace = 'pre-wrap';
         const text = sel.toString();
         const wordRe = /(\S+)(\s*)/g; let m;
@@ -291,13 +288,13 @@
         while ((m = wordRe.exec(text)) !== null) {
           const sp = document.createElement('span');
           sp.textContent = (m[1] || '') + (m[2] || '');
-          sp.classList.add('clarityread-word');
+          sp.classList.add('readeasy-word');
           wrapper.appendChild(sp);
           highlightSpans.push(sp);
         }
         range.deleteContents();
         range.insertNode(wrapper);
-        selectionRestore = { wrapperSelector: `[data-clarity-selection="${uid}"]`, originalHtml: originalHtml };
+        selectionRestore = { wrapperSelector: `[data-readeasy-selection="${uid}"]`, originalHtml: originalHtml };
         highlightIndex = 0;
         buildCumLengths();
         return { mode: 'selection' };
@@ -316,7 +313,7 @@
     if (approxWordCount > MAX_SPANS_BEFORE_OVERLAY) {
       const snippet = fullText.length > MAX_OVERLAY_CHARS ? fullText.slice(0, MAX_OVERLAY_CHARS) : fullText;
       const ov = createReaderOverlay(snippet);
-      const container = ov.querySelector('#clarityread-overlay-inner');
+      const container = ov.querySelector('#readeasy-reader-inner');
       highlightSpans = Array.from(container.querySelectorAll('span'));
       overlayTextSplice = snippet;
       overlayActive = true;
@@ -350,7 +347,7 @@
         matched = true;
         const span = document.createElement('span');
         span.textContent = (m[1] || '') + (m[2] || '');
-        span.classList.add('clarityread-word');
+        span.classList.add('readeasy-word');
         frag.appendChild(span);
         highlightSpans.push(span);
         totalSpans++;
@@ -368,7 +365,7 @@
       highlightSpans = [];
       const snippet = fullText.length > MAX_OVERLAY_CHARS ? fullText.slice(0, MAX_OVERLAY_CHARS) : fullText;
       const ov = createReaderOverlay(snippet);
-      const container = ov.querySelector('#clarityread-overlay-inner');
+      const container = ov.querySelector('#readeasy-reader-inner');
       highlightSpans = Array.from(container.querySelectorAll('span'));
       overlayTextSplice = snippet;
       overlayActive = true;
@@ -721,6 +718,21 @@
     return (document.documentElement.lang || navigator.language || 'en').toLowerCase();
   }
 
+  // --- Focus-mode toggle (uses overlay; toggleFocusMode message)
+  function toggleFocusMode() {
+    if (overlayActive) {
+      removeReaderOverlay();
+      clearHighlights();
+      return;
+    }
+    const t = getTextToRead();
+    if (!t || !t.trim()) {
+      console.warn('toggleFocusMode: no text to show in focus mode');
+      return;
+    }
+    createReaderOverlay(t);
+  }
+
   // --- Message handler
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     try {
@@ -789,6 +801,15 @@
           });
           break;
         }
+
+        case 'toggleFocusMode':
+          try {
+            toggleFocusMode();
+            sendResponse({ ok: true, overlayActive: overlayActive });
+          } catch (e) {
+            sendResponse({ ok: false, error: String(e) });
+          }
+          break;
 
         case 'stopReading':
           stopSpeedRead();
