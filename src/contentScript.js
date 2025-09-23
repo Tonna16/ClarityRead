@@ -186,10 +186,39 @@
   // --- Highlight management
   function clearHighlights() {
     if (fallbackTicker) { clearInterval(fallbackTicker); fallbackTicker = null; fallbackTickerRunning = false; }
-    try { highlightSpans.forEach(s => { if (s && s.parentNode) s.parentNode.replaceChild(document.createTextNode(s.textContent), s); }); } catch(e){}
+
+    // If we wrapped a selection, restore its original HTML (best-effort)
+    if (selectionRestore && selectionRestore.wrapperSelector) {
+      try {
+        const wrapper = document.querySelector(selectionRestore.wrapperSelector);
+        if (wrapper && selectionRestore.originalHtml != null) {
+          const container = document.createElement('div');
+          container.innerHTML = selectionRestore.originalHtml;
+          // insert restored nodes before wrapper
+          while (container.firstChild) wrapper.parentNode.insertBefore(container.firstChild, wrapper);
+          wrapper.parentNode.removeChild(wrapper);
+        }
+      } catch (e) {
+        console.warn('selection restore failed', e);
+      }
+      selectionRestore = null;
+    }
+
+    // generic revert of any spans we created in-place or in overlay
+    try {
+      highlightSpans.forEach(s => {
+        if (s && s.parentNode) {
+          // replace with plain text preserving content as text
+          s.parentNode.replaceChild(document.createTextNode(s.textContent || ''), s);
+        }
+      });
+    } catch(e){
+      // swallow errors but log
+      console.warn('clearHighlights replace error', e);
+    }
+
     highlightSpans = [];
     highlightIndex = 0;
-    selectionRestore = null;
     cumLengths = [];
     overlayActive = false;
     overlayTextSplice = null;
@@ -355,79 +384,75 @@
 
   // --- Utterance attach handlers
   function attachUtterHandlers(utter) {
-  try {
-    utter.onstart = () => {
-      if (fallbackTicker) { clearInterval(fallbackTicker); fallbackTicker = null; fallbackTickerRunning = false; }
-      errorFallbackAttempted = false;
+    try {
+      utter.onstart = () => {
+        if (fallbackTicker) { clearInterval(fallbackTicker); fallbackTicker = null; fallbackTickerRunning = false; }
+        errorFallbackAttempted = false;
 
-      // --- Fallback highlighting (if onboundary doesn't fire)
-      if (!fallbackTickerRunning && highlightSpans.length) {
-        let wordCount = (utter.text.match(/\S+/g) || []).length;
-        if (wordCount > 0) {
-          let estDuration = (utter.text.length / 10) / (utter.rate || 1); // crude duration estimate
-          let interval = Math.max(120, estDuration * 1000 / wordCount);   // ms per word
-          let i = 0;
-          fallbackTicker = setInterval(() => {
-            if (i < highlightSpans.length) {
-              advanceHighlightByOne();
-              i++;
-            } else {
-              clearInterval(fallbackTicker);
-              fallbackTickerRunning = false;
-            }
-          }, interval);
-          fallbackTickerRunning = true;
+        // --- Fallback highlighting (if onboundary doesn't fire)
+        if (!fallbackTickerRunning && highlightSpans.length) {
+          let wordCount = (utter.text.match(/\S+/g) || []).length;
+          if (wordCount > 0) {
+            let estDuration = (utter.text.length / 10) / (utter.rate || 1); // crude duration estimate
+            let interval = Math.max(120, estDuration * 1000 / wordCount);   // ms per word
+            let i = 0;
+            fallbackTicker = setInterval(() => {
+              if (i < highlightSpans.length) {
+                advanceHighlightByOne();
+                i++;
+              } else {
+                clearInterval(fallbackTicker);
+                fallbackTickerRunning = false;
+              }
+            }, interval);
+            fallbackTickerRunning = true;
+          }
+        }
+      };
+
+      // IMPORTANT: map charIndex from utter to global index by using utter._chunkBase
+      utter.onboundary = (e) => {
+        if (!e || typeof e.charIndex !== 'number') return;
+        if (fallbackTicker) { clearInterval(fallbackTicker); fallbackTicker = null; fallbackTickerRunning = false; }
+        try {
+          const absoluteIndex = (e.charIndex || 0) + (utter._chunkBase || 0);
+          mapCharIndexToSpanAndHighlight(absoluteIndex);
+        } catch (err) {}
+      };
+    } catch (ex) { console.warn('onboundary attach failed', ex); }
+
+    utter.onpause = () => {
+      try { chrome.runtime.sendMessage({ action: 'readingPaused' }, () => {}); } catch(e) {}
+    };
+    utter.onresume = () => {
+      try { chrome.runtime.sendMessage({ action: 'readingResumed' }, () => {}); } catch(e) {}
+    };
+
+    utter.onerror = (errEvent) => {
+      console.warn('utterance error', errEvent);
+      try { chrome.runtime.sendMessage({ action: 'readingStopped', error: String(errEvent) }, () => {}); } catch(e){}
+      // attempt a single fallback: lower rate and retry without highlighting
+      if (!errorFallbackAttempted) {
+        errorFallbackAttempted = true;
+        try { window.speechSynthesis.cancel(); } catch(e){}
+        removeReaderOverlay();
+        clearHighlights();
+        const fallbackText = utter.text || '';
+        if (fallbackText) {
+          const newUtter = new SpeechSynthesisUtterance(fallbackText);
+          const voices = window.speechSynthesis.getVoices() || [];
+          newUtter.voice = (utter.voice && utter.voice.name) ? voices.find(v => v.name === utter.voice.name) || voices[0] : (voices[0] || null);
+          newUtter.rate = Math.max(0.8, (utter.rate || 1) - 0.25);
+          newUtter.pitch = utter.pitch || 1;
+          attachUtterHandlers(newUtter);
+          try { window.speechSynthesis.speak(newUtter); currentUtterance = newUtter; } catch (e) { console.warn('fallback speak failed', e); try { chrome.runtime.sendMessage({ action: 'readingStopped', error: String(e) }, ()=>{}); } catch(e){} }
+          return;
         }
       }
-    };
-
-    utter.onboundary = (e) => {
-      if (!e || typeof e.charIndex !== 'number') return;
-      if (fallbackTicker) { clearInterval(fallbackTicker); fallbackTicker = null; fallbackTickerRunning = false; }
-      try { mapCharIndexToSpanAndHighlight(e.charIndex); } catch (err) {}
-    };
-  } catch (ex) { console.warn('onboundary attach failed', ex); } 
-
-  utter.onpause = () => {
-    try { chrome.runtime.sendMessage({ action: 'readingPaused' }, () => {}); } catch(e) {}
-  };
-  utter.onresume = () => {
-    try { chrome.runtime.sendMessage({ action: 'readingResumed' }, () => {}); } catch(e) {}
-  };
-
-  utter.onerror = (errEvent) => {
-    console.warn('utterance error', errEvent);
-    try { chrome.runtime.sendMessage({ action: 'readingStopped', error: String(errEvent) }, () => {}); } catch(e){}
-    // attempt a single fallback: lower rate and retry without highlighting
-    if (!errorFallbackAttempted) {
-      errorFallbackAttempted = true;
-      try { window.speechSynthesis.cancel(); } catch(e){}
       removeReaderOverlay();
       clearHighlights();
-      const fallbackText = utter.text || '';
-      if (fallbackText) {
-        const newUtter = new SpeechSynthesisUtterance(fallbackText);
-        const voices = window.speechSynthesis.getVoices() || [];
-        newUtter.voice = (utter.voice && utter.voice.name) ? voices.find(v => v.name === utter.voice.name) || voices[0] : (voices[0] || null);
-        newUtter.rate = Math.max(0.8, (utter.rate || 1) - 0.25);
-        newUtter.pitch = utter.pitch || 1;
-        attachUtterHandlers(newUtter);
-        try { window.speechSynthesis.speak(newUtter); currentUtterance = newUtter; } catch (e) { console.warn('fallback speak failed', e); try { chrome.runtime.sendMessage({ action: 'readingStopped', error: String(e) }, ()=>{}); } catch(e){} }
-        return;
-      }
-    }
-    removeReaderOverlay();
-    clearHighlights();
-  };
-
-  utter.onend = () => {
-    if (fallbackTicker) { clearInterval(fallbackTicker); fallbackTicker = null; fallbackTickerRunning = false; }
-    removeReaderOverlay();
-    clearHighlights();
-    try { chrome.runtime.sendMessage({ action: 'readingStopped' }, () => {}); } catch(e){}
-    finalizeStatsAndSend();
-  };
-}
+    };
+  }
 
   // --- Stats timer
   function startAutoStatsTimer() {
@@ -519,6 +544,8 @@
     startAutoStatsTimer();
 
     let chunkIndex = 0;
+    let charsSpokenBefore = 0; // absolute char offset of the next chunk
+
     function speakNext() {
       if (chunkIndex >= chunks.length) {
         removeReaderOverlay();
@@ -529,6 +556,11 @@
       }
       const text = chunks[chunkIndex++];
       const utter = new SpeechSynthesisUtterance(text);
+      // set chunk base BEFORE speaking so onboundary uses correct absolute index
+      utter._chunkBase = charsSpokenBefore;
+      // increment for next chunk
+      charsSpokenBefore += text.length;
+
       if (chosen) utter.voice = chosen;
       // map UI rate to a safer actual rate, then clamp
       utter.rate = clamp((Number(rate) || 1) * RATE_SCALE, 0.5, 1.6);
@@ -537,7 +569,7 @@
 
       attachUtterHandlers(utter);
 
-      // onend -> next chunk
+      // onend -> next chunk (keep sequencing logic local to speakText)
       utter.onend = () => {
         setTimeout(() => speakNext(), 50);
       };
