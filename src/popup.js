@@ -90,8 +90,20 @@ document.addEventListener('DOMContentLoaded', () => {
     return arr;
   }
 
+  // helper: build host permission pattern from a tab URL
+  function buildOriginPermissionPattern(url) {
+    try {
+      const u = new URL(url);
+      return `${u.protocol}//${u.hostname}${u.port ? `:${u.port}` : ''}/*`;
+    } catch (e) {
+      return '<all_urls>';
+    }
+  }
+
   // Robust send helper - popup -> background forward wrapper
-  async function sendMessageToActiveTabWithInject(message) {
+  // This will: 1) attach _targetTabId/_targetTabUrl, 2) call background, 3) if background returns
+  // no-host-permission it will ask user to grant the permission and retry once.
+  async function sendMessageToActiveTabWithInject(message, _retry = 0) {
     return new Promise((resolve) => {
       chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
         const tab = tabs && tabs[0];
@@ -99,13 +111,50 @@ document.addEventListener('DOMContentLoaded', () => {
           message._targetTabId = tab.id;
           message._targetTabUrl = tab.url;
         }
+
         try {
-          chrome.runtime.sendMessage(message, (res) => {
+          chrome.runtime.sendMessage(message, async (res) => {
             if (chrome.runtime.lastError) {
               console.warn('popup > background send error:', chrome.runtime.lastError.message);
               return resolve({ ok: false, error: chrome.runtime.lastError.message });
             }
             if (!res) return resolve({ ok: false, error: 'no-response' });
+
+            // If background tells us it lacks host permission, try a permission request flow (one retry)
+            if (res && res.ok === false && res.error === 'no-host-permission' && _retry < 1) {
+              // prefer permissionPattern returned by background, otherwise derive from tab url
+              const pattern = res.permissionPattern || (message._targetTabUrl ? buildOriginPermissionPattern(message._targetTabUrl) : null);
+              const friendlyHost = pattern ? (pattern.replace('/*','')) : (message._targetTabUrl || 'this site');
+              try {
+                const confirmMsg = `ClarityRead needs permission to access ${friendlyHost} to read or modify that page. Grant access for this site?`;
+                const want = confirm(confirmMsg);
+                if (!want) {
+                  return resolve(res); // user declined
+                }
+
+                // request host permission
+                chrome.permissions.request({ origins: [pattern] }, (granted) => {
+                  if (chrome.runtime.lastError) {
+                    console.warn('permissions.request error', chrome.runtime.lastError);
+                    return resolve({ ok: false, error: 'permission-request-failed', detail: chrome.runtime.lastError.message });
+                  }
+                  if (!granted) {
+                    return resolve({ ok: false, error: 'permission-denied' });
+                  }
+                  // permission granted -> retry once
+                  // small delay to allow permission to settle
+                  setTimeout(() => {
+                    sendMessageToActiveTabWithInject(message, _retry + 1).then(resolve).catch((e) => resolve({ ok: false, error: String(e) }));
+                  }, 250);
+                });
+              } catch (e) {
+                console.warn('permission flow threw', e);
+                return resolve({ ok: false, error: 'permission-flow-exception', detail: String(e) });
+              }
+              return;
+            }
+
+            // otherwise return background's response directly
             return resolve(res);
           });
         } catch (ex) {
@@ -435,7 +484,7 @@ document.addEventListener('DOMContentLoaded', () => {
         .then(result => {
           if (!result.ok) {
             console.warn('readAloud send failed:', JSON.stringify(result));
-            if (result.error === 'no-host-permission') alert('Cannot read the current page because the extension lacks permission for this site. Click the extension icon while on the page to grant access.');
+            if (result.error === 'no-host-permission') alert('Cannot read the current page because the extension lacks permission for this site. Click the extension icon while on the page to grant access, or allow access when prompted.');
             else if (result.error === 'unsupported-page') alert('This page cannot be controlled (internal/extension page). Open the target tab and try again.');
             else if (result.error === 'no-tab') alert('No active tab found.');
             else alert('Failed to start reading (see console).');
