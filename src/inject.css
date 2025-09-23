@@ -1,19 +1,16 @@
 /* inject.css - ReadEasy injected styling (copy-paste ready)
-   This file assumes the font is injected at runtime by the content script.
-   Use the class on the HTML element: <html class="readeasy-dyslexic"> ... */
+   Updated to match content script naming (clarityread- prefixes)
+*/
 
-/* Apply dyslexia font to the entire document when the html has the class.
-   Use both `html.readeasy-dyslexic` and `.readeasy-dyslexic` for broad coverage. */
+/* Dyslexia font when class is present on <html> */
 html.readeasy-dyslexic,
 html.readeasy-dyslexic *,
-/* fallback if class is put on other elements */
 .readeasy-dyslexic,
 .readeasy-dyslexic * {
   font-family: 'OpenDyslexic', Arial, sans-serif !important;
 }
 
-/* Reflow / reading mode
-   We target html.readeasy-reflow so toggling the class on the root is effective. */
+/* Reflow / reading mode */
 html.readeasy-reflow body,
 html.readeasy-reflow article,
 html.readeasy-reflow main,
@@ -26,6 +23,8 @@ html.readeasy-reflow main,
   padding: 0 18px !important;
   word-break: break-word !important;
   overflow-wrap: break-word !important;
+  /* use variable set by the content script for font size, fallback to 20px */
+  font-size: var(--readeasy-font-size, 20px) !important;
 }
 
 /* Size presets (applies when reflow class is present) */
@@ -76,14 +75,18 @@ html.readeasy-reflow main,
 /* Prefer invert when both are present */
 .readeasy-invert.readeasy-contrast { filter: invert(100%) hue-rotate(180deg) !important; }
 
-/* Ensure word spans behave like normal text and preserve spacing */
+/* Ensure word spans behave like normal text and preserve spacing
+   These classes correspond to the content script's spans (clarityread-word) */
+.clarityread-word,
 .readeasy-word {
   display: inline !important;
   white-space: pre-wrap !important;
   line-height: inherit !important;
 }
 
-/* Highlighted/current word — readable across modes */
+/* Highlighted/current word — readable across modes
+   This matches the content script's 'clarityread-highlight' */
+.clarityread-highlight,
 .readeasy-highlight {
   background-color: #ffec3d !important; /* bright yellow-ish */
   color: #000 !important;
@@ -94,6 +97,8 @@ html.readeasy-reflow main,
 }
 
 /* If invert is active, ensure highlight remains visible */
+.readeasy-invert .clarityread-highlight,
+.readeasy-invert.readeasy-contrast .clarityread-highlight,
 .readeasy-invert .readeasy-highlight,
 .readeasy-invert.readeasy-contrast .readeasy-highlight {
   background-color: #ffec3d !important;
@@ -101,13 +106,28 @@ html.readeasy-reflow main,
   filter: none !important;
 }
 
-/* Reader overlay styles (when overlay fallback is used) */
+/* Reader overlay styles (content script uses id #clarityread-overlay) */
+#clarityread-overlay,
 #readeasy-reader-overlay {
+  position: fixed;
+  inset: 6%;
+  z-index: 2147483647;
+  background: #fff;
+  color: #000;
+  padding: 18px;
+  overflow: auto;
+  border-radius: 8px;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.35);
   font-family: 'OpenDyslexic', system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif !important;
-  box-sizing: border-box !important;
+  line-height: 1.8;
+  font-size: var(--readeasy-font-size, 18px) !important;
+  white-space: pre-wrap;
 }
 
 /* ensure highlight spans inside overlay also follow the same highlight rules */
+#clarityread-overlay .clarityread-highlight,
+#clarityread-overlay .readeasy-highlight,
+#readeasy-reader-overlay .clarityread-highlight,
 #readeasy-reader-overlay .readeasy-highlight {
   background-color: #ffec3d !important;
   color: #000 !important;
