@@ -1,4 +1,4 @@
-// src/popup.js - upgraded with multilingual, share, saved reads, speed-read
+// src/popup.js - upgraded with multilingual, share, saved reads, speed-read + focus-mode
 document.addEventListener('DOMContentLoaded', () => {
   const $ = id => document.getElementById(id) || null;
   console.info('ClarityRead popup initializing...');
@@ -8,38 +8,17 @@ document.addEventListener('DOMContentLoaded', () => {
   const elPresence = requiredIds.reduce((acc, id) => (acc[id]=!!document.getElementById(id), acc), {});
   console.info('Popup element presence:', elPresence);
 
-  // NOTE: popup.html now includes Chart.js via a <script> tag.
-  // This helper only waits for Chart to become available; it does NOT inject the script.
-  function ensureChartReady(callback, timeout = 1000) {
-    if (typeof Chart !== 'undefined') {
-      try { if (typeof callback === 'function') callback(); } catch(e) {}
-      return;
-    }
-    // Poll briefly (safe) — chart.js should be loaded by popup.html
-    const intervalMs = 50;
-    let waited = 0;
-    const t = setInterval(() => {
-      if (typeof Chart !== 'undefined') {
-        clearInterval(t);
-        try { if (typeof callback === 'function') callback(); } catch(e) {}
-        return;
-      }
-      waited += intervalMs;
-      if (waited >= timeout) {
-        clearInterval(t);
-        console.warn('Chart.js not available after waiting', timeout, 'ms. Chart features will be disabled.');
-        try { if (typeof callback === 'function') callback(); } catch(e) {}
-      }
-    }, intervalMs);
+  // --- Ensure Chart.js loaded if popup opened as standalone window
+  function ensureChartReady(callback) {
+    if (typeof Chart !== 'undefined') return callback && callback();
+    const src = chrome.runtime.getURL('lib/chart.umd.min.js');
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = () => { console.info('Chart.js injected and loaded.'); if (typeof callback === 'function') callback(); };
+    s.onerror = (e) => { console.error('Failed to load Chart.js from', src, e); if (typeof callback === 'function') callback(); };
+    document.head.appendChild(s);
   }
-  // call it; loadStats will run when Chart is ready (loadStats declared later)
   ensureChartReady(() => { try { if (typeof loadStats === 'function') loadStats(); } catch (e) {} });
-
-  if (document.getElementById('readBtn')) {
-    document.getElementById('readBtn').addEventListener('click', () => {
-      console.debug('Read button clicked (popup handler).');
-    }, { once: false });
-  }
 
   // --- Elements
   const dysToggle = $('dyslexicToggle');
@@ -80,6 +59,16 @@ document.addEventListener('DOMContentLoaded', () => {
   const savedListEl = $('savedList');
   const shareStatsBtn = $('shareStatsBtn');
 
+  // dynamically add Focus Mode button (if HTML doesn't include it)
+  let focusModeBtn = $('focusModeBtn');
+  if (!focusModeBtn && document.querySelector('.themeRow')) {
+    focusModeBtn = document.createElement('button');
+    focusModeBtn.id = 'focusModeBtn';
+    focusModeBtn.textContent = 'Focus Mode';
+    focusModeBtn.style.marginRight = '8px';
+    document.querySelector('.themeRow').insertBefore(focusModeBtn, themeToggleBtn || null);
+  }
+
   const DEFAULTS = { dys: false, reflow: false, contrast: false, invert: false, fontSize: 20 };
   const safeOn = (el, ev, fn) => { if (el) el.addEventListener(ev, fn); };
 
@@ -117,8 +106,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // Robust send helper - popup -> background forward wrapper
-  // This will: 1) attach _targetTabId/_targetTabUrl, 2) call background, 3) if background returns
-  // no-host-permission it will ask user to grant the permission and retry once.
+  // Attaches _targetTabId/_targetTabUrl, handles permission flow if background replies 'no-host-permission'
   async function sendMessageToActiveTabWithInject(message, _retry = 0) {
     return new Promise((resolve) => {
       chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
@@ -136,29 +124,20 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             if (!res) return resolve({ ok: false, error: 'no-response' });
 
-            // If background tells us it lacks host permission, try a permission request flow (one retry)
+            // background requests host permission -> prompt user once
             if (res && res.ok === false && res.error === 'no-host-permission' && _retry < 1) {
-              // prefer permissionPattern returned by background, otherwise derive from tab url
               const pattern = res.permissionPattern || (message._targetTabUrl ? buildOriginPermissionPattern(message._targetTabUrl) : null);
               const friendlyHost = pattern ? (pattern.replace('/*','')) : (message._targetTabUrl || 'this site');
               try {
-                const confirmMsg = `ClarityRead needs permission to access ${friendlyHost} to read or modify that page. Grant access for this site?`;
-                const want = confirm(confirmMsg);
-                if (!want) {
-                  return resolve(res); // user declined
-                }
+                const want = confirm(`ClarityRead needs permission to access ${friendlyHost} to operate on that page. Grant access for this site?`);
+                if (!want) return resolve(res);
 
-                // request host permission
                 chrome.permissions.request({ origins: [pattern] }, (granted) => {
                   if (chrome.runtime.lastError) {
                     console.warn('permissions.request error', chrome.runtime.lastError);
                     return resolve({ ok: false, error: 'permission-request-failed', detail: chrome.runtime.lastError.message });
                   }
-                  if (!granted) {
-                    return resolve({ ok: false, error: 'permission-denied' });
-                  }
-                  // permission granted -> retry once
-                  // small delay to allow permission to settle
+                  if (!granted) return resolve({ ok: false, error: 'permission-denied' });
                   setTimeout(() => {
                     sendMessageToActiveTabWithInject(message, _retry + 1).then(resolve).catch((e) => resolve({ ok: false, error: String(e) }));
                   }, 250);
@@ -169,8 +148,6 @@ document.addEventListener('DOMContentLoaded', () => {
               }
               return;
             }
-
-            // otherwise return background's response directly
             return resolve(res);
           });
         } catch (ex) {
@@ -181,7 +158,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // --- Stats / badges / chart (unchanged)
+  // --- Stats / badges / chart
   function build7DaySeries(daily = []) {
     const labels = lastNDates(7);
     const map = Object.fromEntries((daily || []).map(d => [d.date, d.pages || 0]));
@@ -441,7 +418,7 @@ document.addEventListener('DOMContentLoaded', () => {
     chrome.storage.sync.set({ voice: v });
   });
 
-  // ensure voices loaded (same helper used elsewhere)
+  // ensure voices loaded
   function ensureVoicesLoaded(timeoutMs = 500) {
     const voices = speechSynthesis.getVoices() || [];
     if (voices.length) return Promise.resolve(voices);
@@ -464,12 +441,9 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // Read button: persist settings, ensure voices, then message tab
+  // Read button
   safeOn(readBtn, 'click', () => {
-    if (isReading) { // already running — avoid double-start
-      alert('Reading already in progress. Pause or stop it before starting new read.');
-      return;
-    }
+    if (isReading) { alert('Reading already in progress. Pause or stop it before starting new read.'); return; }
     const settings = gatherSettingsObject();
     chrome.storage.sync.set({ voice: settings.voice, rate: settings.rate, pitch: settings.pitch, highlight: settings.highlight }, async () => {
       const voices = await ensureVoicesLoaded(500);
@@ -522,7 +496,19 @@ document.addEventListener('DOMContentLoaded', () => {
     else { sendMessageToActiveTabWithInject({ action: 'resumeReading' }).then(()=>{}).catch(()=>{}); setReadingStatus('Reading...'); }
   });
 
-  // --- Profiles, saved reads, selection, stats code unchanged except it uses the updated send helper where needed
+  // Focus mode button
+  safeOn(focusModeBtn, 'click', async () => {
+    const res = await sendMessageToActiveTabWithInject({ action: 'toggleFocusMode' });
+    if (!res.ok) {
+      if (res.error === 'no-host-permission') alert('Extension needs permission to show focus mode for this site. Grant access and try again.');
+      else console.warn('toggleFocusMode failed', res);
+    } else {
+      // toggle UI feedback
+      focusModeBtn.textContent = (res.overlayActive ? 'Close Focus' : 'Focus Mode');
+    }
+  });
+
+  // --- Profiles, saved reads, selection, stats
   function updateProfileDropdown(profiles = {}, selectedName = '') { if (!profileSelect) return; profileSelect.innerHTML = '<option value="">Select profile</option>'; for (const name in profiles) { const opt=document.createElement('option'); opt.value=name; opt.textContent=name; profileSelect.appendChild(opt);} if (selectedName) profileSelect.value = selectedName; }
   function saveProfile(name, profile) { chrome.storage.local.get(['profiles'], (res) => { const profiles = res.profiles || {}; profiles[name] = profile; chrome.storage.local.set({ profiles }, () => { chrome.storage.sync.set({ profiles }, () => { alert('Profile saved!'); updateProfileDropdown(profiles, name); }); }); }); }
   chrome.storage.local.get(['profiles'], (res) => updateProfileDropdown(res.profiles || {}));
@@ -589,32 +575,53 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  safeOn(saveSelectionBtn, 'click', () => {
-    chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
-      const tab = tabs && tabs[0];
-      if (!tab || !tab.id) { alert('No active page found.'); return; }
-      if (tab.url && (tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://'))) { alert('Cannot access selection on internal or extension pages.'); return; }
-      try {
-        chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => { const s = window.getSelection(); const text = s ? s.toString() : ''; return { text: text, title: document.title || '', url: location.href || '' }; } }, (results) => {
-          if (chrome.runtime.lastError) {
-            console.warn('getSelection exec failed', chrome.runtime.lastError);
-            const msg = (chrome.runtime.lastError.message || '').toLowerCase();
-            if (msg.includes('must request permission') || msg.includes('cannot access contents of the page')) {
-              alert('Extension lacks permission to access this site. Open the page, click the extension icon, and allow access for this site (or enable host permissions in chrome://extensions).');
-            } else alert('Failed to fetch selection (see console).');
-            return;
-          }
-          const result = results && results[0] && results[0].result;
-          if (!result || !result.text || !result.text.trim()) { alert('No selection found on the page.'); return; }
-          const item = { id: Date.now() + '-' + Math.floor(Math.random()*1000), text: result.text, title: result.title || result.text.slice(0,80), url: result.url, ts: Date.now() };
-          chrome.storage.local.get(['savedReads'], (r) => { const arr = r.savedReads || []; arr.push(item); chrome.storage.local.set({ savedReads: arr }, () => { alert('Selection saved!'); renderSavedList(); }); });
+  // Save selection -> use background/content messaging helper which handles injecting + permission flow
+  safeOn(saveSelectionBtn, 'click', async () => {
+    try {
+      const res = await sendMessageToActiveTabWithInject({ action: 'getSelection' });
+      if (!res || !res.ok) {
+        // If permission needed, surface a helpful message
+        if (res && res.error === 'no-host-permission') {
+          alert('Extension lacks permission to access this site. Open the page, click the extension icon, and allow access for this site (or enable host permissions in chrome://extensions).');
+          return;
+        }
+        // fallback to trying direct scripting (best-effort)
+        chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
+          const tab = tabs && tabs[0];
+          if (!tab || !tab.id) { alert('No active page found.'); return; }
+          try {
+            chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => { const s = window.getSelection(); const text = s ? s.toString() : ''; return { text: text, title: document.title || '', url: location.href || '' }; } }, (results) => {
+              if (chrome.runtime.lastError) {
+                console.warn('getSelection exec failed', chrome.runtime.lastError);
+                const msg = (chrome.runtime.lastError.message || '').toLowerCase();
+                if (msg.includes('must request permission') || msg.includes('cannot access contents of the page')) {
+                  alert('Extension lacks permission to access this site. Open the page, click the extension icon, and allow access for this site (or enable host permissions in chrome://extensions).');
+                } else alert('Failed to fetch selection (see console).');
+                return;
+              }
+              const result = results && results[0] && results[0].result;
+              if (!result || !result.text || !result.text.trim()) { alert('No selection found on the page.'); return; }
+              const item = { id: Date.now() + '-' + Math.floor(Math.random()*1000), text: result.text, title: result.title || result.text.slice(0,80), url: result.url, ts: Date.now() };
+              chrome.storage.local.get(['savedReads'], (r) => { const arr = r.savedReads || []; arr.push(item); chrome.storage.local.set({ savedReads: arr }, () => { alert('Selection saved!'); renderSavedList(); }); });
+            });
+          } catch (err) { console.warn('save selection scripting failed', err); alert('Failed to fetch selection (see console).'); }
         });
-      } catch (err) { console.warn('save selection scripting failed', err); alert('Failed to fetch selection (see console).'); }
-    });
+        return;
+      }
+
+      const selection = res.response && res.response.selection;
+      if (!selection || !selection.text || !selection.text.trim()) { alert('No selection found on the page.'); return; }
+      const item = { id: Date.now() + '-' + Math.floor(Math.random()*1000), text: selection.text, title: selection.title || selection.text.slice(0,80), url: selection.url, ts: Date.now() };
+      chrome.storage.local.get(['savedReads'], (r) => { const arr = r.savedReads || []; arr.push(item); chrome.storage.local.set({ savedReads: arr }, () => { alert('Selection saved!'); renderSavedList(); }); });
+    } catch (e) {
+      console.warn('saveSelection flow failed', e);
+      alert('Failed to save selection (see console).');
+    }
   });
 
   safeOn(openSavedManagerBtn, 'click', () => { renderSavedList(); });
 
+  // Generate image for sharing stats
   async function generateStatsImageAndDownload() {
     try {
       const res = await new Promise(resolve => chrome.storage.local.get(['stats'], resolve));
@@ -657,7 +664,6 @@ document.addEventListener('DOMContentLoaded', () => {
     return true;
   });
 
-  // initial boot
   loadStats();
   initPerSiteUI();
   renderSavedList();
