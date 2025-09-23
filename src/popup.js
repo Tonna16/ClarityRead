@@ -8,15 +8,31 @@ document.addEventListener('DOMContentLoaded', () => {
   const elPresence = requiredIds.reduce((acc, id) => (acc[id]=!!document.getElementById(id), acc), {});
   console.info('Popup element presence:', elPresence);
 
-  function ensureChartReady(callback) {
-    if (typeof Chart !== 'undefined') return callback && callback();
-    const src = chrome.runtime.getURL('lib/chart.umd.min.js');
-    const s = document.createElement('script');
-    s.src = src;
-    s.onload = () => { console.info('Chart.js injected and loaded.'); if (typeof callback === 'function') callback(); };
-    s.onerror = (e) => { console.error('Failed to load Chart.js from', src, e); if (typeof callback === 'function') callback(); };
-    document.head.appendChild(s);
+  // NOTE: popup.html now includes Chart.js via a <script> tag.
+  // This helper only waits for Chart to become available; it does NOT inject the script.
+  function ensureChartReady(callback, timeout = 1000) {
+    if (typeof Chart !== 'undefined') {
+      try { if (typeof callback === 'function') callback(); } catch(e) {}
+      return;
+    }
+    // Poll briefly (safe) — chart.js should be loaded by popup.html
+    const intervalMs = 50;
+    let waited = 0;
+    const t = setInterval(() => {
+      if (typeof Chart !== 'undefined') {
+        clearInterval(t);
+        try { if (typeof callback === 'function') callback(); } catch(e) {}
+        return;
+      }
+      waited += intervalMs;
+      if (waited >= timeout) {
+        clearInterval(t);
+        console.warn('Chart.js not available after waiting', timeout, 'ms. Chart features will be disabled.');
+        try { if (typeof callback === 'function') callback(); } catch(e) {}
+      }
+    }, intervalMs);
   }
+  // call it; loadStats will run when Chart is ready (loadStats declared later)
   ensureChartReady(() => { try { if (typeof loadStats === 'function') loadStats(); } catch (e) {} });
 
   if (document.getElementById('readBtn')) {
@@ -641,6 +657,7 @@ document.addEventListener('DOMContentLoaded', () => {
     return true;
   });
 
+  // initial boot
   loadStats();
   initPerSiteUI();
   renderSavedList();
