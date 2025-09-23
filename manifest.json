@@ -9,11 +9,12 @@
     "128": "assets/icons/icon128.png"
   },
   "permissions": [
-    "storage",
-    "activeTab",
-    "scripting",
-    "tabs"
-  ],
+  "storage",
+  "activeTab",
+  "scripting",
+  "tabs",
+  "contextMenus"
+],
   "host_permissions": [
     "https://*/*",
     "http://*/*"
