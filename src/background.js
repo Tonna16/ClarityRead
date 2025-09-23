@@ -32,7 +32,6 @@ function buildOriginPermissionPattern(url) {
 function requestHostPermissionForUrl(url) {
   return new Promise((resolve) => {
     const originPattern = buildOriginPermissionPattern(url);
-    // chrome.permissions.request expects { origins: [...] } for host permissions
     try {
       chrome.permissions.request({ origins: [originPattern] }, (granted) => {
         if (chrome.runtime.lastError) {
@@ -86,7 +85,6 @@ async function sendMessageToTabWithInjection(tabId, message) {
 
         // Attempt to inject the content script (manifest declared). Wrap in try/catch and guard callbacks.
         try {
-          // Use executeScript; if it errors, analyze the lastError message
           chrome.scripting.executeScript({ target: { tabId }, files: [jsFile] }, (injectionResults) => {
             if (chrome.runtime.lastError) {
               const lower = (chrome.runtime.lastError.message || '').toLowerCase();
@@ -136,6 +134,32 @@ async function sendMessageToTabWithInjection(tabId, message) {
     }, 8000);
   });
 }
+
+// Context menu: "Read with ClarityRead" for text selections
+chrome.runtime.onInstalled.addListener(() => {
+  try {
+    chrome.contextMenus.create({
+      id: 'clarityReadSelection',
+      title: 'Read with ClarityRead',
+      contexts: ['selection']
+    }, () => {
+      if (chrome.runtime.lastError) console.warn('contextMenus.create error', chrome.runtime.lastError);
+    });
+  } catch (e) {
+    console.warn('contextMenus.create threw', e);
+  }
+});
+
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (info.menuItemId === 'clarityReadSelection') {
+    if (!tab || !tab.id) return;
+    const txt = info.selectionText || '';
+    // forward to content script (with injection fallback)
+    sendMessageToTabWithInjection(tab.id, { action: 'readAloud', _savedText: txt })
+      .then(res => { if (!res.ok) console.warn('context read failed', res); })
+      .catch(err => console.warn('context read error', err));
+  }
+});
 
 // open full popup window behavior (action click)
 chrome.action.onClicked.addListener(async () => {
@@ -260,6 +284,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
     // Forwarded UI actions
     case 'readAloud':
+    case 'toggleFocusMode':
     case 'stopReading':
     case 'pauseReading':
     case 'resumeReading':
