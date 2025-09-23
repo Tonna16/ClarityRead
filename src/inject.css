@@ -1,59 +1,70 @@
-/* inject.css - ReadEasy injected styling (copy-paste ready)
-   Updated to match content script naming (clarityread- prefixes)
-*/
+/* src/inject.css - ReadEasy injected styling (copy-paste ready)
+   Includes aliases for clarityread-* class names used by the content script */
 
-/* Dyslexia font when class is present on <html> */
+/* Apply dyslexia font to the entire document when the html has the class.
+   Accept both readeasy-* and clarityread-* class namespaces for compatibility */
 html.readeasy-dyslexic,
 html.readeasy-dyslexic *,
 .readeasy-dyslexic,
-.readeasy-dyslexic * {
+.readeasy-dyslexic *,
+html.clarityread-dyslexic,
+html.clarityread-dyslexic *,
+.clarityread-dyslexic,
+.clarityread-dyslexic * {
   font-family: 'OpenDyslexic', Arial, sans-serif !important;
 }
 
-/* Reflow / reading mode */
+/* Reflow / reading mode — accept both namespaces */
 html.readeasy-reflow body,
 html.readeasy-reflow article,
 html.readeasy-reflow main,
 .readeasy-reflow body,
 .readeasy-reflow article,
-.readeasy-reflow main {
+.readeasy-reflow main,
+html.clarityread-reflow body,
+html.clarityread-reflow article,
+html.clarityread-reflow main,
+.clarityread-reflow body,
+.clarityread-reflow article,
+.clarityread-reflow main {
   max-width: 760px !important;
   margin: 18px auto !important;
   line-height: 1.8 !important;
   padding: 0 18px !important;
   word-break: break-word !important;
   overflow-wrap: break-word !important;
-  /* use variable set by the content script for font size, fallback to 20px */
-  font-size: var(--readeasy-font-size, 20px) !important;
 }
 
 /* Size presets (applies when reflow class is present) */
-.readeasy-reflow.readeasy-size-small { font-size: 18px !important; }
-.readeasy-reflow.readeasy-size-medium { font-size: 20px !important; }
-.readeasy-reflow.readeasy-size-large { font-size: 24px !important; }
+.readeasy-reflow.readeasy-size-small,
+.clarityread-reflow.clarityread-size-small { font-size: 18px !important; }
+.readeasy-reflow.readeasy-size-medium,
+.clarityread-reflow.clarityread-size-medium { font-size: 20px !important; }
+.readeasy-reflow.readeasy-size-large,
+.clarityread-reflow.clarityread-size-large { font-size: 24px !important; }
 
-.readeasy-reflow p { margin-bottom: 1.1em !important; }
+.readeasy-reflow p, .clarityread-reflow p { margin-bottom: 1.1em !important; }
 
-/* High contrast mode: strong overrides */
-.readeasy-contrast body,
-.readeasy-contrast main,
-.readeasy-contrast article,
-.readeasy-contrast section,
-.readeasy-contrast div,
-.readeasy-contrast p,
-.readeasy-contrast span {
+/* High contrast mode: strong overrides (both namespaces) */
+.readeasy-contrast *,
+.clarityread-contrast * {
   background: #000 !important;
   color: #fff !important;
 }
 
 /* Make links clearly visible */
-.readeasy-contrast a { color: #00ffff !important; text-decoration: underline !important; }
+.readeasy-contrast a,
+.clarityread-contrast a { color: #00ffff !important; text-decoration: underline !important; }
 
 /* Form elements in contrast mode */
 .readeasy-contrast button,
 .readeasy-contrast input,
 .readeasy-contrast textarea,
-.readeasy-contrast select {
+.readeasy-contrast select,
+.clarityread-contrast button,
+.clarityread-contrast input,
+.clarityread-contrast textarea,
+.clarityread-contrast select {
   background: #111 !important;
   color: #fff !important;
   border: 2px solid #fff !important;
@@ -61,33 +72,39 @@ html.readeasy-reflow main,
 }
 
 /* Images dimmed slightly for better focus */
-.readeasy-contrast img { opacity: 0.85 !important; filter: grayscale(60%) contrast(130%) !important; }
+.readeasy-contrast img, .clarityread-contrast img {
+  opacity: 0.85 !important;
+  filter: grayscale(60%) contrast(130%) !important;
+}
 
 /* Full invert mode */
-.readeasy-invert { filter: invert(100%) hue-rotate(180deg) !important; }
+.readeasy-invert, .clarityread-invert { filter: invert(100%) hue-rotate(180deg) !important; }
 
 /* Fix images/videos so they aren’t inverted twice */
 .readeasy-invert img,
-.readeasy-invert video {
+.readeasy-invert video,
+.clarityread-invert img,
+.clarityread-invert video {
   filter: invert(100%) hue-rotate(180deg) !important;
 }
 
 /* Prefer invert when both are present */
-.readeasy-invert.readeasy-contrast { filter: invert(100%) hue-rotate(180deg) !important; }
+.readeasy-invert.readeasy-contrast,
+.clarityread-invert.clarityread-contrast { filter: invert(100%) hue-rotate(180deg) !important; }
 
 /* Ensure word spans behave like normal text and preserve spacing
-   These classes correspond to the content script's spans (clarityread-word) */
-.clarityread-word,
-.readeasy-word {
+   Accept both readeasy-word and clarityread-word */
+.readeasy-word,
+.clarityread-word {
   display: inline !important;
   white-space: pre-wrap !important;
   line-height: inherit !important;
 }
 
 /* Highlighted/current word — readable across modes
-   This matches the content script's 'clarityread-highlight' */
-.clarityread-highlight,
-.readeasy-highlight {
+   Accept both readeasy-highlight and clarityread-highlight */
+.readeasy-highlight,
+.clarityread-highlight {
   background-color: #ffec3d !important; /* bright yellow-ish */
   color: #000 !important;
   transition: background-color 0.12s linear !important;
@@ -97,38 +114,26 @@ html.readeasy-reflow main,
 }
 
 /* If invert is active, ensure highlight remains visible */
-.readeasy-invert .clarityread-highlight,
-.readeasy-invert.readeasy-contrast .clarityread-highlight,
 .readeasy-invert .readeasy-highlight,
-.readeasy-invert.readeasy-contrast .readeasy-highlight {
+.readeasy-invert.readeasy-contrast .readeasy-highlight,
+.clarityread-invert .clarityread-highlight,
+.clarityread-invert.clarityread-contrast .clarityread-highlight {
   background-color: #ffec3d !important;
   color: #000 !important;
   filter: none !important;
 }
 
-/* Reader overlay styles (content script uses id #clarityread-overlay) */
-#clarityread-overlay,
-#readeasy-reader-overlay {
-  position: fixed;
-  inset: 6%;
-  z-index: 2147483647;
-  background: #fff;
-  color: #000;
-  padding: 18px;
-  overflow: auto;
-  border-radius: 8px;
-  box-shadow: 0 8px 30px rgba(0,0,0,0.35);
+/* Reader overlay styles (when overlay fallback is used)
+   Accept both IDs used in different files */
+#readeasy-reader-overlay,
+#clarityread-overlay {
   font-family: 'OpenDyslexic', system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif !important;
-  line-height: 1.8;
-  font-size: var(--readeasy-font-size, 18px) !important;
-  white-space: pre-wrap;
+  box-sizing: border-box !important;
 }
 
 /* ensure highlight spans inside overlay also follow the same highlight rules */
-#clarityread-overlay .clarityread-highlight,
-#clarityread-overlay .readeasy-highlight,
-#readeasy-reader-overlay .clarityread-highlight,
-#readeasy-reader-overlay .readeasy-highlight {
+#readeasy-reader-overlay .readeasy-highlight,
+#clarityread-overlay .clarityread-highlight {
   background-color: #ffec3d !important;
   color: #000 !important;
   padding: 0 0.06em !important;
