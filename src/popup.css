@@ -105,7 +105,7 @@ button:active{transform:translateY(1px)}
 button:focus{outline:2px solid rgba(76,175,80,0.25);outline-offset:2px}
 
 /* Theme row */
-.themeRow{display:flex;justify-content:flex-end;margin-bottom:6px}
+.themeRow{display:flex;justify-content:flex-end;margin-bottom:6px;gap:8px}
 
 /* Chart wrapper and canvas */
 .chartWrapper{
