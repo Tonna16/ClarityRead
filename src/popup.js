@@ -1,12 +1,7 @@
-// src/popup.js - upgraded with multilingual, share, saved reads, speed-read + focus-mode
+// src/popup.js - upgraded with multilingual, share, saved reads, speed-read + focus-mode + local summarizer
 document.addEventListener('DOMContentLoaded', () => {
   const $ = id => document.getElementById(id) || null;
   console.info('ClarityRead popup initializing...');
-
-  // quick element presence check
-  const requiredIds = ['dyslexicToggle','reflowToggle','contrastToggle','invertToggle','readBtn','pauseBtn','stopBtn','pagesRead','timeRead','avgSession','statsChart','voiceSelect'];
-  const elPresence = requiredIds.reduce((acc, id) => (acc[id]=!!document.getElementById(id), acc), {});
-  console.info('Popup element presence:', elPresence);
 
   // --- Ensure Chart.js loaded if popup opened as standalone window
   function ensureChartReady(callback) {
@@ -18,6 +13,12 @@ document.addEventListener('DOMContentLoaded', () => {
     s.onerror = (e) => { console.error('Failed to load Chart.js from', src, e); if (typeof callback === 'function') callback(); };
     document.head.appendChild(s);
   }
+
+  // quick element presence check
+  const requiredIds = ['dyslexicToggle','reflowToggle','contrastToggle','invertToggle','readBtn','pauseBtn','stopBtn','pagesRead','timeRead','avgSession','statsChart','voiceSelect'];
+  const elPresence = requiredIds.reduce((acc, id) => (acc[id]=!!document.getElementById(id), acc), {});
+  console.info('Popup element presence:', elPresence);
+
   ensureChartReady(() => { try { if (typeof loadStats === 'function') loadStats(); } catch (e) {} });
 
   // --- Elements
@@ -67,6 +68,16 @@ document.addEventListener('DOMContentLoaded', () => {
     focusModeBtn.textContent = 'Focus Mode';
     focusModeBtn.style.marginRight = '8px';
     document.querySelector('.themeRow').insertBefore(focusModeBtn, themeToggleBtn || null);
+  }
+
+  // also add Summarize Page button if missing
+  let summarizePageBtn = $('summarizePageBtn');
+  if (!summarizePageBtn && document.querySelector('.themeRow')) {
+    summarizePageBtn = document.createElement('button');
+    summarizePageBtn.id = 'summarizePageBtn';
+    summarizePageBtn.textContent = 'Summarize Page';
+    summarizePageBtn.style.marginRight = '8px';
+    document.querySelector('.themeRow').insertBefore(summarizePageBtn, focusModeBtn || themeToggleBtn || null);
   }
 
   const DEFAULTS = { dys: false, reflow: false, contrast: false, invert: false, fontSize: 20 };
@@ -508,6 +519,189 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
+  // --- Local summarizer (Option A: extractive sentence scoring)
+  const STOPWORDS = new Set([
+    'the','is','in','and','a','an','to','of','that','it','on','for','with','as','was','were','this','by','are','or','be','from','at','which','but','not','have','has','had','they','you','i'
+  ]);
+
+  function splitIntoSentences(text) {
+    if (!text) return [];
+    // crude sentence split but works in many cases
+    const sentences = text
+      .replace(/\n+/g, ' ')
+      .split(/(?<=[.?!])\s+(?=[A-Z0-9])/g)
+      .map(s => s.trim())
+      .filter(Boolean);
+    // fallback: split by periods if too few
+    if (sentences.length <= 1) {
+      return text.split(/(?<=\.)\s+/).map(s => s.trim()).filter(Boolean);
+    }
+    return sentences;
+  }
+
+  function scoreSentences(text) {
+    const sentences = splitIntoSentences(text);
+    if (!sentences.length) return [];
+
+    const wordFreq = {};
+    const words = text.toLowerCase().match(/\b[^\d\W]+\b/g) || [];
+    for (const w of words) {
+      if (STOPWORDS.has(w)) continue;
+      wordFreq[w] = (wordFreq[w] || 0) + 1;
+    }
+    const maxFreq = Math.max(1, ...Object.values(wordFreq));
+
+    const scores = sentences.map(s => {
+      const ws = (s.toLowerCase().match(/\b[^\d\W]+\b/g) || []).filter(w => !STOPWORDS.has(w));
+      let sc = 0;
+      for (const w of ws) sc += (wordFreq[w] || 0) / maxFreq;
+      // penalize extremely short sentences
+      sc *= Math.min(1, Math.max(0.2, ws.length / 10));
+      return { sentence: s, score: sc };
+    });
+    return scores;
+  }
+
+  // summary length heuristics: up to 3 sentences or 20% of total sentences
+  function summarizeText(text, maxSentences = 3) {
+    if (!text || typeof text !== 'string') return '';
+    const cleaned = text.replace(/\s+/g, ' ').trim();
+    if (cleaned.length < 200) return cleaned; // too short => return original
+    const sentences = splitIntoSentences(cleaned);
+    if (sentences.length <= 1) return cleaned;
+
+    const scores = scoreSentences(cleaned).filter(s => s.score >= 0);
+    // sort by score desc
+    scores.sort((a,b) => b.score - a.score);
+    const limit = Math.max(1, Math.min(maxSentences, Math.ceil(sentences.length * 0.2)));
+    const chosen = scores.slice(0, limit).map(s => s.sentence);
+
+    // Restore original order
+    const ordered = sentences.filter(s => chosen.includes(s));
+    // If none (rare), fall back to top scored joined
+    const result = ordered.length ? ordered.join(' ') : chosen.join(' ');
+    return result;
+  }
+
+  // Modal UI for summaries (in-popup)
+  function createSummaryModal(title = 'Summary', content = '') {
+    // remove existing
+    const old = document.getElementById('clarityread-summary-modal');
+    if (old) old.remove();
+
+    const modal = document.createElement('div');
+    modal.id = 'clarityread-summary-modal';
+    modal.style.position = 'fixed';
+    modal.style.zIndex = 2147483647;
+    modal.style.left = '8px';
+    modal.style.right = '8px';
+    modal.style.top = '8px';
+    modal.style.bottom = '8px';
+    modal.style.background = 'var(--card-bg, #fff)';
+    modal.style.border = '1px solid var(--card-border, #e6e6e6)';
+    modal.style.borderRadius = '8px';
+    modal.style.padding = '12px';
+    modal.style.overflow = 'auto';
+    modal.style.boxShadow = '0 8px 30px rgba(0,0,0,0.35)';
+    modal.style.fontSize = '13px';
+    modal.style.color = 'inherit';
+
+    const hdr = document.createElement('div');
+    hdr.style.display = 'flex';
+    hdr.style.justifyContent = 'space-between';
+    hdr.style.alignItems = 'center';
+    hdr.style.marginBottom = '8px';
+    const h = document.createElement('strong'); h.textContent = title;
+    hdr.appendChild(h);
+    const actions = document.createElement('div');
+
+    const copyBtn = document.createElement('button'); copyBtn.textContent = 'Copy';
+    copyBtn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(content);
+        copyBtn.textContent = 'Copied';
+        setTimeout(() => copyBtn.textContent = 'Copy', 1200);
+      } catch (e) { console.warn('copy failed', e); alert('Copy failed'); }
+    });
+    const closeBtn = document.createElement('button'); closeBtn.textContent = 'Close';
+    closeBtn.addEventListener('click', () => modal.remove());
+
+    const downloadBtn = document.createElement('button'); downloadBtn.textContent = 'Download';
+    downloadBtn.addEventListener('click', () => {
+      const blob = new Blob([content], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = 'summary.txt'; a.click();
+      URL.revokeObjectURL(url);
+    });
+
+    actions.appendChild(downloadBtn);
+    actions.appendChild(copyBtn);
+    actions.appendChild(closeBtn);
+    hdr.appendChild(actions);
+    modal.appendChild(hdr);
+
+    const pre = document.createElement('div');
+    pre.id = 'clarityread-summary-content';
+    pre.style.whiteSpace = 'pre-wrap';
+    pre.style.lineHeight = '1.5';
+    pre.textContent = content || '(no summary)';
+    modal.appendChild(pre);
+
+    document.body.appendChild(modal);
+    return modal;
+  }
+
+  // Summarize current page/selection using send helper (falls back to executeScript)
+  async function summarizeCurrentPageOrSelection() {
+    try {
+      const res = await sendMessageToActiveTabWithInject({ action: 'getSelection' });
+      let text = '';
+      if (res && res.ok && res.response && res.response.selection && res.response.selection.text) {
+        text = res.response.selection.text;
+      } else {
+        // fallback: try get main text via content script by executing detectLanguage or read main node (we rely on contentScript's getTextToRead via speedRead/readAloud? but safer to ask contentScript to return selection via 'getSelection' - we already did)
+        // As a fallback, request the page's main visible text via an injected script (best-effort)
+        const tabQuery = await new Promise(resolve => chrome.tabs.query({ active: true, lastFocusedWindow: true }, resolve));
+        const tab = tabQuery && tabQuery[0];
+        if (!tab || !tab.id || !tab.url || tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://')) {
+          alert('Cannot summarize internal/extension pages.');
+          return;
+        }
+        try {
+          const exec = await new Promise((resolve) => {
+            chrome.scripting.executeScript({
+              target: { tabId: tab.id },
+              func: () => {
+                function getMainNodeText() {
+                  try {
+                    const prefer = ['article', 'main', '[role="main"]', '#content', '#primary', '.post', '.article', '#mw-content-text'];
+                    for (const s of prefer) {
+                      const el = document.querySelector(s);
+                      if (el && el.innerText && el.innerText.length > 200) return el.innerText;
+                    }
+                    if (document.body && document.body.innerText && document.body.innerText.length > 200) return document.body.innerText;
+                  } catch (e) {}
+                  return document.documentElement && document.documentElement.innerText ? document.documentElement.innerText : '';
+                }
+                return { text: getMainNodeText(), title: document.title || '' };
+              }
+            }, (results) => resolve(results && results[0] && results[0].result));
+          });
+          if (exec && exec.text) text = exec.text;
+        } catch (e) { console.warn('summarize fallback exec failed', e); }
+      }
+
+      if (!text || !text.trim()) { alert('No text to summarize (select text on the page or ensure the page has readable content).'); return; }
+      const summary = summarizeText(text, 3);
+      createSummaryModal('Page Summary', summary);
+    } catch (e) {
+      console.warn('summarizeCurrentPageOrSelection failed', e);
+      alert('Failed to summarize (see console).');
+    }
+  }
+
+  safeOn(summarizePageBtn, 'click', summarizeCurrentPageOrSelection);
+
   // --- Profiles, saved reads, selection, stats
   function updateProfileDropdown(profiles = {}, selectedName = '') { if (!profileSelect) return; profileSelect.innerHTML = '<option value="">Select profile</option>'; for (const name in profiles) { const opt=document.createElement('option'); opt.value=name; opt.textContent=name; profileSelect.appendChild(opt);} if (selectedName) profileSelect.value = selectedName; }
   function saveProfile(name, profile) { chrome.storage.local.get(['profiles'], (res) => { const profiles = res.profiles || {}; profiles[name] = profile; chrome.storage.local.set({ profiles }, () => { chrome.storage.sync.set({ profiles }, () => { alert('Profile saved!'); updateProfileDropdown(profiles, name); }); }); }); }
@@ -542,34 +736,72 @@ document.addEventListener('DOMContentLoaded', () => {
 
   safeOn(resetStatsBtn, 'click', () => { if (!confirm('Reset all reading stats?')) return; chrome.runtime.sendMessage({ action: 'resetStats' }, () => { loadStats(); setReadingStatus('Not Reading'); }); });
 
+  // Render saved reads, with Summarize and Summarize All
   function renderSavedList() {
     chrome.storage.local.get(['savedReads'], (res) => {
       const list = (res.savedReads || []).slice().reverse();
       if (!savedListEl) return;
       savedListEl.innerHTML = '';
+
+      // add Summarize All button if there are items
+      if (list.length) {
+        const topWrap = document.createElement('div');
+        topWrap.style.display = 'flex';
+        topWrap.style.justifyContent = 'flex-end';
+        topWrap.style.marginBottom = '8px';
+        const summarizeAllBtn = document.createElement('button');
+        summarizeAllBtn.textContent = 'Summarize All Saved';
+        summarizeAllBtn.addEventListener('click', () => {
+          const combined = list.map(it => it.title + '\n' + it.text).join('\n\n');
+          const summary = summarizeText(combined, 6);
+          createSummaryModal('Summary — All Saved Items', summary);
+        });
+        topWrap.appendChild(summarizeAllBtn);
+        savedListEl.appendChild(topWrap);
+      }
+
       if (!list.length) { savedListEl.textContent = 'No saved items yet.'; return; }
+
       list.forEach(item => {
         const row = document.createElement('div');
         row.style.display='flex'; row.style.justifyContent='space-between'; row.style.alignItems='center'; row.style.marginBottom='6px';
         const left = document.createElement('div'); left.style.flex='1'; left.style.marginRight='8px';
         const title = document.createElement('div'); title.textContent = item.title || (item.text||'').slice(0,60) || 'Saved item'; title.style.fontSize='13px'; title.style.fontWeight='600'; left.appendChild(title);
         const sub = document.createElement('div'); sub.textContent = item.url ? (new URL(item.url)).hostname : ''; sub.style.fontSize='11px'; sub.style.opacity='0.7'; left.appendChild(sub);
+
         const actions = document.createElement('div');
-        const openBtn = document.createElement('button'); openBtn.textContent='Read'; openBtn.style.marginRight='6px';
+        actions.style.display = 'flex';
+        actions.style.gap = '6px';
+        actions.style.alignItems = 'center';
+
+        const openBtn = document.createElement('button'); openBtn.textContent='Read';
         openBtn.addEventListener('click', () => {
           chrome.storage.sync.set({ voice: voiceSelect?.value||'', rate: Number(rateInput?.value||1), pitch: Number(pitchInput?.value||1) }, () => {
             sendMessageToActiveTabWithInject({ action:'readAloud', highlight:false, _savedText: item.text }).then(()=>setReadingStatus('Reading...')).catch(()=>{});
           });
         });
-        const openSpeed = document.createElement('button'); openSpeed.textContent='Speed'; openSpeed.style.marginRight='6px';
+
+        const openSpeed = document.createElement('button'); openSpeed.textContent='Speed';
         openSpeed.addEventListener('click', () => {
           const chunk = Number(chunkSizeInput?.value || 3);
           const r = Number(speedRateInput?.value || 1);
           sendMessageToActiveTabWithInject({ action:'speedRead', text:item.text, chunkSize:chunk, rate:r }).then(()=>setReadingStatus('Reading...')).catch(()=>{});
         });
+
+        const summarizeBtn = document.createElement('button'); summarizeBtn.textContent = 'Summarize';
+        summarizeBtn.addEventListener('click', () => {
+          const summary = summarizeText(item.text || '', 3);
+          createSummaryModal(item.title || 'Saved Item Summary', summary);
+        });
+
         const delBtn = document.createElement('button'); delBtn.textContent='Delete';
         delBtn.addEventListener('click', () => { if (!confirm('Delete saved item?')) return; chrome.storage.local.get(['savedReads'], (r2)=>{ const arr = r2.savedReads||[]; const filtered = arr.filter(x=>x.id!==item.id); chrome.storage.local.set({ savedReads: filtered }, () => renderSavedList()); }); });
-        actions.appendChild(openBtn); actions.appendChild(openSpeed); actions.appendChild(delBtn);
+
+        actions.appendChild(openBtn);
+        actions.appendChild(openSpeed);
+        actions.appendChild(summarizeBtn);
+        actions.appendChild(delBtn);
+
         row.appendChild(left); row.appendChild(actions); savedListEl.appendChild(row);
       });
     });
@@ -664,8 +896,9 @@ document.addEventListener('DOMContentLoaded', () => {
     return true;
   });
 
+  // Init
   loadStats();
   initPerSiteUI();
   renderSavedList();
   setTimeout(loadVoicesIntoSelect, 300);
-});
+});;
