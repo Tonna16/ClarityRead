@@ -46,11 +46,12 @@ function requestHostPermissionForUrl(url) {
     }
   });
 }
-
+console.info('background.sendMessageToTabWithInjection called', { tabId, action: message && message.action, _targetTabId: message && message._targetTabId, _targetTabUrl: message && message._targetTabUrl });
 // Try sending a message to a tab; if there's no receiver, try to inject the content script then retry.
 // Resolves with structured result { ok: boolean, response?, error?, detail?, permissionPattern? }
 async function sendMessageToTabWithInjection(tabId, message) {
   return new Promise((resolve) => {
+    console.info('background.sendMessageToTabWithInjection called', { tabId, action: message && message.action, _targetTabId: message && message._targetTabId, _targetTabUrl: message && message._targetTabUrl });
     if (typeof tabId === 'undefined' || tabId === null) {
       return resolve({ ok: false, error: 'invalid-tab-id' });
     }
