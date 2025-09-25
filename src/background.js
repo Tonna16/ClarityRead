@@ -57,7 +57,7 @@
   // Try sending a message to a tab; if there's no receiver, try to inject the content script then retry.
   // Resolves with structured result { ok: boolean, response?, error?, detail?, permissionPattern? }
   async function sendMessageToTabWithInjection(tabId, message) {
-    safeLog('sendMessageToTabWithInjection called', { tabId, action: message && message.action, _targetTabId: message && message._targetTabId });
+    safeLog('sendMessageToTabWithInjection called', { tabId, action: message && message.action, hintedTarget: message && message._targetTabId });
     return new Promise((resolve) => {
       if (typeof tabId === 'undefined' || tabId === null) {
         return resolve({ ok: false, error: 'invalid-tab-id' });
@@ -327,63 +327,59 @@
         case 'getSelection': {
           (async () => {
             try {
-              // 0) If popup provided an explicit target tab id, prefer that (from send helper)
+              // If popup gave a _targetTabId/_targetTabUrl, only honor it if it points to a web URL.
               if (msg && msg._targetTabId) {
                 try {
                   const targetId = Number(msg._targetTabId);
-                  if (!Number.isFinite(targetId)) throw new Error('bad-target-id');
-                  const tabObj = await new Promise((resolve) => chrome.tabs.get(targetId, resolve));
-                  if (!chrome.runtime.lastError && tabObj && isWebUrl(tabObj.url || '')) {
-                    const res = await sendMessageToTabWithInjection(targetId, msg);
-                    respondOnce(res);
-                    return;
-                  } else {
-                    safeWarn('provided _targetTabId invalid or unsupported', msg._targetTabId, chrome.runtime.lastError);
+                  if (Number.isFinite(targetId)) {
+                    const tabObj = await new Promise((resolve) => chrome.tabs.get(targetId, resolve));
+                    if (!chrome.runtime.lastError && tabObj && isWebUrl(tabObj.url || '')) {
+                      const res = await sendMessageToTabWithInjection(targetId, msg);
+                      respondOnce(res);
+                      return;
+                    } else {
+                      safeWarn('provided _targetTabId invalid or unsupported (ignoring)', msg._targetTabId, tabObj && tabObj.url);
+                    }
                   }
                 } catch (e) {
-                  safeWarn('failed to use _targetTabId, falling back to discovery', e);
+                  safeWarn('error validating _targetTabId, falling back to discovery', e);
                 }
               }
 
-              // 1) If message came from a tab (content script), use that (fast path)
+              // If message originated from a content script in a web tab, use that tab
               if (sender && sender.tab && sender.tab.id && isWebUrl(sender.tab.url || '')) {
                 const res = await sendMessageToTabWithInjection(sender.tab.id, msg);
                 respondOnce(res);
                 return;
               }
 
-              // 2) Try last-focused normal window (preferred)
-              const lastWin = await new Promise((resolve) => chrome.windows.getLastFocused({ populate: true }, resolve));
-              if (lastWin && Array.isArray(lastWin.tabs)) {
-                const candidate = lastWin.tabs.find(t => t && t.active && isWebUrl(t.url));
-                if (candidate && candidate.id) {
-                  const res = await sendMessageToTabWithInjection(candidate.id, msg);
-                  respondOnce(res);
-                  return;
-                }
-              }
-
-              // 3) Current active tab in lastFocusedWindow
-              const activeTabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-              if (activeTabs && activeTabs[0] && isWebUrl(activeTabs[0].url || '')) {
-                const res = await sendMessageToTabWithInjection(activeTabs[0].id, msg);
-                respondOnce(res);
-                return;
-              }
-
-              // 4) Scan all windows for a focused normal window first, then any web tab
+              // Prefer a focused normal window's active web tab
               const allWins = await new Promise(resolve => chrome.windows.getAll({ populate: true }, resolve));
               if (Array.isArray(allWins)) {
-                const focusedWin = allWins.find(w => w.focused && Array.isArray(w.tabs));
-                if (focusedWin) {
-                  const tab = (focusedWin.tabs || []).find(t => t && isWebUrl(t.url) && t.active);
+                // 1) Focused normal window -> active web tab
+                const focusedNormalWin = allWins.find(w => w.focused && w.type === 'normal' && Array.isArray(w.tabs));
+                if (focusedNormalWin) {
+                  const tab = (focusedNormalWin.tabs || []).find(t => t && t.active && isWebUrl(t.url));
                   if (tab && tab.id) {
                     const res = await sendMessageToTabWithInjection(tab.id, msg);
                     respondOnce(res);
                     return;
                   }
                 }
-                // fallback: first web tab anywhere
+
+                // 2) Any normal window's active web tab
+                for (const w of allWins) {
+                  if (w && w.type === 'normal' && Array.isArray(w.tabs)) {
+                    const t = (w.tabs || []).find(tt => tt && tt.active && isWebUrl(tt.url));
+                    if (t && t.id) {
+                      const res = await sendMessageToTabWithInjection(t.id, msg);
+                      respondOnce(res);
+                      return;
+                    }
+                  }
+                }
+
+                // 3) Fallback: first web tab anywhere
                 for (const w of allWins) {
                   for (const t of (w.tabs || [])) {
                     if (t && isWebUrl(t.url)) {
@@ -393,6 +389,14 @@
                     }
                   }
                 }
+              }
+
+              // 4) Last-resort: active tab in lastFocusedWindow (legacy fallback)
+              const activeTabs = await new Promise((resolve) => chrome.tabs.query({ active: true, lastFocusedWindow: true }, resolve));
+              if (activeTabs && activeTabs[0] && isWebUrl(activeTabs[0].url || '')) {
+                const res = await sendMessageToTabWithInjection(activeTabs[0].id, msg);
+                respondOnce(res);
+                return;
               }
 
               respondOnce({ ok: false, error: 'no-tab' });
