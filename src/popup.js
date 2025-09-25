@@ -5,9 +5,20 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // --- Ensure Chart.js loaded if popup opened as standalone window
   function ensureChartReady(callback) {
-    if (typeof Chart !== 'undefined') return callback && callback();
-    const src = chrome.runtime.getURL('lib/chart.umd.min.js');
+    if (typeof Chart !== 'undefined') {
+      if (typeof callback === 'function') callback();
+      return;
+    }
+    // Use runtime URL to support any packaging layout. Adjust path to where chart file actually lives.
+    const src = chrome.runtime.getURL('src/lib/chart.umd.min.js');
+    // avoid double-inject
+    if (document.querySelector('script[data-clarity-chart]')) {
+      // wait a tick for global to appear
+      setTimeout(() => { if (typeof callback === 'function') callback(); }, 200);
+      return;
+    }
     const s = document.createElement('script');
+    s.setAttribute('data-clarity-chart', '1');
     s.src = src;
     s.onload = () => { console.info('Chart.js injected and loaded.'); if (typeof callback === 'function') callback(); };
     s.onerror = (e) => { console.error('Failed to load Chart.js from', src, e); if (typeof callback === 'function') callback(); };
@@ -384,7 +395,11 @@ document.addEventListener('DOMContentLoaded', () => {
   // send settings (single applySettings message)
   function sendSettingsAndToggles(settings) {
     sendMessageToActiveTabWithInject({ action: 'applySettings', ...settings })
-      .then((res) => { if (!res.ok) console.warn('applySettings failed:', JSON.stringify(res)); })
+      .then((res) => {
+        if (!res || !res.ok) {
+          console.warn('applySettings failed:', JSON.stringify(res));
+        }
+      })
       .catch(err => console.warn('applySettings err', err));
   }
 
@@ -471,7 +486,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const chunkSize = Number(chunkSizeInput?.value || 3);
         const rate = Number(speedRateInput?.value || settings.rate || 1);
         sendMessageToActiveTabWithInject({ action: 'speedRead', chunkSize, rate }).then(res => {
-          if (!res.ok) {
+          if (!res || !res.ok) {
             console.warn('speedRead failed:', JSON.stringify(res));
             alert('Speed-read failed (see console). Falling back to normal read.');
             sendMessageToActiveTabWithInject({ action: 'readAloud', highlight: settings.highlight });
@@ -483,11 +498,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
       sendMessageToActiveTabWithInject({ action: 'readAloud', highlight: settings.highlight, voice: settings.voice, rate: settings.rate, pitch: settings.pitch })
         .then(result => {
-          if (!result.ok) {
+          if (!result || !result.ok) {
             console.warn('readAloud send failed:', JSON.stringify(result));
-            if (result.error === 'no-host-permission') alert('Cannot read the current page because the extension lacks permission for this site. Click the extension icon while on the page to grant access, or allow access when prompted.');
-            else if (result.error === 'unsupported-page') alert('This page cannot be controlled (internal/extension page). Open the target tab and try again.');
-            else if (result.error === 'no-tab') alert('No active tab found.');
+            if (result && result.error === 'no-host-permission') alert('Cannot read the current page because the extension lacks permission for this site. Click the extension icon while on the page to grant access, or allow access when prompted.');
+            else if (result && result.error === 'unsupported-page') alert('This page cannot be controlled (internal/extension page). Open the target tab and try again.');
+            else if (result && result.error === 'tab-discarded') alert('The target tab is suspended or not available. Reload the page and try again.');
+            else if (result && result.error === 'no-tab') alert('No active tab found.');
             else alert('Failed to start reading (see console).');
           } else setReadingStatus('Reading...');
         }).catch(err => { console.warn('readAloud send err', err); alert('Failed to start reading (see console).'); });
@@ -496,7 +512,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   safeOn(stopBtn, 'click', () => {
     sendMessageToActiveTabWithInject({ action: 'stopReading' }).then((res) => {
-      if (!res.ok && res.error === 'unsupported-page') alert('Stop failed: popup cannot control this page.');
+      if (!res || (!res.ok && res.error === 'unsupported-page')) alert('Stop failed: popup cannot control this page.');
     }).catch(()=>{});
     setReadingStatus('Not Reading');
   });
@@ -510,8 +526,9 @@ document.addEventListener('DOMContentLoaded', () => {
   // Focus mode button
   safeOn(focusModeBtn, 'click', async () => {
     const res = await sendMessageToActiveTabWithInject({ action: 'toggleFocusMode' });
-    if (!res.ok) {
-      if (res.error === 'no-host-permission') alert('Extension needs permission to show focus mode for this site. Grant access and try again.');
+    if (!res || !res.ok) {
+      if (res && res.error === 'no-host-permission') alert('Extension needs permission to show focus mode for this site. Grant access and try again.');
+      else if (res && res.error === 'tab-discarded') alert('The target tab is suspended or not available. Reload the page and try again.');
       else console.warn('toggleFocusMode failed', res);
     } else {
       // toggle UI feedback
@@ -659,8 +676,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (res && res.ok && res.response && res.response.selection && res.response.selection.text) {
         text = res.response.selection.text;
       } else {
-        // fallback: try get main text via content script by executing detectLanguage or read main node (we rely on contentScript's getTextToRead via speedRead/readAloud? but safer to ask contentScript to return selection via 'getSelection' - we already did)
-        // As a fallback, request the page's main visible text via an injected script (best-effort)
+        // fallback: try get main text via injected script
         const tabQuery = await new Promise(resolve => chrome.tabs.query({ active: true, lastFocusedWindow: true }, resolve));
         const tab = tabQuery && tabQuery[0];
         if (!tab || !tab.id || !tab.url || tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://')) {
@@ -767,7 +783,7 @@ document.addEventListener('DOMContentLoaded', () => {
         row.style.display='flex'; row.style.justifyContent='space-between'; row.style.alignItems='center'; row.style.marginBottom='6px';
         const left = document.createElement('div'); left.style.flex='1'; left.style.marginRight='8px';
         const title = document.createElement('div'); title.textContent = item.title || (item.text||'').slice(0,60) || 'Saved item'; title.style.fontSize='13px'; title.style.fontWeight='600'; left.appendChild(title);
-        const sub = document.createElement('div'); sub.textContent = item.url ? (new URL(item.url)).hostname : ''; sub.style.fontSize='11px'; sub.style.opacity='0.7'; left.appendChild(sub);
+        const sub = document.createElement('div'); try { sub.textContent = item.url ? (new URL(item.url)).hostname : ''; } catch(e){ sub.textContent = ''; } sub.style.fontSize='11px'; sub.style.opacity='0.7'; left.appendChild(sub);
 
         const actions = document.createElement('div');
         actions.style.display = 'flex';
@@ -901,4 +917,4 @@ document.addEventListener('DOMContentLoaded', () => {
   initPerSiteUI();
   renderSavedList();
   setTimeout(loadVoicesIntoSelect, 300);
-});;
+});
