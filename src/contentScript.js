@@ -33,7 +33,9 @@
   const RATE_SCALE = 0.85; // slightly slower baseline so UI rate=1 feels natural
 
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, Number(v) || lo));
-  const safeLog = (...a) => { try { console.log(...a); } catch (e) {} };
+  const safeLog = (...a) => { try { console.log('[ClarityRead contentScript]', ...a); } catch (e) {} };
+
+  safeLog('✅ contentScript loaded for', location.href);
 
   // --- sanitize text for TTS
   function sanitizeForTTS(s) {
@@ -74,8 +76,8 @@
         const ff = new FontFace('OpenDyslexic',
           `url(${urlWoff2}) format("woff2"), url(${urlWoff}) format("woff")`,
           { display: 'swap' });
-        ff.load().then(f => document.fonts.add(f)).catch(()=>{});
-      } catch(e){}
+        ff.load().then(f => { document.fonts.add(f); safeLog('OpenDyslexic font loaded'); }).catch(()=>{ safeLog('OpenDyslexic font load failed'); });
+      } catch(e){ safeLog('FontFace load threw', e); }
     }
   }
 
@@ -83,7 +85,7 @@
     try {
       const el = document.getElementById(DYS_STYLE_ID);
       if (el) el.remove();
-    } catch(e){}
+    } catch(e){ safeLog('removeDysFontInjected error', e); }
     document.documentElement.classList.remove('readeasy-dyslexic');
   }
 
@@ -94,7 +96,7 @@
       const s = getComputedStyle(el);
       if (!s) return false;
       if (s.display === 'none' || s.visibility === 'hidden' || parseFloat(s.opacity || '1') === 0) return false;
-    } catch (e) {}
+    } catch (e) { return false; }
     return true;
   }
   function textDensity(el) {
@@ -109,7 +111,10 @@
       const prefer = ['article', 'main', '[role="main"]', '#content', '#primary', '.post', '.article', '#mw-content-text'];
       for (const s of prefer) {
         const el = document.querySelector(s);
-        if (el && el.innerText && el.innerText.length > 200 && isVisible(el)) return el;
+        if (el && el.innerText && el.innerText.length > 200 && isVisible(el)) {
+          safeLog('getMainNode selected preferred selector', s);
+          return el;
+        }
       }
       const candidates = Array.from(document.querySelectorAll('article, main, section, div, p'))
         .filter(el => el && el.innerText && el.innerText.trim().length > 200 && isVisible(el))
@@ -117,10 +122,15 @@
         .filter(c => !/(nav|footer|header|sidebar|comment|advert|ads|cookie)/i.test((c.el.id || '') + ' ' + (c.el.className || '')));
       if (candidates.length) {
         candidates.sort((a,b) => (b.len - a.len) || (b.density - a.density));
+        safeLog('getMainNode picked candidate with length', candidates[0].len);
         return candidates[0].el;
       }
-      if (document.body && (document.body.innerText || '').length > 200) return document.body;
-    } catch (e) { console.warn('getMainNode err', e); }
+      if (document.body && (document.body.innerText || '').length > 200) {
+        safeLog('getMainNode falling back to document.body');
+        return document.body;
+      }
+    } catch (e) { safeLog('getMainNode err', e); }
+    safeLog('getMainNode fallback to documentElement');
     return document.documentElement || document.body;
   }
 
@@ -174,6 +184,7 @@
     overlay.appendChild(inner);
     document.documentElement.appendChild(overlay);
     overlayActive = true;
+    safeLog('createReaderOverlay created with', inner.querySelectorAll('span').length, 'spans (overlayActive)');
     return overlay;
   }
   function removeReaderOverlay() {
@@ -181,6 +192,7 @@
     if (old) try { old.remove(); } catch(e){}
     overlayActive = false;
     overlayTextSplice = null;
+    safeLog('removeReaderOverlay executed');
   }
 
   // --- Highlight management
@@ -198,7 +210,7 @@
           wrapper.parentNode.removeChild(wrapper);
         }
       } catch (e) {
-        console.warn('selection restore failed', e);
+        safeLog('selection restore failed', e);
       }
       selectionRestore = null;
     }
@@ -211,9 +223,10 @@
         }
       });
     } catch(e){
-      console.warn('clearHighlights replace error', e);
+      safeLog('clearHighlights replace error', e);
     }
 
+    safeLog('clearHighlights cleared', highlightSpans.length, 'spans');
     highlightSpans = [];
     highlightIndex = 0;
     cumLengths = [];
@@ -268,6 +281,7 @@
   // Prepare spans: selection-first, then treewalk; fallback to overlay if too many spans
   function prepareSpansForHighlighting(fullText) {
     clearHighlights();
+    safeLog('prepareSpansForHighlighting called, approx text length:', (fullText || '').length);
 
     // selection mode
     let sel = null;
@@ -297,19 +311,22 @@
         selectionRestore = { wrapperSelector: `[data-readeasy-selection="${uid}"]`, originalHtml: originalHtml };
         highlightIndex = 0;
         buildCumLengths();
+        safeLog('prepareSpansForHighlighting selected mode', highlightSpans.length, 'spans');
         return { mode: 'selection' };
       } catch (err) {
-        console.warn('prepareSpans: selection-mode failed, continuing to page-mode', err);
+        safeLog('prepareSpans: selection-mode failed, continuing to page-mode', err);
         selectionRestore = null;
         highlightSpans = [];
       }
     }
 
     const main = getMainNode();
-    if (!main) return { mode: 'none' };
+    if (!main) { safeLog('prepareSpans: no main node'); return { mode: 'none' }; }
 
     const textForCount = (main.innerText || '').trim().slice(0, 200000);
     const approxWordCount = (textForCount.match(/\S+/g) || []).length;
+    safeLog('prepareSpans approxWordCount:', approxWordCount);
+
     if (approxWordCount > MAX_SPANS_BEFORE_OVERLAY) {
       const snippet = fullText.length > MAX_OVERLAY_CHARS ? fullText.slice(0, MAX_OVERLAY_CHARS) : fullText;
       const ov = createReaderOverlay(snippet);
@@ -319,6 +336,7 @@
       overlayActive = true;
       highlightIndex = 0;
       buildCumLengths();
+      safeLog('prepareSpans falling back to overlay with spans:', highlightSpans.length);
       return { mode: 'overlay', overlayText: snippet };
     }
 
@@ -335,6 +353,7 @@
     const textNodes = [];
     let node;
     while ((node = walker.nextNode())) textNodes.push(node);
+    safeLog('prepareSpans found textNodes count', textNodes.length);
     if (!textNodes.length) return { mode: 'none' };
 
     const wordRe = /(\S+)(\s*)/g;
@@ -354,14 +373,16 @@
         if (totalSpans > MAX_SPANS_BEFORE_OVERLAY) break;
       }
       if (matched && frag.childNodes.length) {
-        try { tnode.parentNode.replaceChild(frag, tnode); } catch (e) { console.warn('replace failed', e); }
+        try { tnode.parentNode.replaceChild(frag, tnode); } catch (e) { safeLog('replace failed', e); }
       }
       if (totalSpans > MAX_SPANS_BEFORE_OVERLAY) break;
     }
 
+    safeLog('prepareSpans in-place totalSpans', totalSpans);
+
     if (totalSpans > MAX_SPANS_BEFORE_OVERLAY) {
       // undo and fallback to overlay
-      try { highlightSpans.forEach(s => { if (s && s.parentNode) s.parentNode.replaceChild(document.createTextNode(s.textContent), s); }); } catch(e){}
+      try { highlightSpans.forEach(s => { if (s && s.parentNode) s.parentNode.replaceChild(document.createTextNode(s.textContent), s); }); } catch(e){ safeLog('undo replace error', e); }
       highlightSpans = [];
       const snippet = fullText.length > MAX_OVERLAY_CHARS ? fullText.slice(0, MAX_OVERLAY_CHARS) : fullText;
       const ov = createReaderOverlay(snippet);
@@ -371,11 +392,13 @@
       overlayActive = true;
       highlightIndex = 0;
       buildCumLengths();
+      safeLog('prepareSpans fallback overlay after too many spans, overlay spans:', highlightSpans.length);
       return { mode: 'overlay', overlayText: snippet };
     }
 
     highlightIndex = 0;
     buildCumLengths();
+    safeLog('prepareSpans prepared inplace spans count:', highlightSpans.length);
     return { mode: 'inplace' };
   }
 
@@ -385,6 +408,7 @@
       utter.onstart = () => {
         if (fallbackTicker) { clearInterval(fallbackTicker); fallbackTicker = null; fallbackTickerRunning = false; }
         errorFallbackAttempted = false;
+        safeLog('utter.onstart for chunk length', (utter.text || '').length);
 
         // --- Fallback highlighting (if onboundary doesn't fire)
         if (!fallbackTickerRunning && highlightSpans.length) {
@@ -403,6 +427,7 @@
               }
             }, interval);
             fallbackTickerRunning = true;
+            safeLog('fallbackTicker started interval ms', interval);
           }
         }
       };
@@ -414,19 +439,21 @@
         try {
           const absoluteIndex = (e.charIndex || 0) + (utter._chunkBase || 0);
           mapCharIndexToSpanAndHighlight(absoluteIndex);
-        } catch (err) {}
+        } catch (err) { safeLog('onboundary mapping failed', err); }
       };
-    } catch (ex) { console.warn('onboundary attach failed', ex); }
+    } catch (ex) { safeLog('onboundary attach failed', ex); }
 
     utter.onpause = () => {
-      try { chrome.runtime.sendMessage({ action: 'readingPaused' }, () => {}); } catch(e) {}
+      try { chrome.runtime.sendMessage({ action: 'readingPaused' }, () => {}); } catch(e){}
+      safeLog('utter.onpause');
     };
     utter.onresume = () => {
-      try { chrome.runtime.sendMessage({ action: 'readingResumed' }, () => {}); } catch(e) {}
+      try { chrome.runtime.sendMessage({ action: 'readingResumed' }, () => {}); } catch(e){}
+      safeLog('utter.onresume');
     };
 
     utter.onerror = (errEvent) => {
-      console.warn('utterance error', errEvent);
+      safeLog('utter.onerror', errEvent);
       try { chrome.runtime.sendMessage({ action: 'readingStopped', error: String(errEvent) }, () => {}); } catch(e){}
       // attempt a single fallback: lower rate and retry without highlighting
       if (!errorFallbackAttempted) {
@@ -442,7 +469,7 @@
           newUtter.rate = Math.max(0.8, (utter.rate || 1) - 0.25);
           newUtter.pitch = utter.pitch || 1;
           attachUtterHandlers(newUtter);
-          try { window.speechSynthesis.speak(newUtter); currentUtterance = newUtter; } catch (e) { console.warn('fallback speak failed', e); try { chrome.runtime.sendMessage({ action: 'readingStopped', error: String(e) }, ()=>{}); } catch(e){} }
+          try { window.speechSynthesis.speak(newUtter); currentUtterance = newUtter; safeLog('utter.onerror fallback speak started'); } catch (e) { safeLog('fallback speak failed', e); try { chrome.runtime.sendMessage({ action: 'readingStopped', error: String(e) }, ()=>{}); } catch(e){} }
           return;
         }
       }
@@ -468,7 +495,7 @@
         const toSend = pendingSecondsForSend;
         pendingSecondsForSend = 0;
         lastStatsSendTs = now;
-        try { chrome.runtime.sendMessage({ action: 'updateTimeOnly', duration: toSend }, () => {}); } catch (e) {}
+        try { chrome.runtime.sendMessage({ action: 'updateTimeOnly', duration: toSend }, () => {}); safeLog('sent updateTimeOnly', toSend); } catch (e) { safeLog('updateTimeOnly send failed', e); }
       }
     }, 1000);
   }
@@ -481,21 +508,22 @@
     }
     const toSend = Math.floor(accumulatedElapsed || 0);
     if (toSend > 0) {
-      try { chrome.runtime.sendMessage({ action: 'updateStats', duration: toSend }, () => {}); } catch (e) {}
+      try { chrome.runtime.sendMessage({ action: 'updateStats', duration: toSend }, () => {}); safeLog('finalizeStatsAndSend sent', toSend); } catch (e) { safeLog('finalizeStats send failed', e); }
       accumulatedElapsed = 0;
     }
   }
 
   // --- Speech: robust speakText() with auto-chunking
   function speakText(fullText, { voiceName, rate = 1, pitch = 1, highlight = false } = {}) {
+    safeLog('speakText called len=', (fullText || '').length, { voiceName, rate, pitch, highlight });
     if (!('speechSynthesis' in window)) {
-      console.warn('TTS not supported here.');
+      safeLog('TTS not supported here.');
       try { chrome.runtime.sendMessage({ action: 'readingStopped', error: 'no-tts' }, () => {}); } catch(e){}
       return;
     }
 
     fullText = sanitizeForTTS(fullText || '');
-    if (!fullText) { console.warn('No text to read'); return; }
+    if (!fullText) { safeLog('No text to read'); return; }
 
     // normalize
     rate = clamp(rate, 0.5, 1.6);
@@ -510,6 +538,7 @@
     let utterText = fullText;
     if (highlight) {
       const prep = prepareSpansForHighlighting(fullText);
+      safeLog('speakText prepareSpans result', prep);
       if (prep && prep.mode === 'overlay') {
         utterText = prep.overlayText || overlayTextSplice || fullText.slice(0, MAX_OVERLAY_CHARS);
       } else if (prep && prep.mode === 'inplace') {
@@ -528,10 +557,14 @@
       pos += CHUNK_SIZE;
     }
 
+    safeLog('speakText created chunks', chunks.length);
+
     const voices = window.speechSynthesis.getVoices() || [];
     let chosen = null;
     if (voiceName) chosen = voices.find(v => v.name === voiceName) || null;
     if (!chosen) chosen = voices.find(v => v.lang && v.lang.startsWith((document.documentElement.lang || navigator.language || 'en').split('-')[0])) || voices[0] || null;
+
+    safeLog('speakText chosen voice', chosen && chosen.name);
 
     // timers / stats
     readStartTs = Date.now();
@@ -549,6 +582,7 @@
         clearHighlights();
         try { chrome.runtime.sendMessage({ action: 'readingStopped' }, () => {}); } catch (e) {}
         finalizeStatsAndSend();
+        safeLog('speakText finished all chunks');
         return;
       }
       const text = chunks[chunkIndex++];
@@ -580,13 +614,13 @@
           return;
         }
 
-        console.warn('chunk utterance error', err);
+        safeLog('chunk utterance error', err);
         try { chrome.runtime.sendMessage({ action: 'readingStopped', error: String(err) }, () => {}); } catch(e){}
         finalizeStatsAndSend();
       };
 
       try { window.speechSynthesis.speak(utter); } catch (e) {
-        console.warn('speak failed', e);
+        safeLog('speak failed', e);
         finalizeStatsAndSend();
       }
     }
@@ -605,6 +639,7 @@
     return chunks;
   }
   function speakChunksSequentially(chunks, rate = 1, voiceName) {
+    safeLog('speakChunksSequentially called', chunks.length, { rate, voiceName });
     if (!chunks || !chunks.length) { safeLog('no chunks'); return; }
     rate = clamp(rate, 0.5, 1.6);
     speedChunks = chunks; speedIndex = 0; speedActive = true;
@@ -613,7 +648,7 @@
     readStartTs = Date.now(); accumulatedElapsed = 0; pendingSecondsForSend = 0; lastStatsSendTs = Date.now(); startAutoStatsTimer();
 
     const speakNext = () => {
-      if (!speedActive || speedIndex >= speedChunks.length) { speedActive = false; try { chrome.runtime.sendMessage({ action: 'readingStopped' }, () => {}); } catch(e){}; finalizeStatsAndSend(); return; }
+      if (!speedActive || speedIndex >= speedChunks.length) { speedActive = false; try { chrome.runtime.sendMessage({ action: 'readingStopped' }, () => {}); } catch(e){}; finalizeStatsAndSend(); safeLog('speed read finished'); return; }
       const chunkText = sanitizeForTTS(speedChunks[speedIndex++] || '');
       if (!chunkText) { setTimeout(speakNext, 0); return; }
       const u = new SpeechSynthesisUtterance(chunkText);
@@ -629,7 +664,6 @@
       };
 
       u.onerror = (err) => {
-        // treat interrupt as benign and continue; otherwise try one retry with reduced rate
         let m = '';
         try { m = (err && (err.error || err.message)) ? String(err.error || err.message) : String(err); } catch(e) { m = String(err); }
         if (m && /interrupt/i.test(m)) {
@@ -638,12 +672,11 @@
           return;
         }
 
-        console.warn('speedRead chunk error', err);
+        safeLog('speedRead chunk error', err);
         if (!u._retryAttempted) {
           u._retryAttempted = true;
           const reducedRate = Math.max(0.6, (u.rate || 1) - 0.2);
-          console.info('Retrying speed chunk with reduced rate', reducedRate);
-          // perform a retry without aggressively cancelling other utterances
+          safeLog('Retrying speed chunk with reduced rate', reducedRate);
           try {
             const retryU = new SpeechSynthesisUtterance(chunkText);
             if (chosen) retryU.voice = chosen;
@@ -651,7 +684,7 @@
             retryU.pitch = 1;
             retryU.onend = () => setTimeout(() => speakNext(), Math.max(60, Math.round(200 / Math.max(0.1, retryU.rate))));
             retryU.onerror = (e2) => {
-              console.warn('speedRead retry failed', e2);
+              safeLog('speedRead retry failed', e2);
               speedActive = false;
               try { chrome.runtime.sendMessage({ action: 'readingStopped', error: String(e2) }, () => {}); } catch(e){}
               finalizeStatsAndSend();
@@ -659,7 +692,7 @@
             window.speechSynthesis.speak(retryU);
             try { chrome.runtime.sendMessage({ action: 'readingResumed' }, () => {}); } catch(e){}
           } catch (e) {
-            console.warn('retry speak failed', e);
+            safeLog('retry speak failed', e);
             speedActive = false;
             finalizeStatsAndSend();
           }
@@ -671,11 +704,11 @@
         finalizeStatsAndSend();
       };
 
-      try { window.speechSynthesis.speak(u); try { chrome.runtime.sendMessage({ action: 'readingResumed' }, () => {}); } catch(e){} } catch (e) { console.warn('speak chunk failed', e); speedActive = false; finalizeStatsAndSend(); }
+      try { window.speechSynthesis.speak(u); try { chrome.runtime.sendMessage({ action: 'readingResumed' }, () => {}); } catch(e){} } catch (e) { safeLog('speak chunk failed', e); speedActive = false; finalizeStatsAndSend(); }
     };
     speakNext();
   }
-  function stopSpeedRead() { speedActive = false; speedChunks = null; speedIndex = 0; try { window.speechSynthesis.cancel(); } catch(e){} finalizeStatsAndSend(); }
+  function stopSpeedRead() { speedActive = false; speedChunks = null; speedIndex = 0; try { window.speechSynthesis.cancel(); } catch(e){} finalizeStatsAndSend(); safeLog('stopSpeedRead called'); }
 
   // --- Pause / resume / stop
   function pauseReading() {
@@ -683,12 +716,14 @@
     if (readStartTs) { accumulatedElapsed += (Date.now() - readStartTs) / 1000; readStartTs = null; }
     if (readTimer) { clearInterval(readTimer); readTimer = null; }
     try { chrome.runtime.sendMessage({ action: 'readingPaused' }, () => {}); } catch (e) {}
+    safeLog('pauseReading called');
   }
   function resumeReading() {
     try { window.speechSynthesis.resume(); } catch(e){}
     readStartTs = Date.now();
     startAutoStatsTimer();
     try { chrome.runtime.sendMessage({ action: 'readingResumed' }, () => {}); } catch (e) {}
+    safeLog('resumeReading called');
   }
   function stopReadingAll() {
     try { window.speechSynthesis.cancel(); } catch(e){}
@@ -701,21 +736,31 @@
     }
     clearHighlights();
     try { chrome.runtime.sendMessage({ action: 'readingStopped' }, () => {}); } catch (e) {}
+    safeLog('stopReadingAll called, sent stats seconds:', toSend);
   }
 
   // --- Helpers to get page text or selection
   function getTextToRead() {
     try {
       const s = (window.getSelection && window.getSelection().toString()) || '';
-      if (s && s.trim().length > 20) return s.trim();
+      if (s && s.trim().length > 20) {
+        safeLog('getTextToRead returning selection length', s.length);
+        return s.trim();
+      }
       const main = getMainNode();
       let t = (main && main.innerText) ? main.innerText.trim() : (document.body && document.body.innerText ? document.body.innerText.trim() : '');
-      if (t && t.length > 20000) return t.slice(0, 20000);
+      if (t && t.length > 20000) {
+        safeLog('getTextToRead truncated main text to 20000 chars');
+        return t.slice(0, 20000);
+      }
+      safeLog('getTextToRead main text length', (t || '').length);
       return t ? t : '';
-    } catch (e) { console.warn('getTextToRead err', e); return ''; }
+    } catch (e) { safeLog('getTextToRead err', e); return ''; }
   }
   function detectLanguage() {
-    return (document.documentElement.lang || navigator.language || 'en').toLowerCase();
+    const lang = (document.documentElement.lang || navigator.language || 'en').toLowerCase();
+    safeLog('detectLanguage', lang);
+    return lang;
   }
 
   // --- Focus-mode toggle (uses overlay; toggleFocusMode message)
@@ -723,20 +768,23 @@
     if (overlayActive) {
       removeReaderOverlay();
       clearHighlights();
+      safeLog('toggleFocusMode: closed overlay');
       return;
     }
     const t = getTextToRead();
     if (!t || !t.trim()) {
-      console.warn('toggleFocusMode: no text to show in focus mode');
+      safeLog('toggleFocusMode: no text to show in focus mode');
       return;
     }
     createReaderOverlay(t);
+    safeLog('toggleFocusMode: opened overlay');
   }
 
   // --- Message handler
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     try {
-      if (!msg || !msg.action) { sendResponse({ ok: false }); return true; }
+      safeLog('onMessage received', msg, 'from', sender && sender.tab ? { tabId: sender.tab.id, url: sender.tab.url } : sender);
+      if (!msg || !msg.action) { sendResponse({ ok: false }); safeLog('onMessage missing action -> responded false'); return true; }
 
       switch (msg.action) {
         case 'applySettings':
@@ -763,11 +811,12 @@
                 if (m) try { m.style.fontSize = fs; } catch(e) {}
               }
             }
-            console.info('ClarityRead: applySettings', msg && typeof msg === 'object' ? { dys: !!msg.dys, reflow: !!msg.reflow, fontSize: msg.fontSize } : msg);
+            safeLog('applySettings applied', { dys: !!msg.dys, reflow: !!msg.reflow, fontSize: msg.fontSize });
           } catch (e) {
-            console.warn('applySettings failed', e);
+            safeLog('applySettings failed', e);
           }
           sendResponse({ ok: true });
+          safeLog('applySettings responded ok');
           break;
 
         case 'readAloud': {
@@ -779,12 +828,15 @@
             const highlight = (typeof msg.highlight !== 'undefined' ? !!msg.highlight : !!res.highlight);
             const text = (typeof msg._savedText === 'string' && msg._savedText.length) ? msg._savedText : getTextToRead();
             if (!text || !text.trim()) {
-              console.warn('readAloud: no text found to read');
+              safeLog('readAloud: no text found to read');
               sendResponse({ ok: false, error: 'no-text' });
+              safeLog('readAloud responded no-text');
               return;
             }
+            safeLog('readAloud starting', { voice, rate, pitch, highlight, textLen: text.length });
             speakText(text, { voiceName: voice, rate, pitch, highlight });
             sendResponse({ ok: true });
+            safeLog('readAloud responded ok');
           });
           break;
         }
@@ -794,10 +846,12 @@
             const chunkSize = Number(msg.chunkSize || msg.chunk || 3);
             const r = Number(msg.rate || 1);
             const text = (typeof msg.text === 'string' && msg.text.length) ? msg.text : ((typeof msg._savedText === 'string' && msg._savedText.length) ? msg._savedText : getTextToRead());
-            if (!text || !text.trim()) { sendResponse({ ok: false, error: 'no-text' }); return; }
+            if (!text || !text.trim()) { safeLog('speedRead: no-text'); sendResponse({ ok: false, error: 'no-text' }); return; }
             const chunks = splitIntoChunks(text, Math.max(1, Math.floor(chunkSize)));
+            safeLog('speedRead will speak chunks', chunks.length, { chunkSize, rate: r });
             speakChunksSequentially(chunks, clamp(r, 0.5, 1.6), (msg.voice || res.voice));
             sendResponse({ ok: true });
+            safeLog('speedRead responded ok');
           });
           break;
         }
@@ -806,7 +860,9 @@
           try {
             toggleFocusMode();
             sendResponse({ ok: true, overlayActive: overlayActive });
+            safeLog('toggleFocusMode responded', overlayActive);
           } catch (e) {
+            safeLog('toggleFocusMode error', e);
             sendResponse({ ok: false, error: String(e) });
           }
           break;
@@ -815,37 +871,46 @@
           stopSpeedRead();
           stopReadingAll();
           sendResponse({ ok: true });
+          safeLog('stopReading responded ok');
           break;
 
         case 'pauseReading':
           pauseReading();
           sendResponse({ ok: true });
+          safeLog('pauseReading responded ok');
           break;
 
         case 'resumeReading':
           resumeReading();
           sendResponse({ ok: true });
+          safeLog('resumeReading responded ok');
           break;
 
         case 'detectLanguage':
-          sendResponse({ ok: true, lang: detectLanguage() });
+          const lang = detectLanguage();
+          sendResponse({ ok: true, lang });
+          safeLog('detectLanguage responded', lang);
           break;
 
         case 'getSelection':
           try {
             const selText = window.getSelection ? window.getSelection().toString().trim() : '';
-            sendResponse({ ok: true, response: { selection: { text: selText || '', title: document.title || '', url: location.href || '' } } });
+            const resp = { ok: true, response: { selection: { text: selText || '', title: document.title || '', url: location.href || '' } } };
+            sendResponse(resp);
+            safeLog('getSelection responded', resp.response.selection);
           } catch (e) {
+            safeLog('getSelection failed', e);
             sendResponse({ ok: false });
           }
           break;
 
         default:
+          safeLog('unknown-action', msg.action);
           sendResponse({ ok: false, error: 'unknown-action' });
       }
     } catch (e) {
-      console.warn('contentScript onMessage error', e);
-      sendResponse({ ok: false, error: String(e) });
+      safeLog('contentScript onMessage error', e);
+      try { sendResponse({ ok: false, error: String(e) }); } catch(e2) { safeLog('sendResponse failed after exception', e2); }
     }
     // indicate async response support
     return true;
@@ -854,5 +919,6 @@
   // cleanup when the page unloads
   window.addEventListener('pagehide', () => {
     try { window.speechSynthesis.cancel(); } catch(e){}
+    safeLog('pagehide: canceled speech synthesis');
   });
 })();
