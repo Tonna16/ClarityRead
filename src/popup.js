@@ -1,10 +1,13 @@
 // src/popup.js - upgraded with multilingual, share, saved reads, speed-read + focus-mode + local summarizer
 document.addEventListener('DOMContentLoaded', () => {
   const $ = id => document.getElementById(id) || null;
+  const safeLog = (...a) => { try { console.log('[ClarityRead popup]', ...a); } catch(e){} };
   console.info('ClarityRead popup initializing...');
+  safeLog('DOMContentLoaded');
 
   // --- Ensure Chart.js loaded if popup opened as standalone window
   function ensureChartReady(callback) {
+    safeLog('ensureChartReady check Chart global', typeof Chart !== 'undefined');
     if (typeof Chart !== 'undefined') {
       if (typeof callback === 'function') callback();
       return;
@@ -13,6 +16,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const src = chrome.runtime.getURL('src/lib/chart.umd.min.js');
     // avoid double-inject
     if (document.querySelector('script[data-clarity-chart]')) {
+      safeLog('chart script already injected, waiting briefly for global');
       // wait a tick for global to appear
       setTimeout(() => { if (typeof callback === 'function') callback(); }, 200);
       return;
@@ -20,17 +24,19 @@ document.addEventListener('DOMContentLoaded', () => {
     const s = document.createElement('script');
     s.setAttribute('data-clarity-chart', '1');
     s.src = src;
-    s.onload = () => { console.info('Chart.js injected and loaded.'); if (typeof callback === 'function') callback(); };
-    s.onerror = (e) => { console.error('Failed to load Chart.js from', src, e); if (typeof callback === 'function') callback(); };
+    s.onload = () => { console.info('Chart.js injected and loaded.'); safeLog('Chart.js onload'); if (typeof callback === 'function') callback(); };
+    s.onerror = (e) => { console.error('Failed to load Chart.js from', src, e); safeLog('Chart.js onerror', e); if (typeof callback === 'function') callback(); };
     document.head.appendChild(s);
+    safeLog('ensureChartReady injected script', src);
   }
 
   // quick element presence check
   const requiredIds = ['dyslexicToggle','reflowToggle','contrastToggle','invertToggle','readBtn','pauseBtn','stopBtn','pagesRead','timeRead','avgSession','statsChart','voiceSelect'];
   const elPresence = requiredIds.reduce((acc, id) => (acc[id]=!!document.getElementById(id), acc), {});
   console.info('Popup element presence:', elPresence);
+  safeLog('element presence', elPresence);
 
-  ensureChartReady(() => { try { if (typeof loadStats === 'function') loadStats(); } catch (e) {} });
+  ensureChartReady(() => { try { if (typeof loadStats === 'function') loadStats(); } catch (e) { safeLog('ensureChartReady callback loadStats threw', e); } });
 
   // --- Elements
   const dysToggle = $('dyslexicToggle');
@@ -79,6 +85,7 @@ document.addEventListener('DOMContentLoaded', () => {
     focusModeBtn.textContent = 'Focus Mode';
     focusModeBtn.style.marginRight = '8px';
     document.querySelector('.themeRow').insertBefore(focusModeBtn, themeToggleBtn || null);
+    safeLog('added dynamic focusModeBtn');
   }
 
   // also add Summarize Page button if missing
@@ -89,6 +96,7 @@ document.addEventListener('DOMContentLoaded', () => {
     summarizePageBtn.textContent = 'Summarize Page';
     summarizePageBtn.style.marginRight = '8px';
     document.querySelector('.themeRow').insertBefore(summarizePageBtn, focusModeBtn || themeToggleBtn || null);
+    safeLog('added dynamic summarizePageBtn');
   }
 
   const DEFAULTS = { dys: false, reflow: false, contrast: false, invert: false, fontSize: 20 };
@@ -130,9 +138,11 @@ document.addEventListener('DOMContentLoaded', () => {
   // Robust send helper - popup -> background forward wrapper
   // Attaches _targetTabId/_targetTabUrl, handles permission flow if background replies 'no-host-permission'
   async function sendMessageToActiveTabWithInject(message, _retry = 0) {
+    safeLog('sendMessageToActiveTabWithInject called', message, '_retry=', _retry);
     return new Promise((resolve) => {
       chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
         const tab = tabs && tabs[0];
+        safeLog('tabs.query result', Array.isArray(tabs) ? tabs.length : tabs, tab && { id: tab.id, url: tab.url });
         if (tab && tab.id && tab.url) {
           message._targetTabId = tab.id;
           message._targetTabUrl = tab.url;
@@ -142,8 +152,10 @@ document.addEventListener('DOMContentLoaded', () => {
           chrome.runtime.sendMessage(message, async (res) => {
             if (chrome.runtime.lastError) {
               console.warn('popup > background send error:', chrome.runtime.lastError.message);
+              safeLog('chrome.runtime.lastError', chrome.runtime.lastError);
               return resolve({ ok: false, error: chrome.runtime.lastError.message });
             }
+            safeLog('runtime.sendMessage got response', res);
             if (!res) return resolve({ ok: false, error: 'no-response' });
 
             // background requests host permission -> prompt user once
@@ -152,20 +164,29 @@ document.addEventListener('DOMContentLoaded', () => {
               const friendlyHost = pattern ? (pattern.replace('/*','')) : (message._targetTabUrl || 'this site');
               try {
                 const want = confirm(`ClarityRead needs permission to access ${friendlyHost} to operate on that page. Grant access for this site?`);
-                if (!want) return resolve(res);
+                if (!want) {
+                  safeLog('user declined permission request');
+                  return resolve(res);
+                }
 
                 chrome.permissions.request({ origins: [pattern] }, (granted) => {
                   if (chrome.runtime.lastError) {
                     console.warn('permissions.request error', chrome.runtime.lastError);
+                    safeLog('permissions.request lastError', chrome.runtime.lastError);
                     return resolve({ ok: false, error: 'permission-request-failed', detail: chrome.runtime.lastError.message });
                   }
-                  if (!granted) return resolve({ ok: false, error: 'permission-denied' });
+                  if (!granted) {
+                    safeLog('permissions.request not granted');
+                    return resolve({ ok: false, error: 'permission-denied' });
+                  }
+                  safeLog('permissions.request granted, retrying send');
                   setTimeout(() => {
                     sendMessageToActiveTabWithInject(message, _retry + 1).then(resolve).catch((e) => resolve({ ok: false, error: String(e) }));
                   }, 250);
                 });
               } catch (e) {
                 console.warn('permission flow threw', e);
+                safeLog('permission flow exception', e);
                 return resolve({ ok: false, error: 'permission-flow-exception', detail: String(e) });
               }
               return;
@@ -174,6 +195,7 @@ document.addEventListener('DOMContentLoaded', () => {
           });
         } catch (ex) {
           console.error('popup send wrapper threw', ex);
+          safeLog('send wrapper threw', ex);
           return resolve({ ok: false, error: String(ex) });
         }
       });
@@ -189,8 +211,10 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function loadStats() {
+    safeLog('loadStats start');
     chrome.storage.local.get(['stats'], (res) => {
       const stats = res.stats || { totalPagesRead: 0, totalTimeReadSec: 0, sessions: 0, daily: [] };
+      safeLog('loaded stats', stats);
       if (pagesReadEl) pagesReadEl.textContent = stats.totalPagesRead;
       if (timeReadEl) timeReadEl.textContent = formatTime(stats.totalTimeReadSec);
       const avg = stats.sessions > 0 ? stats.totalTimeReadSec / stats.sessions : 0;
@@ -199,9 +223,10 @@ document.addEventListener('DOMContentLoaded', () => {
       if (statsChartEl) {
         const ctx = (statsChartEl.getContext) ? statsChartEl.getContext('2d') : null;
         const series = build7DaySeries(stats.daily);
-        if (chart) { try { chart.destroy(); } catch (err) {} }
+        if (chart) { try { chart.destroy(); } catch (err) { safeLog('chart.destroy error', err); } }
         if (typeof Chart === 'undefined') {
           console.warn('Chart.js not loaded — graph will be blank.');
+          safeLog('Chart.js undefined, cannot render chart');
         } else {
           chart = new Chart(ctx || statsChartEl, {
             type: 'bar',
@@ -213,12 +238,14 @@ document.addEventListener('DOMContentLoaded', () => {
               plugins: { legend: { display: false } }
             }
           });
+          safeLog('chart created', { labels: series.labels, data: series.data });
           if (chartWrapper && chart) {
             try {
               if (chartResizeObserver) chartResizeObserver.disconnect();
-              chartResizeObserver = new ResizeObserver(() => { try { chart.resize(); } catch (e) {} });
+              chartResizeObserver = new ResizeObserver(() => { try { chart.resize(); } catch (e) { safeLog('chart.resize error', e); } });
               chartResizeObserver.observe(chartWrapper);
-            } catch (e) {}
+              safeLog('chart ResizeObserver attached');
+            } catch (e) { safeLog('chart ResizeObserver attach failed', e); }
           }
         }
       }
@@ -236,8 +263,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // --- Voice helpers
   function loadVoicesIntoSelect() {
-    if (!voiceSelect) return;
+    if (!voiceSelect) { safeLog('voiceSelect missing'); return; }
     const voices = speechSynthesis.getVoices() || [];
+    safeLog('loadVoicesIntoSelect voices count', voices.length);
     voiceSelect.innerHTML = '';
     voices.forEach(v => {
       const opt = document.createElement('option');
@@ -250,19 +278,23 @@ document.addEventListener('DOMContentLoaded', () => {
       if (defaultVoice) voiceSelect.value = defaultVoice.name;
     }
   }
-  speechSynthesis.onvoiceschanged = loadVoicesIntoSelect;
+  speechSynthesis.onvoiceschanged = () => { safeLog('speechSynthesis.onvoiceschanged'); loadVoicesIntoSelect(); };
   loadVoicesIntoSelect();
 
   function selectVoiceByLang(langPrefix = 'en') {
     const voices = speechSynthesis.getVoices() || [];
     if (!voiceSelect) return;
     const voice = voices.find(v => v.lang && v.lang.startsWith(langPrefix));
-    if (voice) voiceSelect.value = voice.name;
+    if (voice) {
+      voiceSelect.value = voice.name;
+      safeLog('selectVoiceByLang set voice', voice.name);
+    } else safeLog('selectVoiceByLang no voice for', langPrefix);
   }
 
   function detectPageLanguageAndSelectVoice() {
     chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
       const tab = tabs && tabs[0];
+      safeLog('detectPageLanguage tab', tab && { id: tab.id, url: tab.url });
       if (!tab || !tab.id || !tab.url) return;
       if (tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://')) return;
       try {
@@ -270,34 +302,38 @@ document.addEventListener('DOMContentLoaded', () => {
           target: { tabId: tab.id },
           func: () => ({ lang: (document.documentElement && document.documentElement.lang) || navigator.language || 'en' })
         }, (results) => {
-          if (chrome.runtime.lastError) return;
+          if (chrome.runtime.lastError) { safeLog('detectPageLanguage exec lastError', chrome.runtime.lastError); return; }
           if (results && results[0] && results[0].result && results[0].result.lang) {
             const lang = (results[0].result.lang || 'en').split('-')[0];
+            safeLog('detectPageLanguage detected', lang);
             selectVoiceByLang(lang);
-          }
+          } else safeLog('detectPageLanguage no result');
         });
-      } catch (err) { console.warn('detectPageLanguage failed', err); }
+      } catch (err) { console.warn('detectPageLanguage failed', err); safeLog('detectPageLanguage caught', err); }
     });
   }
 
   function persistVoiceOverrideForCurrentSite(voiceName) {
-    if (!currentHostname) return;
+    if (!currentHostname) { safeLog('persistVoiceOverrideForCurrentSite no hostname'); return; }
     chrome.storage.local.get([currentHostname], (res) => {
       const s = res[currentHostname] || {};
       s.voice = voiceName;
       const toSet = {}; toSet[currentHostname] = s;
-      chrome.storage.local.set(toSet);
+      chrome.storage.local.set(toSet, () => safeLog('persistVoiceOverrideForCurrentSite saved', currentHostname, voiceName));
     });
   }
 
-  safeOn(themeToggleBtn, 'click', () => document.body.classList.toggle('dark-theme'));
+  safeOn(themeToggleBtn, 'click', () => { document.body.classList.toggle('dark-theme'); safeLog('theme toggled', document.body.classList.contains('dark-theme')); });
 
   // --- Per-site UI init
   function initPerSiteUI() {
+    safeLog('initPerSiteUI start');
     chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
       const tab = tabs && tabs[0];
+      safeLog('initPerSiteUI tab', tab && { id: tab.id, url: tab.url });
       if (!tab || !tab.url) {
         chrome.storage.sync.get(['dys','reflow','contrast','invert','fontSize','voice','rate','pitch','highlight'], (syncRes) => {
+          safeLog('initPerSiteUI no tab -> using sync defaults', syncRes);
           setUI({
             dys: syncRes.dys ?? DEFAULTS.dys,
             reflow: syncRes.reflow ?? DEFAULTS.reflow,
@@ -314,6 +350,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       if (tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://') || tab.url.startsWith('about:')) {
+        safeLog('initPerSiteUI internal url, using sync settings');
         chrome.storage.sync.get(['dys','reflow','contrast','invert','fontSize','voice','rate','pitch','highlight'], (syncRes) => {
           setUI({
             dys: syncRes.dys ?? DEFAULTS.dys,
@@ -330,16 +367,19 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
 
-      try { currentHostname = new URL(tab.url).hostname; } catch (e) { currentHostname = ''; }
+      try { currentHostname = new URL(tab.url).hostname; } catch (e) { currentHostname = ''; safeLog('initPerSiteUI hostname parse failed', e); }
+      safeLog('initPerSiteUI currentHostname', currentHostname);
       if (!currentHostname) return;
 
       chrome.storage.local.get([currentHostname], (localRes) => {
         const siteSettings = localRes[currentHostname];
+        safeLog('initPerSiteUI siteSettings', siteSettings);
         if (siteSettings) {
           setUI(siteSettings);
-          if (siteSettings.voice) setTimeout(() => { voiceSelect.value = siteSettings.voice; }, 200);
+          if (siteSettings.voice) setTimeout(() => { voiceSelect.value = siteSettings.voice; safeLog('applied site voice override', siteSettings.voice); }, 200);
         } else {
           chrome.storage.sync.get(['dys','reflow','contrast','invert','fontSize','voice','rate','pitch','highlight'], (syncRes) => {
+            safeLog('initPerSiteUI no siteSettings, using sync', syncRes);
             setUI({
               dys: syncRes.dys ?? DEFAULTS.dys,
               reflow: syncRes.reflow ?? DEFAULTS.reflow,
@@ -359,6 +399,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function setUI(settings) {
+    safeLog('setUI', settings);
     if (dysToggle) dysToggle.checked = !!settings.dys;
     if (reflowToggle) reflowToggle.checked = !!settings.reflow;
     if (contrastToggle) contrastToggle.checked = !!settings.contrast;
@@ -379,7 +420,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function gatherSettingsObject() {
-    return {
+    const obj = {
       dys: dysToggle?.checked ?? false,
       reflow: reflowToggle?.checked ?? false,
       contrast: contrastToggle?.checked ?? false,
@@ -390,17 +431,21 @@ document.addEventListener('DOMContentLoaded', () => {
       pitch: pitchInput ? clamp(pitchInput.value, 0.5, 2) : 1,
       highlight: highlightCheckbox?.checked ?? false
     };
+    safeLog('gatherSettingsObject', obj);
+    return obj;
   }
 
   // send settings (single applySettings message)
   function sendSettingsAndToggles(settings) {
+    safeLog('sendSettingsAndToggles', settings);
     sendMessageToActiveTabWithInject({ action: 'applySettings', ...settings })
       .then((res) => {
+        safeLog('applySettings response', res);
         if (!res || !res.ok) {
           console.warn('applySettings failed:', JSON.stringify(res));
         }
       })
-      .catch(err => console.warn('applySettings err', err));
+      .catch(err => { console.warn('applySettings err', err); safeLog('applySettings err', err); });
   }
 
   function gatherAndSendSettings() {
@@ -408,12 +453,13 @@ document.addEventListener('DOMContentLoaded', () => {
     chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
       const tab = tabs && tabs[0];
       let hostname = '';
-      try { hostname = tab && tab.url ? new URL(tab.url).hostname : ''; } catch (e) { hostname = ''; }
+      try { hostname = tab && tab.url ? new URL(tab.url).hostname : ''; } catch (e) { hostname = ''; safeLog('gatherAndSendSettings hostname parse failed', e); }
+      safeLog('gatherAndSendSettings tab hostname', hostname);
       if (hostname) {
         const toSet = {}; toSet[hostname] = settings;
-        chrome.storage.local.set(toSet);
+        chrome.storage.local.set(toSet, () => safeLog('saved per-site settings to storage.local', hostname));
       }
-      chrome.storage.sync.set(settings);
+      chrome.storage.sync.set(settings, () => safeLog('saved settings to storage.sync', settings));
       setUI(settings);
 
       if (settingsDebounce) clearTimeout(settingsDebounce);
@@ -422,6 +468,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function setReadingStatus(status) {
+    safeLog('setReadingStatus', status);
     if (readingStatusEl) readingStatusEl.textContent = status;
     if (status === 'Reading...') { isReading = true; isPaused = false; if (pauseBtn) pauseBtn.textContent = 'Pause'; }
     else if (status === 'Paused') { isReading = true; isPaused = true; if (pauseBtn) pauseBtn.textContent = 'Resume'; }
@@ -440,20 +487,22 @@ document.addEventListener('DOMContentLoaded', () => {
 
   safeOn(voiceSelect, 'change', () => {
     const v = voiceSelect.value;
+    safeLog('voiceSelect changed', v);
     persistVoiceOverrideForCurrentSite(v);
-    chrome.storage.sync.set({ voice: v });
+    chrome.storage.sync.set({ voice: v }, () => safeLog('voice persisted to sync', v));
   });
 
   // ensure voices loaded
   function ensureVoicesLoaded(timeoutMs = 500) {
     const voices = speechSynthesis.getVoices() || [];
-    if (voices.length) return Promise.resolve(voices);
+    if (voices.length) { safeLog('ensureVoicesLoaded already have voices', voices.length); return Promise.resolve(voices); }
     return new Promise(resolve => {
       let called = false;
       const onChange = () => {
         if (called) return;
         called = true;
         speechSynthesis.removeEventListener('voiceschanged', onChange);
+        safeLog('voiceschanged event fired');
         resolve(speechSynthesis.getVoices() || []);
       };
       speechSynthesis.addEventListener('voiceschanged', onChange);
@@ -461,6 +510,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!called) {
           called = true;
           speechSynthesis.removeEventListener('voiceschanged', onChange);
+          safeLog('ensureVoicesLoaded timeout, returning whatever available');
           resolve(speechSynthesis.getVoices() || []);
         }
       }, timeoutMs);
@@ -469,35 +519,42 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Read button
   safeOn(readBtn, 'click', () => {
+    safeLog('readBtn clicked', { isReading, isPaused });
     if (isReading) { alert('Reading already in progress. Pause or stop it before starting new read.'); return; }
     const settings = gatherSettingsObject();
     chrome.storage.sync.set({ voice: settings.voice, rate: settings.rate, pitch: settings.pitch, highlight: settings.highlight }, async () => {
       const voices = await ensureVoicesLoaded(500);
+      safeLog('voices after ensure', voices.length);
       if (settings.voice && voices.length && !voices.find(v => v.name === settings.voice)) {
         const fallback = (voices.find(v => v.lang && v.lang.startsWith('en')) || voices[0]);
         if (fallback) {
           settings.voice = fallback.name;
           chrome.storage.sync.set({ voice: settings.voice });
           persistVoiceOverrideForCurrentSite(settings.voice);
+          safeLog('readBtn voice fallback applied', settings.voice);
         }
       }
 
       if (speedToggle && speedToggle.checked) {
         const chunkSize = Number(chunkSizeInput?.value || 3);
         const rate = Number(speedRateInput?.value || settings.rate || 1);
+        safeLog('starting speedRead', { chunkSize, rate });
         sendMessageToActiveTabWithInject({ action: 'speedRead', chunkSize, rate }).then(res => {
+          safeLog('speedRead send result', res);
           if (!res || !res.ok) {
             console.warn('speedRead failed:', JSON.stringify(res));
             alert('Speed-read failed (see console). Falling back to normal read.');
             sendMessageToActiveTabWithInject({ action: 'readAloud', highlight: settings.highlight });
             setReadingStatus('Reading...');
           } else setReadingStatus('Reading...');
-        }).catch(err => { console.warn('speedRead err', err); alert('Speed-read failed (see console).'); });
+        }).catch(err => { console.warn('speedRead err', err); safeLog('speedRead err', err); alert('Speed-read failed (see console).'); });
         return;
       }
 
+      safeLog('sending readAloud', settings);
       sendMessageToActiveTabWithInject({ action: 'readAloud', highlight: settings.highlight, voice: settings.voice, rate: settings.rate, pitch: settings.pitch })
         .then(result => {
+          safeLog('readAloud send response', result);
           if (!result || !result.ok) {
             console.warn('readAloud send failed:', JSON.stringify(result));
             if (result && result.error === 'no-host-permission') alert('Cannot read the current page because the extension lacks permission for this site. Click the extension icon while on the page to grant access, or allow access when prompted.');
@@ -506,26 +563,31 @@ document.addEventListener('DOMContentLoaded', () => {
             else if (result && result.error === 'no-tab') alert('No active tab found.');
             else alert('Failed to start reading (see console).');
           } else setReadingStatus('Reading...');
-        }).catch(err => { console.warn('readAloud send err', err); alert('Failed to start reading (see console).'); });
+        }).catch(err => { console.warn('readAloud send err', err); safeLog('readAloud send err', err); alert('Failed to start reading (see console).'); });
     });
   });
 
   safeOn(stopBtn, 'click', () => {
+    safeLog('stopBtn clicked');
     sendMessageToActiveTabWithInject({ action: 'stopReading' }).then((res) => {
+      safeLog('stopReading response', res);
       if (!res || (!res.ok && res.error === 'unsupported-page')) alert('Stop failed: popup cannot control this page.');
-    }).catch(()=>{});
+    }).catch((e) => safeLog('stopReading wrapper error', e));
     setReadingStatus('Not Reading');
   });
 
   safeOn(pauseBtn, 'click', () => {
-    if (!isReading) { sendMessageToActiveTabWithInject({ action: 'resumeReading' }).then(()=>{}).catch(()=>{}); setReadingStatus('Reading...'); return; }
-    if (!isPaused) { sendMessageToActiveTabWithInject({ action: 'pauseReading' }).then(()=>{}).catch(()=>{}); setReadingStatus('Paused'); }
-    else { sendMessageToActiveTabWithInject({ action: 'resumeReading' }).then(()=>{}).catch(()=>{}); setReadingStatus('Reading...'); }
+    safeLog('pauseBtn clicked', { isReading, isPaused });
+    if (!isReading) { sendMessageToActiveTabWithInject({ action: 'resumeReading' }).then(()=>{}).catch((e)=>safeLog('resumeReading err', e)); setReadingStatus('Reading...'); return; }
+    if (!isPaused) { sendMessageToActiveTabWithInject({ action: 'pauseReading' }).then(()=>{}).catch((e)=>safeLog('pauseReading err', e)); setReadingStatus('Paused'); }
+    else { sendMessageToActiveTabWithInject({ action: 'resumeReading' }).then(()=>{}).catch((e)=>safeLog('resumeReading err', e)); setReadingStatus('Reading...'); }
   });
 
   // Focus mode button
   safeOn(focusModeBtn, 'click', async () => {
+    safeLog('focusModeBtn clicked');
     const res = await sendMessageToActiveTabWithInject({ action: 'toggleFocusMode' });
+    safeLog('toggleFocusMode response', res);
     if (!res || !res.ok) {
       if (res && res.error === 'no-host-permission') alert('Extension needs permission to show focus mode for this site. Grant access and try again.');
       else if (res && res.error === 'tab-discarded') alert('The target tab is suspended or not available. Reload the page and try again.');
@@ -533,6 +595,7 @@ document.addEventListener('DOMContentLoaded', () => {
     } else {
       // toggle UI feedback
       focusModeBtn.textContent = (res.overlayActive ? 'Close Focus' : 'Focus Mode');
+      safeLog('focusModeBtn UI updated', focusModeBtn.textContent);
     }
   });
 
@@ -597,6 +660,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const ordered = sentences.filter(s => chosen.includes(s));
     // If none (rare), fall back to top scored joined
     const result = ordered.length ? ordered.join(' ') : chosen.join(' ');
+    safeLog('summarizeText produced', { chosenCount: chosen.length, limit });
     return result;
   }
 
@@ -638,7 +702,7 @@ document.addEventListener('DOMContentLoaded', () => {
         await navigator.clipboard.writeText(content);
         copyBtn.textContent = 'Copied';
         setTimeout(() => copyBtn.textContent = 'Copy', 1200);
-      } catch (e) { console.warn('copy failed', e); alert('Copy failed'); }
+      } catch (e) { console.warn('copy failed', e); safeLog('summary copy failed', e); alert('Copy failed'); }
     });
     const closeBtn = document.createElement('button'); closeBtn.textContent = 'Close';
     closeBtn.addEventListener('click', () => modal.remove());
@@ -665,20 +729,25 @@ document.addEventListener('DOMContentLoaded', () => {
     modal.appendChild(pre);
 
     document.body.appendChild(modal);
+    safeLog('created summary modal', { title, length: (content||'').length });
     return modal;
   }
 
   // Summarize current page/selection using send helper (falls back to executeScript)
   async function summarizeCurrentPageOrSelection() {
+    safeLog('summarizeCurrentPageOrSelection start');
     try {
       const res = await sendMessageToActiveTabWithInject({ action: 'getSelection' });
+      safeLog('getSelection response', res);
       let text = '';
       if (res && res.ok && res.response && res.response.selection && res.response.selection.text) {
         text = res.response.selection.text;
+        safeLog('summarize using selection text len', text.length);
       } else {
         // fallback: try get main text via injected script
         const tabQuery = await new Promise(resolve => chrome.tabs.query({ active: true, lastFocusedWindow: true }, resolve));
         const tab = tabQuery && tabQuery[0];
+        safeLog('summarize fallback tab', tab && { id: tab.id, url: tab.url });
         if (!tab || !tab.id || !tab.url || tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://')) {
           alert('Cannot summarize internal/extension pages.');
           return;
@@ -703,15 +772,18 @@ document.addEventListener('DOMContentLoaded', () => {
               }
             }, (results) => resolve(results && results[0] && results[0].result));
           });
+          safeLog('summarize exec result', !!exec, exec && (exec.text || '').length);
           if (exec && exec.text) text = exec.text;
-        } catch (e) { console.warn('summarize fallback exec failed', e); }
+        } catch (e) { console.warn('summarize fallback exec failed', e); safeLog('summarize fallback exec failed', e); }
       }
 
-      if (!text || !text.trim()) { alert('No text to summarize (select text on the page or ensure the page has readable content).'); return; }
+      if (!text || !text.trim()) { alert('No text to summarize (select text on the page or ensure the page has readable content).'); safeLog('summarize no text'); return; }
       const summary = summarizeText(text, 3);
       createSummaryModal('Page Summary', summary);
+      safeLog('summarize created summary len', summary.length);
     } catch (e) {
       console.warn('summarizeCurrentPageOrSelection failed', e);
+      safeLog('summarize exception', e);
       alert('Failed to summarize (see console).');
     }
   }
@@ -720,14 +792,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // --- Profiles, saved reads, selection, stats
   function updateProfileDropdown(profiles = {}, selectedName = '') { if (!profileSelect) return; profileSelect.innerHTML = '<option value="">Select profile</option>'; for (const name in profiles) { const opt=document.createElement('option'); opt.value=name; opt.textContent=name; profileSelect.appendChild(opt);} if (selectedName) profileSelect.value = selectedName; }
-  function saveProfile(name, profile) { chrome.storage.local.get(['profiles'], (res) => { const profiles = res.profiles || {}; profiles[name] = profile; chrome.storage.local.set({ profiles }, () => { chrome.storage.sync.set({ profiles }, () => { alert('Profile saved!'); updateProfileDropdown(profiles, name); }); }); }); }
-  chrome.storage.local.get(['profiles'], (res) => updateProfileDropdown(res.profiles || {}));
+  function saveProfile(name, profile) { chrome.storage.local.get(['profiles'], (res) => { const profiles = res.profiles || {}; profiles[name] = profile; chrome.storage.local.set({ profiles }, () => { chrome.storage.sync.set({ profiles }, () => { alert('Profile saved!'); updateProfileDropdown(profiles, name); safeLog('profile saved', name, profile); }); }); }); }
+  chrome.storage.local.get(['profiles'], (res) => { safeLog('loaded profiles', Object.keys(res.profiles||{})); updateProfileDropdown(res.profiles || {}); });
 
-  safeOn(profileSelect, 'change', (e) => { const name = e.target.value; if (!name) return; chrome.storage.local.get(['profiles'], (res) => { const settings = res.profiles?.[name]; if (settings) setUI(settings); gatherAndSendSettings(); }); });
+  safeOn(profileSelect, 'change', (e) => { const name = e.target.value; if (!name) return; chrome.storage.local.get(['profiles'], (res) => { const settings = res.profiles?.[name]; safeLog('profile selected', name, settings); if (settings) setUI(settings); gatherAndSendSettings(); }); });
 
   safeOn(saveProfileBtn, 'click', () => { const name = prompt('Enter profile name:'); if (!name) return; const profile = gatherSettingsObject(); saveProfile(name, profile); });
 
-  safeOn(exportProfilesBtn, 'click', () => { chrome.storage.local.get(['profiles'], (res) => { const dataStr = JSON.stringify(res.profiles || {}); const blob = new Blob([dataStr], { type: "application/json" }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'ClarityReadProfiles.json'; a.click(); URL.revokeObjectURL(url); }); });
+  safeOn(exportProfilesBtn, 'click', () => { chrome.storage.local.get(['profiles'], (res) => { const dataStr = JSON.stringify(res.profiles || {}); const blob = new Blob([dataStr], { type: "application/json" }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'ClarityReadProfiles.json'; a.click(); URL.revokeObjectURL(url); safeLog('exported profiles'); }); });
 
   safeOn(importProfilesBtn, 'click', () => importProfilesInput?.click());
   if (importProfilesInput) {
@@ -741,22 +813,24 @@ document.addEventListener('DOMContentLoaded', () => {
           chrome.storage.local.get(['profiles'], (res) => {
             const profiles = { ...(res.profiles || {}), ...importedProfiles };
             chrome.storage.local.set({ profiles }, () => {
-              chrome.storage.sync.set({ profiles }, () => { alert('Profiles imported!'); updateProfileDropdown(profiles); });
+              chrome.storage.sync.set({ profiles }, () => { alert('Profiles imported!'); updateProfileDropdown(profiles); safeLog('imported profiles', Object.keys(importedProfiles||{})); });
             });
           });
-        } catch (err) { alert('Failed to import profiles: invalid JSON.'); }
+        } catch (err) { safeLog('importProfiles parse failed', err); alert('Failed to import profiles: invalid JSON.'); }
       };
       reader.readAsText(file);
     });
   }
 
-  safeOn(resetStatsBtn, 'click', () => { if (!confirm('Reset all reading stats?')) return; chrome.runtime.sendMessage({ action: 'resetStats' }, () => { loadStats(); setReadingStatus('Not Reading'); }); });
+  safeOn(resetStatsBtn, 'click', () => { if (!confirm('Reset all reading stats?')) return; chrome.runtime.sendMessage({ action: 'resetStats' }, () => { safeLog('resetStats requested'); loadStats(); setReadingStatus('Not Reading'); }); });
 
   // Render saved reads, with Summarize and Summarize All
   function renderSavedList() {
+    safeLog('renderSavedList start');
     chrome.storage.local.get(['savedReads'], (res) => {
       const list = (res.savedReads || []).slice().reverse();
-      if (!savedListEl) return;
+      safeLog('savedReads count', list.length);
+      if (!savedListEl) { safeLog('savedListEl missing'); return; }
       savedListEl.innerHTML = '';
 
       // add Summarize All button if there are items
@@ -793,7 +867,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const openBtn = document.createElement('button'); openBtn.textContent='Read';
         openBtn.addEventListener('click', () => {
           chrome.storage.sync.set({ voice: voiceSelect?.value||'', rate: Number(rateInput?.value||1), pitch: Number(pitchInput?.value||1) }, () => {
-            sendMessageToActiveTabWithInject({ action:'readAloud', highlight:false, _savedText: item.text }).then(()=>setReadingStatus('Reading...')).catch(()=>{});
+            safeLog('saved read open clicked', item.id);
+            sendMessageToActiveTabWithInject({ action:'readAloud', highlight:false, _savedText: item.text }).then(()=>setReadingStatus('Reading...')).catch((e)=>safeLog('readAloud _savedText err', e));
           });
         });
 
@@ -801,7 +876,8 @@ document.addEventListener('DOMContentLoaded', () => {
         openSpeed.addEventListener('click', () => {
           const chunk = Number(chunkSizeInput?.value || 3);
           const r = Number(speedRateInput?.value || 1);
-          sendMessageToActiveTabWithInject({ action:'speedRead', text:item.text, chunkSize:chunk, rate:r }).then(()=>setReadingStatus('Reading...')).catch(()=>{});
+          safeLog('saved read openSpeed clicked', item.id, { chunk, r });
+          sendMessageToActiveTabWithInject({ action:'speedRead', text:item.text, chunkSize:chunk, rate:r }).then(()=>setReadingStatus('Reading...')).catch((e)=>safeLog('speedRead _savedText err', e));
         });
 
         const summarizeBtn = document.createElement('button'); summarizeBtn.textContent = 'Summarize';
@@ -811,7 +887,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         const delBtn = document.createElement('button'); delBtn.textContent='Delete';
-        delBtn.addEventListener('click', () => { if (!confirm('Delete saved item?')) return; chrome.storage.local.get(['savedReads'], (r2)=>{ const arr = r2.savedReads||[]; const filtered = arr.filter(x=>x.id!==item.id); chrome.storage.local.set({ savedReads: filtered }, () => renderSavedList()); }); });
+        delBtn.addEventListener('click', () => { if (!confirm('Delete saved item?')) return; chrome.storage.local.get(['savedReads'], (r2)=>{ const arr = r2.savedReads || []; const filtered = arr.filter(x=>x.id!==item.id); chrome.storage.local.set({ savedReads: filtered }, () => { safeLog('deleted saved item', item.id); renderSavedList(); }); }); });
 
         actions.appendChild(openBtn);
         actions.appendChild(openSpeed);
@@ -825,8 +901,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Save selection -> use background/content messaging helper which handles injecting + permission flow
   safeOn(saveSelectionBtn, 'click', async () => {
+    safeLog('saveSelectionBtn clicked');
     try {
       const res = await sendMessageToActiveTabWithInject({ action: 'getSelection' });
+      safeLog('getSelection via helper', res);
       if (!res || !res.ok) {
         // If permission needed, surface a helpful message
         if (res && res.error === 'no-host-permission') {
@@ -836,11 +914,12 @@ document.addEventListener('DOMContentLoaded', () => {
         // fallback to trying direct scripting (best-effort)
         chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
           const tab = tabs && tabs[0];
-          if (!tab || !tab.id) { alert('No active page found.'); return; }
+          if (!tab || !tab.id) { alert('No active page found.'); safeLog('saveSelection fallback: no active tab'); return; }
           try {
             chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => { const s = window.getSelection(); const text = s ? s.toString() : ''; return { text: text, title: document.title || '', url: location.href || '' }; } }, (results) => {
               if (chrome.runtime.lastError) {
                 console.warn('getSelection exec failed', chrome.runtime.lastError);
+                safeLog('scripting.executeScript failed', chrome.runtime.lastError);
                 const msg = (chrome.runtime.lastError.message || '').toLowerCase();
                 if (msg.includes('must request permission') || msg.includes('cannot access contents of the page')) {
                   alert('Extension lacks permission to access this site. Open the page, click the extension icon, and allow access for this site (or enable host permissions in chrome://extensions).');
@@ -848,32 +927,36 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
               }
               const result = results && results[0] && results[0].result;
-              if (!result || !result.text || !result.text.trim()) { alert('No selection found on the page.'); return; }
+              if (!result || !result.text || !result.text.trim()) { alert('No selection found on the page.'); safeLog('scripting returned no selection'); return; }
               const item = { id: Date.now() + '-' + Math.floor(Math.random()*1000), text: result.text, title: result.title || result.text.slice(0,80), url: result.url, ts: Date.now() };
-              chrome.storage.local.get(['savedReads'], (r) => { const arr = r.savedReads || []; arr.push(item); chrome.storage.local.set({ savedReads: arr }, () => { alert('Selection saved!'); renderSavedList(); }); });
+              chrome.storage.local.get(['savedReads'], (r) => { const arr = r.savedReads || []; arr.push(item); chrome.storage.local.set({ savedReads: arr }, () => { alert('Selection saved!'); safeLog('selection saved via scripting', item.id); renderSavedList(); }); });
             });
-          } catch (err) { console.warn('save selection scripting failed', err); alert('Failed to fetch selection (see console).'); }
+          } catch (err) { console.warn('save selection scripting failed', err); safeLog('save selection scripting failed', err); alert('Failed to fetch selection (see console).'); }
         });
         return;
       }
 
       const selection = res.response && res.response.selection;
+      safeLog('selection from helper', selection && { textLen: selection.text && selection.text.length, title: selection.title });
       if (!selection || !selection.text || !selection.text.trim()) { alert('No selection found on the page.'); return; }
       const item = { id: Date.now() + '-' + Math.floor(Math.random()*1000), text: selection.text, title: selection.title || selection.text.slice(0,80), url: selection.url, ts: Date.now() };
-      chrome.storage.local.get(['savedReads'], (r) => { const arr = r.savedReads || []; arr.push(item); chrome.storage.local.set({ savedReads: arr }, () => { alert('Selection saved!'); renderSavedList(); }); });
+      chrome.storage.local.get(['savedReads'], (r) => { const arr = r.savedReads || []; arr.push(item); chrome.storage.local.set({ savedReads: arr }, () => { alert('Selection saved!'); safeLog('selection saved', item.id); renderSavedList(); }); });
     } catch (e) {
       console.warn('saveSelection flow failed', e);
+      safeLog('saveSelection exception', e);
       alert('Failed to save selection (see console).');
     }
   });
 
-  safeOn(openSavedManagerBtn, 'click', () => { renderSavedList(); });
+  safeOn(openSavedManagerBtn, 'click', () => { safeLog('openSavedManagerBtn clicked'); renderSavedList(); });
 
   // Generate image for sharing stats
   async function generateStatsImageAndDownload() {
+    safeLog('generateStatsImageAndDownload start');
     try {
       const res = await new Promise(resolve => chrome.storage.local.get(['stats'], resolve));
       const stats = (res && res.stats) || { totalPagesRead: 0, totalTimeReadSec: 0, sessions: 0, daily: [] };
+      safeLog('generateStats got stats', stats);
       const w = 800, h = 420; const c = document.createElement('canvas'); c.width = w; c.height = h; const ctx = c.getContext('2d');
       ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, w, h);
       ctx.fillStyle = '#111'; ctx.font = '20px Inter, Arial, sans-serif'; ctx.fillText('ClarityRead — Reading Stats', 20, 36);
@@ -890,31 +973,34 @@ document.addEventListener('DOMContentLoaded', () => {
         ctx.fillStyle = '#666'; ctx.font = '12px Inter, Arial, sans-serif'; ctx.fillText(labels[i].slice(5), bx, chartY + chartH + 16);
       }
       c.toBlob(async (blob) => {
-        if (!blob) { alert('Failed to generate image.'); return; }
+        if (!blob) { alert('Failed to generate image.'); safeLog('canvas toBlob returned null'); return; }
         const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'ClarityReadStats.png'; a.click(); URL.revokeObjectURL(url);
+        safeLog('stats image generated and downloaded');
         if (navigator.clipboard && window.ClipboardItem) {
-          try { await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]); alert('Image saved and copied to clipboard!'); }
-          catch (e) { console.warn('clipboard write failed', e); alert('Image downloaded. Clipboard copy was not available.'); }
+          try { await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]); alert('Image saved and copied to clipboard!'); safeLog('image copied to clipboard'); }
+          catch (e) { console.warn('clipboard write failed', e); safeLog('clipboard write failed', e); alert('Image downloaded. Clipboard copy was not available.'); }
         } else { alert('Image downloaded. To copy to clipboard, allow clipboard access or use the downloaded file.'); }
       });
-    } catch (e) { console.warn('generateStatsImage failed', e); alert('Failed to generate stats image (see console).'); }
+    } catch (e) { console.warn('generateStatsImage failed', e); safeLog('generateStatsImage failed', e); alert('Failed to generate stats image (see console).'); }
   }
 
   safeOn(shareStatsBtn, 'click', generateStatsImageAndDownload);
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    safeLog('chrome.runtime.onMessage received', msg, sender && sender.tab && { tabId: sender.tab.id, url: sender.tab.url });
     if (!msg?.action) { sendResponse({ ok: false }); return true; }
-    if (msg.action === 'statsUpdated') loadStats();
-    else if (msg.action === 'readingStopped') setReadingStatus('Not Reading');
-    else if (msg.action === 'readingPaused') setReadingStatus('Paused');
-    else if (msg.action === 'readingResumed') setReadingStatus('Reading...');
+    if (msg.action === 'statsUpdated') { safeLog('msg statsUpdated -> loadStats'); loadStats(); }
+    else if (msg.action === 'readingStopped') { safeLog('msg readingStopped'); setReadingStatus('Not Reading'); }
+    else if (msg.action === 'readingPaused') { safeLog('msg readingPaused'); setReadingStatus('Paused'); }
+    else if (msg.action === 'readingResumed') { safeLog('msg readingResumed'); setReadingStatus('Reading...'); }
     sendResponse({ ok: true });
     return true;
   });
 
   // Init
+  safeLog('popup init: loadStats, initPerSiteUI, renderSavedList');
   loadStats();
   initPerSiteUI();
   renderSavedList();
-  setTimeout(loadVoicesIntoSelect, 300);
+  setTimeout(() => { safeLog('delayed loadVoicesIntoSelect'); loadVoicesIntoSelect(); }, 300);
 });
