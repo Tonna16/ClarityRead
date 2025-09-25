@@ -41,15 +41,15 @@
     }
   ],
   "web_accessible_resources": [
-    {
-      "resources": [
-        "src/fonts/OpenDyslexic-Regular.woff2",
-        "src/fonts/OpenDyslexic-Regular.woff",
-        "src/inject.css",
-        "lib/chart.umd.min.js"
-      ],
-      "matches": ["<all_urls>"]
-    }
+  {
+    "resources": [
+      "src/fonts/OpenDyslexic-Regular.woff2",
+      "src/fonts/OpenDyslexic-Regular.woff",
+      "src/inject.css",
+      "src/lib/chart.umd.min.js"
+    ],
+    "matches": ["<all_urls>"]
+  }
   ],
   "commands": {
     "read-aloud": {
