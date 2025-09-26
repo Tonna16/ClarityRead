@@ -4,7 +4,7 @@
 
 (function () {
   if (window.__clarityread_contentScriptLoaded) {
-    console.debug('ClarityRead contentScript: already loaded.');
+    try { console.debug('[ClarityRead contentScript] already loaded.'); } catch(e){}
     return;
   }
   window.__clarityread_contentScriptLoaded = true;
@@ -25,11 +25,11 @@
   let overlayActive = false;
   let overlayTextSplice = null;
   let errorFallbackAttempted = false;
-
-  // Cancellation / scheduling guards (new)
-  let readingCancelled = false;        // set true when stop requested (prevents queued speakNext)
-  let nextChunkTimer = null;          // id of scheduled speakNext timeout
-  let stoppedAlready = false;         // guard inside stopReadingAll (preserves prior behavior)
+  let stoppedAlready = false;
+  let speedChunks = null;
+  let speedIndex = 0;
+  let speedActive = false;
+  let sessionId = 0; // incremental session id to guard against races
 
   // New: coalesced state sending
   let lastSentState = 'Not Reading'; // 'Reading...', 'Paused', 'Not Reading'
@@ -89,7 +89,7 @@
         font-family: 'OpenDyslexic', system-ui, Arial, sans-serif !important;
       }
     `;
-    document.head.appendChild(style);
+    try { document.head.appendChild(style); } catch(e){ safeLog('append dys style failed', e); }
 
     if ('fonts' in document) {
       try {
@@ -106,7 +106,7 @@
       const el = document.getElementById(DYS_STYLE_ID);
       if (el) el.remove();
     } catch(e){ safeLog('removeDysFontInjected error', e); }
-    document.documentElement.classList.remove('readeasy-dyslexic');
+    try { document.documentElement.classList.remove('readeasy-dyslexic'); } catch(e){}
   }
 
   // --- Heuristics: choose main content node
@@ -154,7 +154,7 @@
     return document.documentElement || document.body;
   }
 
-  // --- Overlay helper
+  // --- Overlay helper (preferred because it avoids DOM mutation issues)
   function createReaderOverlay(text) {
     removeReaderOverlay();
     const overlay = document.createElement('div');
@@ -176,18 +176,20 @@
     overlay.style.fontSize = '18px';
     overlay.style.whiteSpace = 'pre-wrap';
 
-    const close = document.createElement('button');
-    close.textContent = 'Close reader';
-    close.style.position = 'absolute';
-    close.style.right = '16px';
-    close.style.top = '10px';
-    close.addEventListener('click', () => {
-      try { window.speechSynthesis.cancel(); } catch(e){}
-      removeReaderOverlay();
-      clearHighlights();
-      sendState('Not Reading');
-    });
-    overlay.appendChild(close);
+    try {
+      const close = document.createElement('button');
+      close.textContent = 'Close reader';
+      close.style.position = 'absolute';
+      close.style.right = '16px';
+      close.style.top = '10px';
+      close.addEventListener('click', () => {
+        try { window.speechSynthesis.cancel(); } catch(e){}
+        removeReaderOverlay();
+        clearHighlights();
+        sendState('Not Reading');
+      });
+      overlay.appendChild(close);
+    } catch(e){ safeLog('overlay close button create failed', e); }
 
     const inner = document.createElement('div');
     inner.id = 'readeasy-reader-inner';
@@ -196,16 +198,39 @@
     const wordRe = /(\S+)(\s*)/g;
     let m;
     wordRe.lastIndex = 0;
+    let count = 0;
     while ((m = wordRe.exec(text)) !== null) {
       const sp = document.createElement('span');
       sp.textContent = (m[1] || '') + (m[2] || '');
       sp.classList.add('readeasy-word');
       inner.appendChild(sp);
+      count++;
+      if (count >= MAX_SPANS_BEFORE_OVERLAY) break;
     }
+
+    // fallback if text is extremely long
+    if (text.length > MAX_OVERLAY_CHARS && inner.childNodes.length && inner.childNodes.length * 10 > MAX_OVERLAY_CHARS) {
+      // trim inner to a slice
+      overlayTextSplice = text.slice(0, MAX_OVERLAY_CHARS);
+      inner.innerHTML = '';
+      wordRe.lastIndex = 0;
+      count = 0;
+      while ((m = wordRe.exec(overlayTextSplice)) !== null) {
+        const sp = document.createElement('span');
+        sp.textContent = (m[1] || '') + (m[2] || '');
+        sp.classList.add('readeasy-word');
+        inner.appendChild(sp);
+        count++;
+        if (count >= MAX_SPANS_BEFORE_OVERLAY) break;
+      }
+    }
+
     overlay.appendChild(inner);
-    document.documentElement.appendChild(overlay);
+    try { document.documentElement.appendChild(overlay); } catch(e){ safeLog('append overlay failed', e); }
     overlayActive = true;
-    safeLog('createReaderOverlay created with', inner.querySelectorAll('span').length, 'spans (overlayActive)');
+    highlightSpans = Array.from(inner.querySelectorAll('.readeasy-word'));
+    safeLog('createReaderOverlay created with', highlightSpans.length, 'spans (overlayActive)');
+    buildCumLengths();
     return overlay;
   }
   function removeReaderOverlay() {
@@ -220,6 +245,8 @@
   function clearHighlights() {
     if (fallbackTicker) { clearInterval(fallbackTicker); fallbackTicker = null; fallbackTickerRunning = false; }
 
+    // If we had done any in-place DOM replacements (not used in this overlay-first approach),
+    // attempt to restore them. selectionRestore is reserved for future use.
     if (selectionRestore && selectionRestore.wrapperSelector) {
       try {
         const wrapper = document.querySelector(selectionRestore.wrapperSelector);
@@ -238,7 +265,8 @@
     try {
       highlightSpans.forEach(s => {
         if (s && s.parentNode) {
-          s.parentNode.replaceChild(document.createTextNode(s.textContent || ''), s);
+          // replace highlight span with plain text node to be safe
+          try { s.parentNode.replaceChild(document.createTextNode(s.textContent || ''), s); } catch(e){}
         }
       });
     } catch(e){
@@ -297,135 +325,35 @@
     if (cur) try { cur.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) {}
   }
 
-function prepareSpansForHighlighting(fullText) {
-  clearHighlights();
-  safeLog('prepareSpansForHighlighting called, approx text length:', (fullText || '').length);
-
-  // selection mode
-  let sel = null;
-  try { sel = window.getSelection(); } catch(e){ sel = null; }
-  if (sel && sel.rangeCount && sel.toString().trim().length > 0) {
+  // --- prepareSpansForHighlighting (overlay-first, safe)
+  function prepareSpansForHighlighting(fullText) {
     try {
-      const range = sel.getRangeAt(0);
-      const cloned = range.cloneContents();
-      const tmp = document.createElement('div'); tmp.appendChild(cloned);
-      const originalHtml = tmp.innerHTML;
-      const wrapper = document.createElement('span');
-      const uid = 'readeasy-selection-' + Date.now() + '-' + Math.floor(Math.random()*1000);
-      wrapper.setAttribute('data-readeasy-selection', uid);
-      wrapper.style.whiteSpace = 'pre-wrap';
-      const text = sel.toString();
-      const wordRe = /(\S+)(\s*)/g; let m;
-      wordRe.lastIndex = 0;
-      while ((m = wordRe.exec(text)) !== null) {
-        const sp = document.createElement('span');
-        sp.textContent = (m[1] || '') + (m[2] || '');
-        sp.classList.add('readeasy-word');
-        wrapper.appendChild(sp);
-        highlightSpans.push(sp);
+      clearHighlights();
+      overlayTextSplice = null;
+
+      const text = String(fullText || '').slice(0, MAX_OVERLAY_CHARS);
+      // Create overlay for highlighting — safer across many sites
+      createReaderOverlay(text);
+      if (highlightSpans && highlightSpans.length) {
+        safeLog('prepareSpansForHighlighting -> overlay mode spans', highlightSpans.length);
+        return { mode: 'overlay', overlayText: text, spans: highlightSpans.length };
       }
-      range.deleteContents();
-      range.insertNode(wrapper);
-      selectionRestore = { wrapperSelector: `[data-readeasy-selection="${uid}"]`, originalHtml: originalHtml };
-      highlightIndex = 0;
-      buildCumLengths();
-      safeLog('prepareSpansForHighlighting selected mode', highlightSpans.length, 'spans');
-      return { mode: 'selection' };
-    } catch (err) {
-      safeLog('prepareSpans: selection-mode failed, continuing to page-mode', err);
-      selectionRestore = null;
-      highlightSpans = [];
+      safeLog('prepareSpansForHighlighting failed to create spans, returning none');
+      return { mode: 'none' };
+    } catch (e) {
+      safeLog('prepareSpansForHighlighting error', e);
+      return { mode: 'none' };
     }
   }
 
-  const main = getMainNode();
-  if (!main) { safeLog('prepareSpans: no main node'); return { mode: 'none' }; }
-
-  const textForCount = (main.innerText || '').trim().slice(0, 200000);
-  const approxWordCount = (textForCount.match(/\S+/g) || []).length;
-  safeLog('prepareSpans approxWordCount:', approxWordCount);
-
-  if (approxWordCount > MAX_SPANS_BEFORE_OVERLAY) {
-    const snippet = fullText.length > MAX_OVERLAY_CHARS ? fullText.slice(0, MAX_OVERLAY_CHARS) : fullText;
-    const ov = createReaderOverlay(snippet);
-    const container = ov.querySelector('#readeasy-reader-inner');
-    highlightSpans = Array.from(container.querySelectorAll('span'));
-    overlayTextSplice = snippet;
-    overlayActive = true;
-    highlightIndex = 0;
-    buildCumLengths();
-    safeLog('prepareSpans falling back to overlay with spans:', highlightSpans.length);
-    return { mode: 'overlay', overlayText: snippet };
-  }
-
-  // Walk text nodes
-  const walker = document.createTreeWalker(main, NodeFilter.SHOW_TEXT, {
-    acceptNode(node) {
-      if (!node.nodeValue || !node.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
-      const parentTag = node.parentNode && node.parentNode.tagName && node.parentNode.tagName.toLowerCase();
-      if (['script','style','noscript','textarea','code','pre','input'].includes(parentTag)) return NodeFilter.FILTER_REJECT;
-      return NodeFilter.FILTER_ACCEPT;
-    }
-  }, false);
-
-  const textNodes = [];
-  let node;
-  while ((node = walker.nextNode())) textNodes.push(node);
-  safeLog('prepareSpans found textNodes count', textNodes.length);
-  if (!textNodes.length) return { mode: 'none' };
-
-  const wordRe = /(\S+)(\s*)/g;
-  let totalSpans = 0;
-  for (const tnode of textNodes) {
-    const txt = tnode.nodeValue;
-    const frag = document.createDocumentFragment();
-    let m; wordRe.lastIndex = 0; let matched = false;
-    while ((m = wordRe.exec(txt)) !== null) {
-      matched = true;
-      const span = document.createElement('span');
-      span.textContent = (m[1] || '') + (m[2] || '');
-      span.classList.add('readeasy-word');
-      frag.appendChild(span);
-      highlightSpans.push(span);
-      totalSpans++;
-      if (totalSpans > MAX_SPANS_BEFORE_OVERLAY) break;
-    }
-    if (matched && frag.childNodes.length) {
-      try { tnode.parentNode.replaceChild(frag, tnode); } catch (e) { safeLog('replace failed', e); }
-    }
-    if (totalSpans > MAX_SPANS_BEFORE_OVERLAY) break;
-  }
-
-  safeLog('prepareSpans in-place totalSpans', totalSpans);
-
-  if (totalSpans > MAX_SPANS_BEFORE_OVERLAY) {
-    // undo and fallback to overlay
-    try { highlightSpans.forEach(s => { if (s && s.parentNode) s.parentNode.replaceChild(document.createTextNode(s.textContent), s); }); } catch(e){ safeLog('undo replace error', e); }
-    highlightSpans = [];
-    const snippet = fullText.length > MAX_OVERLAY_CHARS ? fullText.slice(0, MAX_OVERLAY_CHARS) : fullText;
-    const ov = createReaderOverlay(snippet);
-    const container = ov.querySelector('#readeasy-reader-inner');
-    highlightSpans = Array.from(container.querySelectorAll('span'));
-    overlayTextSplice = snippet;
-    overlayActive = true;
-    highlightIndex = 0;
-    buildCumLengths();
-    safeLog('prepareSpans fallback overlay after too many spans, overlay spans:', highlightSpans.length);
-    return { mode: 'overlay', overlayText: snippet };
-  }
-
-  highlightIndex = 0;
-  buildCumLengths();
-  safeLog('prepareSpans prepared inplace spans count:', highlightSpans.length);
-  return { mode: 'inplace' };
-}
-  // --- Utterance attach handlers (use sendState instead of spamming messages)
-  function attachUtterHandlers(utter) {
+  // --- Utterance attach handlers (use sessionId to guard races)
+  function attachUtterHandlers(utter, mySessionId) {
     try {
       utter.onstart = () => {
+        if (mySessionId !== sessionId) { safeLog('utter.onstart ignored due to session mismatch', mySessionId, sessionId); return; }
         if (fallbackTicker) { clearInterval(fallbackTicker); fallbackTicker = null; fallbackTickerRunning = false; }
         errorFallbackAttempted = false;
-        safeLog('utter.onstart for chunk length', (utter.text || '').length);
+        safeLog('utter.onstart for chunk length', (utter.text || '').length, 'sessionId', mySessionId);
 
         // fallback highlighting ticker
         if (!fallbackTickerRunning && highlightSpans.length) {
@@ -435,6 +363,7 @@ function prepareSpansForHighlighting(fullText) {
             let interval = Math.max(120, estDuration * 1000 / wordCount);
             let i = 0;
             fallbackTicker = setInterval(() => {
+              if (mySessionId !== sessionId) { clearInterval(fallbackTicker); fallbackTicker = null; fallbackTickerRunning = false; return; }
               if (i < highlightSpans.length) {
                 advanceHighlightByOne();
                 i++;
@@ -451,8 +380,8 @@ function prepareSpansForHighlighting(fullText) {
         sendState('Reading...');
       };
 
-      // onboundary: map charIndex to absolute index using _chunkBase
       utter.onboundary = (e) => {
+        if (mySessionId !== sessionId) return;
         if (!e || typeof e.charIndex !== 'number') return;
         if (fallbackTicker) { clearInterval(fallbackTicker); fallbackTicker = null; fallbackTickerRunning = false; }
         try {
@@ -462,8 +391,8 @@ function prepareSpansForHighlighting(fullText) {
       };
     } catch (ex) { safeLog('onboundary attach failed', ex); }
 
-    // use local sendState to avoid duplicates from multiple utterances
     utter.onpause = () => {
+      if (sessionId && sessionId !== sessionId) {} // no-op to show pattern
       sendState('Paused');
       safeLog('utter.onpause');
     };
@@ -487,7 +416,7 @@ function prepareSpansForHighlighting(fullText) {
           newUtter.voice = (utter.voice && utter.voice.name) ? voices.find(v => v.name === utter.voice.name) || voices[0] : (voices[0] || null);
           newUtter.rate = Math.max(0.8, (utter.rate || 1) - 0.25);
           newUtter.pitch = utter.pitch || 1;
-          attachUtterHandlers(newUtter);
+          attachUtterHandlers(newUtter, mySessionId);
           try { window.speechSynthesis.speak(newUtter); currentUtterance = newUtter; safeLog('utter.onerror fallback speak started'); } catch (e) { safeLog('fallback speak failed', e); sendState('Not Reading'); }
           return;
         }
@@ -498,7 +427,7 @@ function prepareSpansForHighlighting(fullText) {
     };
   }
 
-  // --- Stats timer helpers (unchanged but ensure sendState used to signal stopped)
+  // --- Stats timer helpers
   function startAutoStatsTimer() {
     if (readTimer) clearInterval(readTimer);
     pendingSecondsForSend = 0;
@@ -533,32 +462,33 @@ function prepareSpansForHighlighting(fullText) {
     }
   }
 
-  // --- Speech: robust speakText() with auto-chunking (improved guards)
+  // --- Speech: robust speakText() with auto-chunking and session guard
   function speakText(fullText, { voiceName, rate = 1, pitch = 1, highlight = false } = {}) {
     safeLog('speakText called len=', (fullText || '').length, { voiceName, rate, pitch, highlight });
 
     if (!('speechSynthesis' in window)) {
       safeLog('TTS not supported here.');
       sendState('Not Reading');
-      return;
+      return { ok: false, error: 'no-tts' };
     }
 
     fullText = sanitizeForTTS(fullText || '');
-    if (!fullText) { safeLog('No text to read'); return; }
+    if (!fullText) { safeLog('No text to read'); return { ok: false, error: 'no-text' }; }
+
+    // New session
+    sessionId += 1;
+    const mySessionId = sessionId;
+    stoppedAlready = false;
 
     rate = clamp(rate, 0.5, 1.6);
     pitch = clamp(pitch, 0.5, 2);
-
-    // robust cancellation: mark cancelled false (we're starting fresh), clear timers
-    readingCancelled = false;
-    if (nextChunkTimer) { clearTimeout(nextChunkTimer); nextChunkTimer = null; }
 
     // Cancel any prior speak to avoid race where stop→start toggles incorrectly
     try { window.speechSynthesis.cancel(); } catch(e){}
     clearHighlights();
     errorFallbackAttempted = false;
 
-    // prepare highlighting if requested
+    // prepare highlighting (overlay)
     let utterText = fullText;
     if (highlight) {
       try {
@@ -566,12 +496,11 @@ function prepareSpansForHighlighting(fullText) {
         safeLog('speakText prepareSpans result', prep);
         if (prep && prep.mode === 'overlay') {
           utterText = prep.overlayText || overlayTextSplice || fullText.slice(0, MAX_OVERLAY_CHARS);
-        } else if (prep && prep.mode === 'inplace') {
-          utterText = highlightSpans.map(s => s.textContent || '').join('');
         } else {
-          highlight = false;
+          // fallback to reading full text
+          utterText = fullText;
         }
-      } catch (e) { safeLog('prepareSpans call failed', e); highlight = false; }
+      } catch (e) { safeLog('prepareSpans call failed', e); utterText = fullText; }
     }
 
     const CHUNK_SIZE = 1800;
@@ -581,7 +510,7 @@ function prepareSpansForHighlighting(fullText) {
       chunks.push(utterText.slice(pos, pos + CHUNK_SIZE));
       pos += CHUNK_SIZE;
     }
-    safeLog('speakText created chunks', chunks.length);
+    safeLog('speakText created chunks', chunks.length, 'sessionId', mySessionId);
 
     const voices = window.speechSynthesis.getVoices() || [];
     let chosen = null;
@@ -600,27 +529,17 @@ function prepareSpansForHighlighting(fullText) {
     let chunkIndex = 0;
     let charsSpokenBefore = 0;
 
-    // speakNext uses scheduled timer references stored in nextChunkTimer so stop can cancel it.
     function speakNext() {
-      // If stop requested, bail immediately and cleanup (guard against races)
-      if (readingCancelled) {
-        safeLog('speakNext aborted due to readingCancelled flag');
-        clearHighlights();
-        removeReaderOverlay();
-        sendState('Not Reading');
-        finalizeStatsAndSend();
-        return;
-      }
-
+      if (mySessionId !== sessionId) { safeLog('speakNext aborted due session change', mySessionId, sessionId); return; }
+      if (stoppedAlready) { safeLog('speakNext aborted because stoppedAlready', mySessionId); return; }
       if (chunkIndex >= chunks.length) {
-        clearHighlights();
         removeReaderOverlay();
+        clearHighlights();
         sendState('Not Reading');
         finalizeStatsAndSend();
-        safeLog('speakText finished all chunks');
+        safeLog('speakText finished all chunks', 'sessionId', mySessionId);
         return;
       }
-
       const text = chunks[chunkIndex++];
       const utter = new SpeechSynthesisUtterance(text);
       utter._chunkBase = charsSpokenBefore;
@@ -631,25 +550,21 @@ function prepareSpansForHighlighting(fullText) {
       utter.pitch = pitch;
       currentUtterance = utter;
 
-      attachUtterHandlers(utter);
+      attachUtterHandlers(utter, mySessionId);
 
-      // onend -> schedule next chunk but store timer id so stop can cancel it
       utter.onend = () => {
-        // small delay for responsiveness but allow stop to cancel using readingCancelled flag
-        if (nextChunkTimer) { clearTimeout(nextChunkTimer); nextChunkTimer = null; }
-        nextChunkTimer = setTimeout(() => {
-          nextChunkTimer = null;
-          try { speakNext(); } catch (e) { safeLog('speakNext call failed', e); }
-        }, 60);
+        // only continue if still current session
+        setTimeout(() => {
+          if (mySessionId !== sessionId) { safeLog('onend not continuing due session mismatch', mySessionId, sessionId); return; }
+          speakNext();
+        }, 50);
       };
-
       utter.onerror = (err) => {
         let m = '';
         try { m = (err && (err.error || err.message)) ? String(err.error || err.message) : String(err); } catch(e) { m = String(err); }
         if (m && /interrupt/i.test(m)) {
           safeLog('chunk utter interrupted (benign):', m);
-          if (nextChunkTimer) { clearTimeout(nextChunkTimer); nextChunkTimer = null; }
-          nextChunkTimer = setTimeout(() => { nextChunkTimer = null; speakNext(); }, 60);
+          setTimeout(() => speakNext(), 60);
           return;
         }
 
@@ -658,10 +573,7 @@ function prepareSpansForHighlighting(fullText) {
         finalizeStatsAndSend();
       };
 
-      try {
-        window.speechSynthesis.speak(utter);
-        sendState('Reading...');
-      } catch (e) {
+      try { window.speechSynthesis.speak(utter); } catch (e) {
         safeLog('speak failed', e);
         sendState('Not Reading');
         finalizeStatsAndSend();
@@ -670,54 +582,44 @@ function prepareSpansForHighlighting(fullText) {
 
     // start
     sendState('Reading...');
-    // kick off synchronously to avoid race where cancel immediately after speak call misses state
-    try { speakNext(); } catch (e) { safeLog('initial speakNext failed', e); sendState('Not Reading'); finalizeStatsAndSend(); }
+    speakNext();
+    return { ok: true };
   }
 
-  // --- Speed-read (uses sendState)
-  let speedChunks = null;
-  let speedIndex = 0;
-  let speedActive = false;
+  // --- Speed-read
   function splitIntoChunks(text, chunkSize = 3) {
     const words = (text || '').trim().split(/\s+/).filter(Boolean);
     const chunks = [];
     for (let i = 0; i < words.length; i += chunkSize) chunks.push(words.slice(i, i + chunkSize).join(' '));
     return chunks;
   }
+
   function speakChunksSequentially(chunks, rate = 1, voiceName) {
     safeLog('speakChunksSequentially called', chunks.length, { rate, voiceName });
-    if (!chunks || !chunks.length) { safeLog('no chunks'); return; }
+    if (!chunks || !chunks.length) { safeLog('no chunks'); return { ok: false, error: 'no-chunks' }; }
     rate = clamp(rate, 0.5, 1.6);
     speedChunks = chunks; speedIndex = 0; speedActive = true;
-    readingCancelled = false;
+    sessionId += 1;
+    const mySessionId = sessionId;
     try { window.speechSynthesis.cancel(); } catch(e){}
     clearHighlights();
     readStartTs = Date.now(); accumulatedElapsed = 0; pendingSecondsForSend = 0; lastStatsSendTs = Date.now(); startAutoStatsTimer();
 
-    const voices = window.speechSynthesis.getVoices() || [];
-    let chosen = null;
-    if (voiceName) chosen = voices.find(v => v.name === voiceName) || null;
-    if (!chosen) chosen = voices.find(v => v.lang && v.lang.startsWith((document.documentElement.lang || navigator.language || 'en').split('-')[0])) || voices[0] || null;
-
     const speakNext = () => {
-      if (readingCancelled) {
-        safeLog('speed speakNext aborted due to readingCancelled flag');
-        speedActive = false;
-        finalizeStatsAndSend();
-        sendState('Not Reading');
-        return;
-      }
+      if (mySessionId !== sessionId) { safeLog('speed speakNext aborted session mismatch', mySessionId, sessionId); return; }
       if (!speedActive || speedIndex >= speedChunks.length) { speedActive = false; sendState('Not Reading'); finalizeStatsAndSend(); safeLog('speed read finished'); return; }
       const chunkText = sanitizeForTTS(speedChunks[speedIndex++] || '');
       if (!chunkText) { setTimeout(speakNext, 0); return; }
       const u = new SpeechSynthesisUtterance(chunkText);
+      const voices = window.speechSynthesis.getVoices() || [];
+      let chosen = null;
+      if (voiceName) chosen = voices.find(v => v.name === voiceName) || null;
+      if (!chosen) chosen = voices.find(v => v.lang && v.lang.startsWith((document.documentElement.lang || navigator.language || 'en').split('-')[0])) || voices[0] || null;
       if (chosen) u.voice = chosen;
       u.rate = clamp(rate * RATE_SCALE, 0.5, 1.6);
       u.pitch = 1;
 
       u.onend = () => {
-        // bail quickly if cancelled
-        if (readingCancelled) { safeLog('speed chunk onend aborted due to readingCancelled'); speedActive = false; sendState('Not Reading'); finalizeStatsAndSend(); return; }
         sendState('Reading...');
         setTimeout(() => speakNext(), Math.max(60, Math.round(200 / Math.max(0.1, u.rate))));
       };
@@ -767,8 +669,9 @@ function prepareSpansForHighlighting(fullText) {
       try { window.speechSynthesis.speak(u); sendState('Reading...'); } catch (e) { safeLog('speak chunk failed', e); speedActive = false; sendState('Not Reading'); finalizeStatsAndSend(); }
     };
     speakNext();
+    return { ok: true };
   }
-  function stopSpeedRead() { speedActive = false; speedChunks = null; speedIndex = 0; readingCancelled = true; try { window.speechSynthesis.cancel(); } catch(e){} if (nextChunkTimer) { clearTimeout(nextChunkTimer); nextChunkTimer = null; } finalizeStatsAndSend(); sendState('Not Reading'); safeLog('stopSpeedRead called'); }
+  function stopSpeedRead() { speedActive = false; speedChunks = null; speedIndex = 0; try { window.speechSynthesis.cancel(); } catch(e){} finalizeStatsAndSend(); sendState('Not Reading'); safeLog('stopSpeedRead called'); }
 
   // --- Pause / resume / stop (use speechSynthesis state and sendState)
   function pauseReading() {
@@ -779,10 +682,12 @@ function prepareSpansForHighlighting(fullText) {
         if (readTimer) { clearInterval(readTimer); readTimer = null; }
         sendState('Paused');
         safeLog('pauseReading called and paused');
+        return { ok: true };
       } else {
         safeLog('pauseReading: nothing to pause');
+        return { ok: false, error: 'nothing-to-pause' };
       }
-    } catch (e) { safeLog('pauseReading error', e); }
+    } catch (e) { safeLog('pauseReading error', e); return { ok: false, error: String(e) }; }
   }
   function resumeReading() {
     try {
@@ -792,36 +697,36 @@ function prepareSpansForHighlighting(fullText) {
         startAutoStatsTimer();
         sendState('Reading...');
         safeLog('resumeReading called and resumed');
+        return { ok: true };
       } else {
         safeLog('resumeReading: nothing to resume');
+        return { ok: false, error: 'nothing-to-resume' };
       }
-    } catch (e) { safeLog('resumeReading error', e); }
+    } catch (e) { safeLog('resumeReading error', e); return { ok: false, error: String(e) }; }
   }
 
   function stopReadingAll() {
     try {
-      if (stoppedAlready) { safeLog('stopReadingAll: already stopped'); return; }
+      // mark session changed so any pending utterances stop continuing
+      sessionId += 1;
       stoppedAlready = true;
-
-      // set cancellation guard so any pending speakNext or onend scheduled timers bail
-      readingCancelled = true;
-      if (nextChunkTimer) { clearTimeout(nextChunkTimer); nextChunkTimer = null; }
-
       try { window.speechSynthesis.cancel(); } catch(e){}
       if (readStartTs) { accumulatedElapsed += (Date.now() - readStartTs) / 1000; readStartTs = null; }
       if (readTimer) { clearInterval(readTimer); readTimer = null; }
       const toSend = Math.floor(accumulatedElapsed || 0);
       if (toSend > 0) {
-        try { chrome.runtime.sendMessage({ action: 'updateStats', duration: toSend }, () => {}); } catch (e) {}
+        try { chrome.runtime.sendMessage({ action: 'updateStats', duration: toSend }, () => {}); } catch (e) { safeLog('updateStats send failed', e); }
         accumulatedElapsed = 0;
       }
+      stopSpeedRead();
+      removeReaderOverlay();
       clearHighlights();
       sendState('Not Reading');
       safeLog('stopReadingAll called, sent stats seconds:', toSend);
-
-      // reset guards after a tiny delay so future reads are allowed but immediate race avoided
-      setTimeout(() => { stoppedAlready = false; readingCancelled = false; }, 120);
-    } catch (e) { safeLog('stopReadingAll error', e); stoppedAlready = false; readingCancelled = false; }
+      // reset stoppedAlready after a short delay so future reads allowed
+      setTimeout(() => { stoppedAlready = false; }, 200);
+      return { ok: true };
+    } catch (e) { safeLog('stopReadingAll error', e); stoppedAlready = false; return { ok: false, error: String(e) }; }
   }
 
   // --- Helpers to get page text or selection
@@ -855,16 +760,17 @@ function prepareSpansForHighlighting(fullText) {
       clearHighlights();
       sendState('Not Reading');
       safeLog('toggleFocusMode: closed overlay');
-      return;
+      return { ok: true, overlayActive: false };
     }
     const t = getTextToRead();
     if (!t || !t.trim()) {
       safeLog('toggleFocusMode: no text to show in focus mode');
-      return;
+      return { ok: false, error: 'no-text' };
     }
     createReaderOverlay(t);
     sendState('Not Reading'); // overlay itself doesn't start reading
     safeLog('toggleFocusMode: opened overlay');
+    return { ok: true, overlayActive: true };
   }
 
   // --- Message handler
@@ -917,8 +823,8 @@ function prepareSpansForHighlighting(fullText) {
               return;
             }
             safeLog('readAloud starting', { voice, rate, pitch, highlight, textLen: text.length });
-            speakText(text, { voiceName: voice, rate, pitch, highlight });
-            sendResponse({ ok: true });
+            const r = speakText(text, { voiceName: voice, rate, pitch, highlight });
+            sendResponse(r || { ok: true });
           });
           break;
         }
@@ -931,59 +837,60 @@ function prepareSpansForHighlighting(fullText) {
             if (!text || !text.trim()) { safeLog('speedRead: no-text'); sendResponse({ ok: false, error: 'no-text' }); return; }
             const chunks = splitIntoChunks(text, Math.max(1, Math.floor(chunkSize)));
             safeLog('speedRead will speak chunks', chunks.length, { chunkSize, rate: r });
-            speakChunksSequentially(chunks, clamp(r, 0.5, 1.6), (msg.voice || res.voice));
-            sendResponse({ ok: true });
+            const out = speakChunksSequentially(chunks, clamp(r, 0.5, 1.6), (msg.voice || res.voice));
+            sendResponse(out || { ok: true });
           });
           break;
         }
 
-        case 'toggleFocusMode':
-          try {
-            toggleFocusMode();
-            sendResponse({ ok: true, overlayActive: overlayActive });
-            safeLog('toggleFocusMode responded', overlayActive);
-          } catch (e) {
-            safeLog('toggleFocusMode error', e);
-            sendResponse({ ok: false, error: String(e) });
-          }
+        case 'toggleFocusMode': {
+          const res = toggleFocusMode();
+          sendResponse(res);
+          safeLog('toggleFocusMode responded', res);
           break;
+        }
 
-        case 'stopReading':
-          stopSpeedRead();
-          stopReadingAll();
-          sendResponse({ ok: true });
-          safeLog('stopReading responded ok');
+        case 'stopReading': {
+          const res = stopReadingAll();
+          sendResponse(res);
+          safeLog('stopReading responded', res);
           break;
+        }
 
-        case 'pauseReading':
-          pauseReading();
-          sendResponse({ ok: true });
-          safeLog('pauseReading responded ok');
+        case 'pauseReading': {
+          const res = pauseReading();
+          sendResponse(res);
+          safeLog('pauseReading responded', res);
           break;
+        }
 
-        case 'resumeReading':
-          resumeReading();
-          sendResponse({ ok: true });
-          safeLog('resumeReading responded ok');
+        case 'resumeReading': {
+          const res = resumeReading();
+          sendResponse(res);
+          safeLog('resumeReading responded', res);
           break;
+        }
 
-        case 'detectLanguage':
+        case 'detectLanguage': {
           const lang = detectLanguage();
           sendResponse({ ok: true, lang });
           safeLog('detectLanguage responded', lang);
           break;
+        }
 
-        case 'getSelection':
+        case 'getSelection': {
           try {
             const selText = window.getSelection ? window.getSelection().toString().trim() : '';
-            const resp = { ok: true, response: { selection: { text: selText || '', title: document.title || '', url: location.href || '' } } };
+            const resp = { ok: true, selection: { text: selText || '', title: document.title || '', url: location.href || '' } };
+            // Always return a flat shape so background/popup can rely on response.selection
             sendResponse(resp);
-            safeLog('getSelection responded', resp.response.selection);
+            safeLog('getSelection responded', { textLen: (selText||'').length, title: document.title });
           } catch (e) {
             safeLog('getSelection failed', e);
-            sendResponse({ ok: false });
+            try { sendResponse({ ok: false, error: String(e) }); } catch(e2) { safeLog('sendResponse failed after exception', e2); }
           }
           break;
+        }
 
         default:
           safeLog('unknown-action', msg.action);
@@ -1000,7 +907,6 @@ function prepareSpansForHighlighting(fullText) {
   // cleanup when the page unloads
   window.addEventListener('pagehide', () => {
     try { window.speechSynthesis.cancel(); } catch(e){}
-    readingCancelled = true;
     sendState('Not Reading');
     safeLog('pagehide: canceled speech synthesis');
   });
