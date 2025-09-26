@@ -297,22 +297,128 @@
     if (cur) try { cur.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) {}
   }
 
-  // prepareSpansForHighlighting kept as before (no changes to core algorithm), omitted here for brevity.
-  // (include exact implementation from your prior script in your copy)
-  // --- For brevity in this snippet: insert your previous prepareSpansForHighlighting function here unchanged ---
-  /* ---------- START prepareSpansForHighlighting (paste your previous implementation) ---------- */
-  function prepareSpansForHighlighting(fullText) {
-    // identical algorithm as earlier version (selection-first, then treewalk, fallback overlay)
-    // copy the exact implementation you used previously -- omitted here for clarity in this message.
-    // Make sure this function returns an object like { mode: 'inplace'|'overlay'|'selection'|'none', overlayText: '...' }
-    // and populates highlightSpans appropriately.
-    // ---- (PASTE ORIGINAL IMPLEMENTATION) ----
-    // For this response, assume it's present unchanged.
-    safeLog('prepareSpansForHighlighting placeholder called - ensure you pasted real implementation');
-    return { mode: 'none' };
-  }
-  /* ---------- END prepareSpansForHighlighting ---------- */
+function prepareSpansForHighlighting(fullText) {
+  clearHighlights();
+  safeLog('prepareSpansForHighlighting called, approx text length:', (fullText || '').length);
 
+  // selection mode
+  let sel = null;
+  try { sel = window.getSelection(); } catch(e){ sel = null; }
+  if (sel && sel.rangeCount && sel.toString().trim().length > 0) {
+    try {
+      const range = sel.getRangeAt(0);
+      const cloned = range.cloneContents();
+      const tmp = document.createElement('div'); tmp.appendChild(cloned);
+      const originalHtml = tmp.innerHTML;
+      const wrapper = document.createElement('span');
+      const uid = 'readeasy-selection-' + Date.now() + '-' + Math.floor(Math.random()*1000);
+      wrapper.setAttribute('data-readeasy-selection', uid);
+      wrapper.style.whiteSpace = 'pre-wrap';
+      const text = sel.toString();
+      const wordRe = /(\S+)(\s*)/g; let m;
+      wordRe.lastIndex = 0;
+      while ((m = wordRe.exec(text)) !== null) {
+        const sp = document.createElement('span');
+        sp.textContent = (m[1] || '') + (m[2] || '');
+        sp.classList.add('readeasy-word');
+        wrapper.appendChild(sp);
+        highlightSpans.push(sp);
+      }
+      range.deleteContents();
+      range.insertNode(wrapper);
+      selectionRestore = { wrapperSelector: `[data-readeasy-selection="${uid}"]`, originalHtml: originalHtml };
+      highlightIndex = 0;
+      buildCumLengths();
+      safeLog('prepareSpansForHighlighting selected mode', highlightSpans.length, 'spans');
+      return { mode: 'selection' };
+    } catch (err) {
+      safeLog('prepareSpans: selection-mode failed, continuing to page-mode', err);
+      selectionRestore = null;
+      highlightSpans = [];
+    }
+  }
+
+  const main = getMainNode();
+  if (!main) { safeLog('prepareSpans: no main node'); return { mode: 'none' }; }
+
+  const textForCount = (main.innerText || '').trim().slice(0, 200000);
+  const approxWordCount = (textForCount.match(/\S+/g) || []).length;
+  safeLog('prepareSpans approxWordCount:', approxWordCount);
+
+  if (approxWordCount > MAX_SPANS_BEFORE_OVERLAY) {
+    const snippet = fullText.length > MAX_OVERLAY_CHARS ? fullText.slice(0, MAX_OVERLAY_CHARS) : fullText;
+    const ov = createReaderOverlay(snippet);
+    const container = ov.querySelector('#readeasy-reader-inner');
+    highlightSpans = Array.from(container.querySelectorAll('span'));
+    overlayTextSplice = snippet;
+    overlayActive = true;
+    highlightIndex = 0;
+    buildCumLengths();
+    safeLog('prepareSpans falling back to overlay with spans:', highlightSpans.length);
+    return { mode: 'overlay', overlayText: snippet };
+  }
+
+  // Walk text nodes
+  const walker = document.createTreeWalker(main, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      if (!node.nodeValue || !node.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
+      const parentTag = node.parentNode && node.parentNode.tagName && node.parentNode.tagName.toLowerCase();
+      if (['script','style','noscript','textarea','code','pre','input'].includes(parentTag)) return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    }
+  }, false);
+
+  const textNodes = [];
+  let node;
+  while ((node = walker.nextNode())) textNodes.push(node);
+  safeLog('prepareSpans found textNodes count', textNodes.length);
+  if (!textNodes.length) return { mode: 'none' };
+
+  const wordRe = /(\S+)(\s*)/g;
+  let totalSpans = 0;
+  for (const tnode of textNodes) {
+    const txt = tnode.nodeValue;
+    const frag = document.createDocumentFragment();
+    let m; wordRe.lastIndex = 0; let matched = false;
+    while ((m = wordRe.exec(txt)) !== null) {
+      matched = true;
+      const span = document.createElement('span');
+      span.textContent = (m[1] || '') + (m[2] || '');
+      span.classList.add('readeasy-word');
+      frag.appendChild(span);
+      highlightSpans.push(span);
+      totalSpans++;
+      if (totalSpans > MAX_SPANS_BEFORE_OVERLAY) break;
+    }
+    if (matched && frag.childNodes.length) {
+      try { tnode.parentNode.replaceChild(frag, tnode); } catch (e) { safeLog('replace failed', e); }
+    }
+    if (totalSpans > MAX_SPANS_BEFORE_OVERLAY) break;
+  }
+
+  safeLog('prepareSpans in-place totalSpans', totalSpans);
+
+  if (totalSpans > MAX_SPANS_BEFORE_OVERLAY) {
+    // undo and fallback to overlay
+    try { highlightSpans.forEach(s => { if (s && s.parentNode) s.parentNode.replaceChild(document.createTextNode(s.textContent), s); }); } catch(e){ safeLog('undo replace error', e); }
+    highlightSpans = [];
+    const snippet = fullText.length > MAX_OVERLAY_CHARS ? fullText.slice(0, MAX_OVERLAY_CHARS) : fullText;
+    const ov = createReaderOverlay(snippet);
+    const container = ov.querySelector('#readeasy-reader-inner');
+    highlightSpans = Array.from(container.querySelectorAll('span'));
+    overlayTextSplice = snippet;
+    overlayActive = true;
+    highlightIndex = 0;
+    buildCumLengths();
+    safeLog('prepareSpans fallback overlay after too many spans, overlay spans:', highlightSpans.length);
+    return { mode: 'overlay', overlayText: snippet };
+  }
+
+  highlightIndex = 0;
+  buildCumLengths();
+  safeLog('prepareSpans prepared inplace spans count:', highlightSpans.length);
+  return { mode: 'inplace' };
+}
   // --- Utterance attach handlers (use sendState instead of spamming messages)
   function attachUtterHandlers(utter) {
     try {
