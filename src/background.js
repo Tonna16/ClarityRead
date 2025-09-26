@@ -1,4 +1,5 @@
 // src/background.js - improved tab selection + injection/fallback handling (hardened)
+// + merged message handlers, better logging, surface CSS insert info, sessions heuristic
 (() => {
   'use strict';
 
@@ -55,7 +56,7 @@
   }
 
   // Try sending a message to a tab; if there's no receiver, try to inject the content script then retry.
-  // Resolves with structured result { ok: boolean, response?, error?, detail?, permissionPattern? }
+  // Resolves with structured result { ok: boolean, response?, error?, detail?, permissionPattern?, cssError? }
   async function sendMessageToTabWithInjection(tabId, message) {
     safeLog('sendMessageToTabWithInjection called', { tabId, action: message && message.action, hintedTarget: message && message._targetTabId });
     return new Promise((resolve) => {
@@ -68,9 +69,10 @@
 
       try {
         // initial quick send
+        safeLog('attempting direct sendMessage', { tabId, action: message && message.action });
         chrome.tabs.sendMessage(tabId, message, (response) => {
           if (!chrome.runtime.lastError) {
-            safeLog('sendMessage direct succeeded', { tabId, action: message && message.action });
+            safeLog('sendMessage direct succeeded', { tabId, action: message && message.action, response });
             return finish({ ok: true, response });
           }
 
@@ -78,12 +80,14 @@
           const errMsg = (chrome.runtime.lastError && chrome.runtime.lastError.message) ? String(chrome.runtime.lastError.message) : 'unknown';
           safeWarn('initial sendMessage error', errMsg);
 
-          // get tab info before trying to inject
+          // get tab info before trying to inject (log url for debugging)
           chrome.tabs.get(tabId, (tab) => {
             if (chrome.runtime.lastError || !tab) {
               safeWarn('chrome.tabs.get failed for', tabId, chrome.runtime.lastError);
               return finish({ ok: false, error: 'invalid-tab', detail: chrome.runtime.lastError ? chrome.runtime.lastError.message : 'no-tab' });
             }
+
+            safeLog('target tab info', { id: tab.id, url: tab.url, discarded: !!tab.discarded, active: !!tab.active, status: tab.status });
 
             if (!tab.url || !isWebUrl(tab.url)) {
               safeInfo('tab url unsupported for injection', tab.url);
@@ -97,9 +101,11 @@
 
             const jsFile = 'src/contentScript.js';
             const cssFile = 'src/inject.css';
+            let cssErrorMsg = null;
 
             // Attempt to inject the content script (manifest declared)
             try {
+              safeLog('attempting scripting.executeScript', { tabId, jsFile });
               chrome.scripting.executeScript({ target: { tabId }, files: [jsFile] }, (injectionResults) => {
                 if (chrome.runtime.lastError) {
                   const lower = (chrome.runtime.lastError.message || '').toLowerCase();
@@ -116,15 +122,17 @@
 
                 safeLog('executeScript injectionResults', Array.isArray(injectionResults) ? injectionResults.length : typeof injectionResults);
 
-                // best-effort CSS insertion (non-fatal)
+                // best-effort CSS insertion (non-fatal) — capture error message to surface alongside success
                 chrome.scripting.insertCSS({ target: { tabId }, files: [cssFile] }, (cssRes) => {
                   if (chrome.runtime.lastError) {
-                    safeWarn('insertCSS failed', chrome.runtime.lastError.message);
+                    cssErrorMsg = String(chrome.runtime.lastError.message || chrome.runtime.lastError);
+                    safeWarn('insertCSS failed', cssErrorMsg);
                   } else {
                     safeLog('insertCSS succeeded');
                   }
 
-                  // Now attempt to message again
+                  // Now attempt to message again (content script should be present now)
+                  safeLog('attempting sendMessage after injection', { tabId, action: message && message.action });
                   chrome.tabs.sendMessage(tabId, message, (resp2) => {
                     if (chrome.runtime.lastError) {
                       const msg2 = (chrome.runtime.lastError.message || '').toLowerCase();
@@ -135,8 +143,9 @@
                       }
                       return finish({ ok: false, error: 'no-receiver-after-inject', detail: chrome.runtime.lastError.message });
                     }
-                    safeLog('sendMessage after inject succeeded');
-                    return finish({ ok: true, response: resp2 });
+                    safeLog('sendMessage after inject succeeded', { tabId, action: message && message.action, resp2, cssError: !!cssErrorMsg });
+                    // include cssError message as non-fatal metadata to help debugging
+                    return finish({ ok: true, response: resp2, cssError: cssErrorMsg || null });
                   });
                 });
               });
@@ -237,7 +246,9 @@
       const stats = res && res.stats ? res.stats : { totalPagesRead: 0, totalTimeReadSec: 0, sessions: 0, daily: [] };
       stats.totalPagesRead = (stats.totalPagesRead || 0) + (addPages || 0);
       stats.totalTimeReadSec = (stats.totalTimeReadSec || 0) + (addSeconds || 0);
-      if (addPages > 0) stats.sessions = (stats.sessions || 0) + 1;
+
+      // sessions: increment for page reads OR long time-based reads (>=60s)
+      if (addPages > 0 || (addSeconds && addSeconds >= 60)) stats.sessions = (stats.sessions || 0) + 1;
 
       stats.daily = Array.isArray(stats.daily) ? stats.daily : [];
 
@@ -268,7 +279,7 @@
     });
   }
 
-  // message handler - forwards UI actions to a sensible web tab
+  // single message handler: forwards UI actions to a sensible web tab and handles internal requests
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // Always return true so we can send async responses.
     let responded = false;
@@ -279,6 +290,12 @@
     };
 
     try {
+      // internal-only request for host permission helper
+      if (msg && msg.__internal === 'requestHostPermission' && msg.url) {
+        requestHostPermissionForUrl(msg.url).then((r) => respondOnce(r)).catch((e) => respondOnce({ ok: false, error: String(e) }));
+        return true;
+      }
+
       if (!msg || !msg.action) {
         respondOnce({ ok: false, error: 'missing-action' });
         return true;
@@ -327,12 +344,15 @@
         case 'getSelection': {
           (async () => {
             try {
+              safeLog('forwarding action', msg.action, { hintedTarget: msg._targetTabId, senderTab: sender && sender.tab && sender.tab.id });
+
               // If popup gave a _targetTabId/_targetTabUrl, only honor it if it points to a web URL.
               if (msg && msg._targetTabId) {
                 try {
                   const targetId = Number(msg._targetTabId);
                   if (Number.isFinite(targetId)) {
                     const tabObj = await new Promise((resolve) => chrome.tabs.get(targetId, resolve));
+                    safeLog('validated hinted target', { targetId, tabObj: tabObj && { id: tabObj.id, url: tabObj.url } });
                     if (!chrome.runtime.lastError && tabObj && isWebUrl(tabObj.url || '')) {
                       const res = await sendMessageToTabWithInjection(targetId, msg);
                       respondOnce(res);
@@ -348,12 +368,13 @@
 
               // If message originated from a content script in a web tab, use that tab
               if (sender && sender.tab && sender.tab.id && isWebUrl(sender.tab.url || '')) {
+                safeLog('using sender.tab as target', { id: sender.tab.id, url: sender.tab.url });
                 const res = await sendMessageToTabWithInjection(sender.tab.id, msg);
                 respondOnce(res);
                 return;
               }
 
-              // Prefer a focused normal window's active web tab
+              // Prefer a focused normal window's active web tab, then other discovery strategies
               const allWins = await new Promise(resolve => chrome.windows.getAll({ populate: true }, resolve));
               if (Array.isArray(allWins)) {
                 // 1) Focused normal window -> active web tab
@@ -361,6 +382,7 @@
                 if (focusedNormalWin) {
                   const tab = (focusedNormalWin.tabs || []).find(t => t && t.active && isWebUrl(t.url));
                   if (tab && tab.id) {
+                    safeLog('using focused normal window active tab', { id: tab.id, url: tab.url });
                     const res = await sendMessageToTabWithInjection(tab.id, msg);
                     respondOnce(res);
                     return;
@@ -372,6 +394,7 @@
                   if (w && w.type === 'normal' && Array.isArray(w.tabs)) {
                     const t = (w.tabs || []).find(tt => tt && tt.active && isWebUrl(tt.url));
                     if (t && t.id) {
+                      safeLog('using any normal window active tab', { id: t.id, url: t.url });
                       const res = await sendMessageToTabWithInjection(t.id, msg);
                       respondOnce(res);
                       return;
@@ -383,6 +406,7 @@
                 for (const w of allWins) {
                   for (const t of (w.tabs || [])) {
                     if (t && isWebUrl(t.url)) {
+                      safeLog('using first available web tab fallback', { id: t.id, url: t.url });
                       const res = await sendMessageToTabWithInjection(t.id, msg);
                       respondOnce(res);
                       return;
@@ -394,6 +418,7 @@
               // 4) Last-resort: active tab in lastFocusedWindow (legacy fallback)
               const activeTabs = await new Promise((resolve) => chrome.tabs.query({ active: true, lastFocusedWindow: true }, resolve));
               if (activeTabs && activeTabs[0] && isWebUrl(activeTabs[0].url || '')) {
+                safeLog('using active tab in lastFocusedWindow fallback', { id: activeTabs[0].id, url: activeTabs[0].url });
                 const res = await sendMessageToTabWithInjection(activeTabs[0].id, msg);
                 respondOnce(res);
                 return;
@@ -416,14 +441,6 @@
     } catch (outerErr) {
       safeWarn('onMessage outer catch', outerErr);
       respondOnce({ ok: false, error: String(outerErr) });
-      return true;
-    }
-  });
-
-  // expose requestHostPermissionForUrl to popup via runtime (optional)
-  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-    if (msg && msg.__internal === 'requestHostPermission' && msg.url) {
-      requestHostPermissionForUrl(msg.url).then((r) => sendResponse(r)).catch((e) => sendResponse({ ok: false, error: String(e) }));
       return true;
     }
   });
