@@ -59,10 +59,6 @@
     return String(s).replace(/\s+/g, ' ').trim();
   }
 
-  // (font injection, getMainNode, overlay, highlight functions remain identical to your version)
-  // For brevity keep most helpers unchanged except we will call sendState instead of
-  // directly chrome.runtime.sendMessage in places that previously spammed.
-
   // --- Font injection for OpenDyslexic
   function ensureDysFontInjected() {
     if (document.getElementById(DYS_STYLE_ID)) return;
@@ -215,7 +211,7 @@
     safeLog('removeReaderOverlay executed');
   }
 
-  // --- Highlight management (keep logic but avoid sending runtime messages here)
+  // --- Highlight management
   function clearHighlights() {
     if (fallbackTicker) { clearInterval(fallbackTicker); fallbackTicker = null; fallbackTickerRunning = false; }
 
@@ -296,10 +292,131 @@
     if (cur) try { cur.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) {}
   }
 
-  // prepareSpansForHighlighting kept as before (no changes to core algorithm), omitted here for brevity.
-  // (include exact implementation from your prior script in your copy)
+  // Prepare spans: selection-first, then treewalk; fallback to overlay if too many spans
+  function prepareSpansForHighlighting(fullText) {
+    clearHighlights();
+    safeLog('prepareSpansForHighlighting called, approx text length:', (fullText || '').length);
 
-  // --- Utterance attach handlers (use sendState instead of spamming messages)
+    // selection mode
+    let sel = null;
+    try { sel = window.getSelection(); } catch(e){ sel = null; }
+    if (sel && sel.rangeCount && sel.toString().trim().length > 0) {
+      try {
+        const range = sel.getRangeAt(0);
+        const cloned = range.cloneContents();
+        const tmp = document.createElement('div'); tmp.appendChild(cloned);
+        const originalHtml = tmp.innerHTML;
+        const wrapper = document.createElement('span');
+        const uid = 'readeasy-selection-' + Date.now() + '-' + Math.floor(Math.random()*1000);
+        wrapper.setAttribute('data-readeasy-selection', uid);
+        wrapper.style.whiteSpace = 'pre-wrap';
+        const text = sel.toString();
+        const wordRe = /(\S+)(\s*)/g; let m;
+        wordRe.lastIndex = 0;
+        while ((m = wordRe.exec(text)) !== null) {
+          const sp = document.createElement('span');
+          sp.textContent = (m[1] || '') + (m[2] || '');
+          sp.classList.add('readeasy-word');
+          wrapper.appendChild(sp);
+          highlightSpans.push(sp);
+        }
+        range.deleteContents();
+        range.insertNode(wrapper);
+        selectionRestore = { wrapperSelector: `[data-readeasy-selection="${uid}"]`, originalHtml: originalHtml };
+        highlightIndex = 0;
+        buildCumLengths();
+        safeLog('prepareSpansForHighlighting selected mode', highlightSpans.length, 'spans');
+        return { mode: 'selection' };
+      } catch (err) {
+        safeLog('prepareSpans: selection-mode failed, continuing to page-mode', err);
+        selectionRestore = null;
+        highlightSpans = [];
+      }
+    }
+
+    const main = getMainNode();
+    if (!main) { safeLog('prepareSpans: no main node'); return { mode: 'none' }; }
+
+    const textForCount = (main.innerText || '').trim().slice(0, 200000);
+    const approxWordCount = (textForCount.match(/\S+/g) || []).length;
+    safeLog('prepareSpans approxWordCount:', approxWordCount);
+
+    if (approxWordCount > MAX_SPANS_BEFORE_OVERLAY) {
+      const snippet = fullText.length > MAX_OVERLAY_CHARS ? fullText.slice(0, MAX_OVERLAY_CHARS) : fullText;
+      const ov = createReaderOverlay(snippet);
+      const container = ov.querySelector('#readeasy-reader-inner');
+      highlightSpans = Array.from(container.querySelectorAll('span'));
+      overlayTextSplice = snippet;
+      overlayActive = true;
+      highlightIndex = 0;
+      buildCumLengths();
+      safeLog('prepareSpansForHighlighting falling back to overlay with spans:', highlightSpans.length);
+      return { mode: 'overlay', overlayText: snippet };
+    }
+
+    // Walk text nodes
+    const walker = document.createTreeWalker(main, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        if (!node.nodeValue || !node.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
+        const parentTag = node.parentNode && node.parentNode.tagName && node.parentNode.tagName.toLowerCase();
+        if (['script','style','noscript','textarea','code','pre','input'].includes(parentTag)) return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    }, false);
+
+    const textNodes = [];
+    let node;
+    while ((node = walker.nextNode())) textNodes.push(node);
+    safeLog('prepareSpans found textNodes count', textNodes.length);
+    if (!textNodes.length) return { mode: 'none' };
+
+    const wordRe = /(\S+)(\s*)/g;
+    let totalSpans = 0;
+    for (const tnode of textNodes) {
+      const txt = tnode.nodeValue;
+      const frag = document.createDocumentFragment();
+      let m; wordRe.lastIndex = 0; let matched = false;
+      while ((m = wordRe.exec(txt)) !== null) {
+        matched = true;
+        const span = document.createElement('span');
+        span.textContent = (m[1] || '') + (m[2] || '');
+        span.classList.add('readeasy-word');
+        frag.appendChild(span);
+        highlightSpans.push(span);
+        totalSpans++;
+        if (totalSpans > MAX_SPANS_BEFORE_OVERLAY) break;
+      }
+      if (matched && frag.childNodes.length) {
+        try { tnode.parentNode.replaceChild(frag, tnode); } catch (e) { safeLog('replace failed', e); }
+      }
+      if (totalSpans > MAX_SPANS_BEFORE_OVERLAY) break;
+    }
+
+    safeLog('prepareSpans in-place totalSpans', totalSpans);
+
+    if (totalSpans > MAX_SPANS_BEFORE_OVERLAY) {
+      // undo and fallback to overlay
+      try { highlightSpans.forEach(s => { if (s && s.parentNode) s.parentNode.replaceChild(document.createTextNode(s.textContent), s); }); } catch(e){ safeLog('undo replace error', e); }
+      highlightSpans = [];
+      const snippet = fullText.length > MAX_OVERLAY_CHARS ? fullText.slice(0, MAX_OVERLAY_CHARS) : fullText;
+      const ov = createReaderOverlay(snippet);
+      const container = ov.querySelector('#readeasy-reader-inner');
+      highlightSpans = Array.from(container.querySelectorAll('span'));
+      overlayTextSplice = snippet;
+      overlayActive = true;
+      highlightIndex = 0;
+      buildCumLengths();
+      safeLog('prepareSpans fallback overlay after too many spans, overlay spans:', highlightSpans.length);
+      return { mode: 'overlay', overlayText: snippet };
+    }
+
+    highlightIndex = 0;
+    buildCumLengths();
+    safeLog('prepareSpans prepared inplace spans count:', highlightSpans.length);
+    return { mode: 'inplace' };
+  }
+
+  // --- Utterance attach handlers
   function attachUtterHandlers(utter) {
     try {
       utter.onstart = () => {
@@ -307,12 +424,12 @@
         errorFallbackAttempted = false;
         safeLog('utter.onstart for chunk length', (utter.text || '').length);
 
-        // fallback highlighting ticker
+        // --- Fallback highlighting (if onboundary doesn't fire)
         if (!fallbackTickerRunning && highlightSpans.length) {
           let wordCount = (utter.text.match(/\S+/g) || []).length;
           if (wordCount > 0) {
-            let estDuration = (utter.text.length / 10) / (utter.rate || 1);
-            let interval = Math.max(120, estDuration * 1000 / wordCount);
+            let estDuration = (utter.text.length / 10) / (utter.rate || 1); // crude duration estimate
+            let interval = Math.max(120, estDuration * 1000 / wordCount);   // ms per word
             let i = 0;
             fallbackTicker = setInterval(() => {
               if (i < highlightSpans.length) {
@@ -331,7 +448,7 @@
         sendState('Reading...');
       };
 
-      // onboundary: map charIndex to absolute index using _chunkBase
+      // IMPORTANT: map charIndex from utter to global index by using utter._chunkBase
       utter.onboundary = (e) => {
         if (!e || typeof e.charIndex !== 'number') return;
         if (fallbackTicker) { clearInterval(fallbackTicker); fallbackTicker = null; fallbackTickerRunning = false; }
@@ -342,7 +459,6 @@
       };
     } catch (ex) { safeLog('onboundary attach failed', ex); }
 
-    // use local sendState to avoid duplicates from multiple utterances
     utter.onpause = () => {
       sendState('Paused');
       safeLog('utter.onpause');
@@ -354,7 +470,7 @@
 
     utter.onerror = (errEvent) => {
       safeLog('utter.onerror', errEvent);
-      // attempt fallback once
+      // attempt a single fallback: lower rate and retry without highlighting
       if (!errorFallbackAttempted) {
         errorFallbackAttempted = true;
         try { window.speechSynthesis.cancel(); } catch(e){}
@@ -378,7 +494,7 @@
     };
   }
 
-  // --- Stats timer helpers (unchanged but ensure sendState used to signal stopped)
+  // --- Stats timer
   function startAutoStatsTimer() {
     if (readTimer) clearInterval(readTimer);
     pendingSecondsForSend = 0;
@@ -413,7 +529,7 @@
     }
   }
 
-  // --- Speech: robust speakText() with auto-chunking (improved guards)
+  // --- Speech: robust speakText() with auto-chunking
   function speakText(fullText, { voiceName, rate = 1, pitch = 1, highlight = false } = {}) {
     safeLog('speakText called len=', (fullText || '').length, { voiceName, rate, pitch, highlight });
     if (!('speechSynthesis' in window)) {
@@ -428,15 +544,14 @@
     rate = clamp(rate, 0.5, 1.6);
     pitch = clamp(pitch, 0.5, 2);
 
-    // Cancel any prior speak to avoid race where stop→start toggles incorrectly
+    // start fresh
     try { window.speechSynthesis.cancel(); } catch(e){}
     clearHighlights();
     errorFallbackAttempted = false;
 
-    // prepare highlighting if requested (use existing implementation)
+    // prepare highlighting if requested
     let utterText = fullText;
     if (highlight) {
-      // call your prepareSpansForHighlighting implementation here (identical to previous)
       try {
         const prep = prepareSpansForHighlighting(fullText);
         safeLog('speakText prepareSpans result', prep);
@@ -450,6 +565,7 @@
       } catch (e) { safeLog('prepareSpans call failed', e); highlight = false; }
     }
 
+    // split into safe chunks (~1800 chars each)
     const CHUNK_SIZE = 1800;
     const chunks = [];
     let pos = 0;
@@ -457,6 +573,7 @@
       chunks.push(utterText.slice(pos, pos + CHUNK_SIZE));
       pos += CHUNK_SIZE;
     }
+
     safeLog('speakText created chunks', chunks.length);
 
     const voices = window.speechSynthesis.getVoices() || [];
@@ -474,7 +591,7 @@
     startAutoStatsTimer();
 
     let chunkIndex = 0;
-    let charsSpokenBefore = 0;
+    let charsSpokenBefore = 0; // absolute char offset of the next chunk
 
     function speakNext() {
       if (chunkIndex >= chunks.length) {
@@ -487,20 +604,25 @@
       }
       const text = chunks[chunkIndex++];
       const utter = new SpeechSynthesisUtterance(text);
+      // set chunk base BEFORE speaking so onboundary uses correct absolute index
       utter._chunkBase = charsSpokenBefore;
+      // increment for next chunk
       charsSpokenBefore += text.length;
 
       if (chosen) utter.voice = chosen;
+      // map UI rate to a safer actual rate, then clamp
       utter.rate = clamp((Number(rate) || 1) * RATE_SCALE, 0.5, 1.6);
       utter.pitch = pitch;
       currentUtterance = utter;
 
       attachUtterHandlers(utter);
 
+      // onend -> next chunk (keep sequencing logic local to speakText)
       utter.onend = () => {
         setTimeout(() => speakNext(), 50);
       };
       utter.onerror = (err) => {
+        // treat interrupt as benign and continue to next chunk
         let m = '';
         try { m = (err && (err.error || err.message)) ? String(err.error || err.message) : String(err); } catch(e) { m = String(err); }
         if (m && /interrupt/i.test(m)) {
@@ -526,7 +648,7 @@
     speakNext();
   }
 
-  // --- Speed-read (uses sendState)
+  // --- Speed-read: chunked sequential speaking
   let speedChunks = null;
   let speedIndex = 0;
   let speedActive = false;
@@ -557,7 +679,6 @@
       if (chosen) u.voice = chosen;
       u.rate = clamp(rate * RATE_SCALE, 0.5, 1.6);
       u.pitch = 1;
-
       u.onend = () => {
         sendState('Reading...');
         setTimeout(() => speakNext(), Math.max(60, Math.round(200 / Math.max(0.1, u.rate))));
@@ -611,7 +732,7 @@
   }
   function stopSpeedRead() { speedActive = false; speedChunks = null; speedIndex = 0; try { window.speechSynthesis.cancel(); } catch(e){} finalizeStatsAndSend(); sendState('Not Reading'); safeLog('stopSpeedRead called'); }
 
-  // --- Pause / resume / stop (use speechSynthesis state and sendState)
+  // --- Pause / resume / stop
   function pauseReading() {
     try {
       if (window.speechSynthesis && window.speechSynthesis.speaking && !window.speechSynthesis.paused) {
