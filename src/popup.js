@@ -12,12 +12,9 @@ document.addEventListener('DOMContentLoaded', () => {
       if (typeof callback === 'function') callback();
       return;
     }
-    // Use runtime URL to support any packaging layout. Adjust path to where chart file actually lives.
     const src = chrome.runtime.getURL('src/lib/chart.umd.min.js');
-    // avoid double-inject
     if (document.querySelector('script[data-clarity-chart]')) {
       safeLog('chart script already injected, waiting briefly for global');
-      // wait a tick for global to appear
       setTimeout(() => { if (typeof callback === 'function') callback(); }, 200);
       return;
     }
@@ -108,6 +105,8 @@ document.addEventListener('DOMContentLoaded', () => {
   let chart = null;
   let chartResizeObserver = null;
   let settingsDebounce = null;
+  let opLock = false;            // prevent concurrent sends
+  let lastStatus = null;        // dedupe repeated identical status updates
 
   function formatTime(sec) {
     sec = Math.max(0, Math.round(sec || 0));
@@ -135,79 +134,149 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-async function sendMessageToActiveTabWithInject(message, _retry = 0) {
-  return new Promise((resolve) => {
-    chrome.tabs.query({ active: true, lastFocusedWindow: true }, async (tabs) => {
-      const tab = tabs && tabs[0];
-      // If active tab is a chrome-extension:// or other non-web page (eg. the popup window),
-      // try to find a real web tab to target instead of using the popup's own tab.
-      if (tab && tab.url && tab.url.startsWith('chrome-extension://')) {
-        console.info('Popup helper: active tab is extension page — searching for a web tab to target');
-        try {
-          const allTabs = await new Promise(r => chrome.tabs.query({}, r));
-          const webTab = (allTabs || []).find(t => t && t.url && !t.url.startsWith('chrome-extension://') && !t.url.startsWith('chrome://') && !t.url.startsWith('about:') && !t.discarded);
-          if (webTab) {
-            message._targetTabId = webTab.id;
-            message._targetTabUrl = webTab.url;
-            console.info('Popup helper: selected web tab', webTab.id, webTab.url);
-          } else {
-            // no web tab found — don't set _targetTabId so background will attempt discovery
-            console.info('Popup helper: no web tab found; letting background discover');
-            delete message._targetTabId;
-            delete message._targetTabUrl;
-          }
-        } catch (e) {
-          console.warn('Popup helper: error while searching all tabs', e);
-          delete message._targetTabId;
-          delete message._targetTabUrl;
+  function isWebUrl(u = '') {
+    if (!u) return false;
+    const s = String(u).toLowerCase();
+    return !/^(chrome:\/\/|about:|chrome-extension:\/\/|edge:\/\/|file:\/\/|view-source:|moz-extension:\/\/)/.test(s);
+  }
+
+  // find best candidate web tab (prefer focused normal window active tab)
+  function findBestWebTab() {
+    return new Promise((resolve) => {
+      chrome.windows.getAll({ populate: true }, (wins) => {
+        if (chrome.runtime.lastError || !wins) return resolve(null);
+        // 1) focused normal window's active web tab
+        const focusedWin = wins.find(w => w.focused && w.type === 'normal' && Array.isArray(w.tabs));
+        if (focusedWin) {
+          const tab = focusedWin.tabs.find(t => t.active && isWebUrl(t.url));
+          if (tab) return resolve(tab);
         }
-      } else if (tab && tab.id && tab.url) {
-        // Normal case: active tab is a web page
-        message._targetTabId = tab.id;
-        message._targetTabUrl = tab.url;
-      }
-
-      try {
-        chrome.runtime.sendMessage(message, async (res) => {
-          if (chrome.runtime.lastError) {
-            console.warn('popup > background send error:', chrome.runtime.lastError.message);
-            return resolve({ ok: false, error: chrome.runtime.lastError.message });
+        // 2) any normal window's active web tab
+        for (const w of wins) {
+          if (w.type === 'normal' && Array.isArray(w.tabs)) {
+            const tab = w.tabs.find(t => t.active && isWebUrl(t.url));
+            if (tab) return resolve(tab);
           }
-          if (!res) return resolve({ ok: false, error: 'no-response' });
-
-          // background requests host permission -> prompt user once (same flow as before)
-          if (res && res.ok === false && res.error === 'no-host-permission' && _retry < 1) {
-            const pattern = res.permissionPattern || (message._targetTabUrl ? buildOriginPermissionPattern(message._targetTabUrl) : null);
-            const friendlyHost = pattern ? (pattern.replace('/*','')) : (message._targetTabUrl || 'this site');
-            try {
-              const want = confirm(`ClarityRead needs permission to access ${friendlyHost} to operate on that page. Grant access for this site?`);
-              if (!want) return resolve(res);
-              chrome.permissions.request({ origins: [pattern] }, (granted) => {
-                if (chrome.runtime.lastError) {
-                  console.warn('permissions.request error', chrome.runtime.lastError);
-                  return resolve({ ok: false, error: 'permission-request-failed', detail: chrome.runtime.lastError.message });
-                }
-                if (!granted) return resolve({ ok: false, error: 'permission-denied' });
-                setTimeout(() => {
-                  sendMessageToActiveTabWithInject(message, _retry + 1).then(resolve).catch((e) => resolve({ ok: false, error: String(e) }));
-                }, 250);
-              });
-            } catch (e) {
-              console.warn('permission flow threw', e);
-              return resolve({ ok: false, error: 'permission-flow-exception', detail: String(e) });
-            }
-            return;
+        }
+        // 3) fallback: first web tab anywhere
+        for (const w of wins) {
+          if (!Array.isArray(w.tabs)) continue;
+          for (const t of w.tabs) {
+            if (t && isWebUrl(t.url)) return resolve(t);
           }
-
-          return resolve(res);
-        });
-      } catch (ex) {
-        console.error('popup send wrapper threw', ex);
-        return resolve({ ok: false, error: String(ex) });
-      }
+        }
+        resolve(null);
+      });
     });
-  });
-}
+  }
+
+  // Robust send helper - popup -> background forward wrapper
+  // Attaches _targetTabId/_targetTabUrl (only if we can reliably determine a web tab).
+  // If active tab is an extension/internal page, we try to find a real web tab via findBestWebTab().
+  async function sendMessageToActiveTabWithInject(message, _retry = 0) {
+    // prevent concurrent operations to avoid racey state updates
+    if (opLock) {
+      safeLog('sendMessageToActiveTabWithInject blocked: opLock active');
+      return { ok: false, error: 'in-flight' };
+    }
+    opLock = true;
+    try {
+      return await new Promise((resolve) => {
+        chrome.tabs.query({ active: true, lastFocusedWindow: true }, async (tabs) => {
+          const tab = tabs && tabs[0];
+          // If active tab is an extension or otherwise non-web, try to find a "best" web tab.
+          if (tab && tab.url && tab.url.startsWith('chrome-extension://')) {
+            safeLog('Popup helper: active tab is extension page — looking for best web tab');
+            try {
+              const webTab = await findBestWebTab();
+              if (webTab) {
+                message._targetTabId = webTab.id;
+                message._targetTabUrl = webTab.url;
+                safeLog('Popup helper: selected best web tab', webTab.id, webTab.url);
+              } else {
+                safeLog('Popup helper: no web tab found; leaving target to background discovery');
+                delete message._targetTabId;
+                delete message._targetTabUrl;
+              }
+            } catch (e) {
+              safeLog('Popup helper: findBestWebTab error', e);
+              delete message._targetTabId;
+              delete message._targetTabUrl;
+            }
+          } else if (tab && tab.id && tab.url && isWebUrl(tab.url)) {
+            // Normal case: active tab is web page
+            message._targetTabId = tab.id;
+            message._targetTabUrl = tab.url;
+          } else if (tab && tab.id && tab.url && !isWebUrl(tab.url)) {
+            // active tab is some internal page (chrome:// or about:) — try find best web tab
+            safeLog('Popup helper: active tab is internal page, trying to find best web tab');
+            try {
+              const webTab = await findBestWebTab();
+              if (webTab) {
+                message._targetTabId = webTab.id;
+                message._targetTabUrl = webTab.url;
+                safeLog('Popup helper: selected best web tab', webTab.id, webTab.url);
+              } else {
+                delete message._targetTabId;
+                delete message._targetTabUrl;
+              }
+            } catch (e) {
+              delete message._targetTabId;
+              delete message._targetTabUrl;
+            }
+          } else {
+            // no active tab found — let background discovery handle it
+          }
+
+          try {
+            chrome.runtime.sendMessage(message, async (res) => {
+              if (chrome.runtime.lastError) {
+                safeLog('popup > background send error:', chrome.runtime.lastError && chrome.runtime.lastError.message);
+                opLock = false;
+                return resolve({ ok: false, error: chrome.runtime.lastError && chrome.runtime.lastError.message });
+              }
+              if (!res) { opLock = false; return resolve({ ok: false, error: 'no-response' }); }
+
+              // background requests host permission -> prompt user once
+              if (res && res.ok === false && res.error === 'no-host-permission' && _retry < 1) {
+                const pattern = res.permissionPattern || (message._targetTabUrl ? buildOriginPermissionPattern(message._targetTabUrl) : null);
+                const friendlyHost = pattern ? (pattern.replace('/*','')) : (message._targetTabUrl || 'this site');
+                try {
+                  const want = confirm(`ClarityRead needs permission to access ${friendlyHost} to operate on that page. Grant access for this site?`);
+                  if (!want) { opLock = false; return resolve(res); }
+                  chrome.permissions.request({ origins: [pattern] }, (granted) => {
+                    if (chrome.runtime.lastError) {
+                      safeLog('permissions.request error', chrome.runtime.lastError);
+                      opLock = false;
+                      return resolve({ ok: false, error: 'permission-request-failed', detail: chrome.runtime.lastError.message });
+                    }
+                    if (!granted) { opLock = false; return resolve({ ok: false, error: 'permission-denied' }); }
+                    setTimeout(() => {
+                      sendMessageToActiveTabWithInject(message, _retry + 1).then(r => { opLock = false; resolve(r); }).catch((e) => { opLock = false; resolve({ ok: false, error: String(e) }); });
+                    }, 250);
+                  });
+                } catch (e) {
+                  safeLog('permission flow threw', e);
+                  opLock = false;
+                  return resolve({ ok: false, error: 'permission-flow-exception', detail: String(e) });
+                }
+                return;
+              }
+
+              opLock = false;
+              return resolve(res);
+            });
+          } catch (ex) {
+            safeLog('popup send wrapper threw', ex);
+            opLock = false;
+            return resolve({ ok: false, error: String(ex) });
+          }
+        });
+      });
+    } finally {
+      opLock = false;
+    }
+  }
 
   // --- Stats / badges / chart
   function build7DaySeries(daily = []) {
@@ -445,14 +514,15 @@ async function sendMessageToActiveTabWithInject(message, _retry = 0) {
   // send settings (single applySettings message)
   function sendSettingsAndToggles(settings) {
     safeLog('sendSettingsAndToggles', settings);
-    sendMessageToActiveTabWithInject({ action: 'applySettings', ...settings })
+    return sendMessageToActiveTabWithInject({ action: 'applySettings', ...settings })
       .then((res) => {
         safeLog('applySettings response', res);
         if (!res || !res.ok) {
           console.warn('applySettings failed:', JSON.stringify(res));
         }
+        return res;
       })
-      .catch(err => { console.warn('applySettings err', err); safeLog('applySettings err', err); });
+      .catch(err => { console.warn('applySettings err', err); safeLog('applySettings err', err); return { ok:false, error: String(err) }; });
   }
 
   function gatherAndSendSettings() {
@@ -475,11 +545,17 @@ async function sendMessageToActiveTabWithInject(message, _retry = 0) {
   }
 
   function setReadingStatus(status) {
+    // dedupe identical consecutive statuses to avoid flipping UI
+    if (status === lastStatus) {
+      safeLog('setReadingStatus skipped duplicate', status);
+      return;
+    }
+    lastStatus = status;
     safeLog('setReadingStatus', status);
     if (readingStatusEl) readingStatusEl.textContent = status;
-    if (status === 'Reading...') { isReading = true; isPaused = false; if (pauseBtn) pauseBtn.textContent = 'Pause'; }
-    else if (status === 'Paused') { isReading = true; isPaused = true; if (pauseBtn) pauseBtn.textContent = 'Resume'; }
-    else { isReading = false; isPaused = false; if (pauseBtn) pauseBtn.textContent = 'Pause'; }
+    if (status === 'Reading...') { isReading = true; isPaused = false; if (pauseBtn) pauseBtn.textContent = 'Pause'; if (readBtn) readBtn.disabled = true; }
+    else if (status === 'Paused') { isReading = true; isPaused = true; if (pauseBtn) pauseBtn.textContent = 'Resume'; if (readBtn) readBtn.disabled = false; }
+    else { isReading = false; isPaused = false; if (pauseBtn) pauseBtn.textContent = 'Pause'; if (readBtn) readBtn.disabled = false; }
   }
 
   // --- Events hookup
@@ -546,48 +622,51 @@ async function sendMessageToActiveTabWithInject(message, _retry = 0) {
         const chunkSize = Number(chunkSizeInput?.value || 3);
         const rate = Number(speedRateInput?.value || settings.rate || 1);
         safeLog('starting speedRead', { chunkSize, rate });
-        sendMessageToActiveTabWithInject({ action: 'speedRead', chunkSize, rate }).then(res => {
-          safeLog('speedRead send result', res);
-          if (!res || !res.ok) {
-            console.warn('speedRead failed:', JSON.stringify(res));
-            alert('Speed-read failed (see console). Falling back to normal read.');
-            sendMessageToActiveTabWithInject({ action: 'readAloud', highlight: settings.highlight });
-            setReadingStatus('Reading...');
-          } else setReadingStatus('Reading...');
-        }).catch(err => { console.warn('speedRead err', err); safeLog('speedRead err', err); alert('Speed-read failed (see console).'); });
+        const res = await sendMessageToActiveTabWithInject({ action: 'speedRead', chunkSize, rate });
+        safeLog('speedRead send result', res);
+        if (!res || !res.ok) {
+          console.warn('speedRead failed:', JSON.stringify(res));
+          alert('Speed-read failed (see console). Falling back to normal read.');
+          await sendMessageToActiveTabWithInject({ action: 'readAloud', highlight: settings.highlight });
+          setReadingStatus('Reading...');
+        } else setReadingStatus('Reading...');
         return;
       }
 
       safeLog('sending readAloud', settings);
-      sendMessageToActiveTabWithInject({ action: 'readAloud', highlight: settings.highlight, voice: settings.voice, rate: settings.rate, pitch: settings.pitch })
-        .then(result => {
-          safeLog('readAloud send response', result);
-          if (!result || !result.ok) {
-            console.warn('readAloud send failed:', JSON.stringify(result));
-            if (result && result.error === 'no-host-permission') alert('Cannot read the current page because the extension lacks permission for this site. Click the extension icon while on the page to grant access, or allow access when prompted.');
-            else if (result && result.error === 'unsupported-page') alert('This page cannot be controlled (internal/extension page). Open the target tab and try again.');
-            else if (result && result.error === 'tab-discarded') alert('The target tab is suspended or not available. Reload the page and try again.');
-            else if (result && result.error === 'no-tab') alert('No active tab found.');
-            else alert('Failed to start reading (see console).');
-          } else setReadingStatus('Reading...');
-        }).catch(err => { console.warn('readAloud send err', err); safeLog('readAloud send err', err); alert('Failed to start reading (see console).'); });
+      const result = await sendMessageToActiveTabWithInject({ action: 'readAloud', highlight: settings.highlight, voice: settings.voice, rate: settings.rate, pitch: settings.pitch });
+      safeLog('readAloud send response', result);
+      if (!result || !result.ok) {
+        console.warn('readAloud send failed:', JSON.stringify(result));
+        if (result && result.error === 'no-host-permission') alert('Cannot read the current page because the extension lacks permission for this site. Click the extension icon while on the page to grant access, or allow access when prompted.');
+        else if (result && result.error === 'unsupported-page') alert('This page cannot be controlled (internal/extension page). Open the target tab and try again.');
+        else if (result && result.error === 'tab-discarded') alert('The target tab is suspended or not available. Reload the page and try again.');
+        else if (result && result.error === 'no-tab') alert('No active tab found.');
+        else alert('Failed to start reading (see console).');
+      } else setReadingStatus('Reading...');
     });
   });
 
-  safeOn(stopBtn, 'click', () => {
+  safeOn(stopBtn, 'click', async () => {
     safeLog('stopBtn clicked');
-    sendMessageToActiveTabWithInject({ action: 'stopReading' }).then((res) => {
-      safeLog('stopReading response', res);
-      if (!res || (!res.ok && res.error === 'unsupported-page')) alert('Stop failed: popup cannot control this page.');
-    }).catch((e) => safeLog('stopReading wrapper error', e));
+    const res = await sendMessageToActiveTabWithInject({ action: 'stopReading' });
+    safeLog('stopReading response', res);
+    if (!res || (!res.ok && res.error === 'unsupported-page')) alert('Stop failed: popup cannot control this page.');
     setReadingStatus('Not Reading');
   });
 
-  safeOn(pauseBtn, 'click', () => {
+  safeOn(pauseBtn, 'click', async () => {
     safeLog('pauseBtn clicked', { isReading, isPaused });
-    if (!isReading) { sendMessageToActiveTabWithInject({ action: 'resumeReading' }).then(()=>{}).catch((e)=>safeLog('resumeReading err', e)); setReadingStatus('Reading...'); return; }
-    if (!isPaused) { sendMessageToActiveTabWithInject({ action: 'pauseReading' }).then(()=>{}).catch((e)=>safeLog('pauseReading err', e)); setReadingStatus('Paused'); }
-    else { sendMessageToActiveTabWithInject({ action: 'resumeReading' }).then(()=>{}).catch((e)=>safeLog('resumeReading err', e)); setReadingStatus('Reading...'); }
+    if (!isReading) { alert('Nothing is currently reading.'); return; }
+    if (!isPaused) {
+      const r = await sendMessageToActiveTabWithInject({ action: 'pauseReading' });
+      safeLog('pauseReading response', r);
+      if (r && r.ok) setReadingStatus('Paused');
+    } else {
+      const r2 = await sendMessageToActiveTabWithInject({ action: 'resumeReading' });
+      safeLog('resumeReading response', r2);
+      if (r2 && r2.ok) setReadingStatus('Reading...');
+    }
   });
 
   // Focus mode button
@@ -600,7 +679,6 @@ async function sendMessageToActiveTabWithInject(message, _retry = 0) {
       else if (res && res.error === 'tab-discarded') alert('The target tab is suspended or not available. Reload the page and try again.');
       else console.warn('toggleFocusMode failed', res);
     } else {
-      // toggle UI feedback
       focusModeBtn.textContent = (res.overlayActive ? 'Close Focus' : 'Focus Mode');
       safeLog('focusModeBtn UI updated', focusModeBtn.textContent);
     }
@@ -613,13 +691,11 @@ async function sendMessageToActiveTabWithInject(message, _retry = 0) {
 
   function splitIntoSentences(text) {
     if (!text) return [];
-    // crude sentence split but works in many cases
     const sentences = text
       .replace(/\n+/g, ' ')
       .split(/(?<=[.?!])\s+(?=[A-Z0-9])/g)
       .map(s => s.trim())
       .filter(Boolean);
-    // fallback: split by periods if too few
     if (sentences.length <= 1) {
       return text.split(/(?<=\.)\s+/).map(s => s.trim()).filter(Boolean);
     }
@@ -642,30 +718,24 @@ async function sendMessageToActiveTabWithInject(message, _retry = 0) {
       const ws = (s.toLowerCase().match(/\b[^\d\W]+\b/g) || []).filter(w => !STOPWORDS.has(w));
       let sc = 0;
       for (const w of ws) sc += (wordFreq[w] || 0) / maxFreq;
-      // penalize extremely short sentences
       sc *= Math.min(1, Math.max(0.2, ws.length / 10));
       return { sentence: s, score: sc };
     });
     return scores;
   }
 
-  // summary length heuristics: up to 3 sentences or 20% of total sentences
   function summarizeText(text, maxSentences = 3) {
     if (!text || typeof text !== 'string') return '';
     const cleaned = text.replace(/\s+/g, ' ').trim();
-    if (cleaned.length < 200) return cleaned; // too short => return original
+    if (cleaned.length < 200) return cleaned;
     const sentences = splitIntoSentences(cleaned);
     if (sentences.length <= 1) return cleaned;
 
     const scores = scoreSentences(cleaned).filter(s => s.score >= 0);
-    // sort by score desc
     scores.sort((a,b) => b.score - a.score);
     const limit = Math.max(1, Math.min(maxSentences, Math.ceil(sentences.length * 0.2)));
     const chosen = scores.slice(0, limit).map(s => s.sentence);
-
-    // Restore original order
     const ordered = sentences.filter(s => chosen.includes(s));
-    // If none (rare), fall back to top scored joined
     const result = ordered.length ? ordered.join(' ') : chosen.join(' ');
     safeLog('summarizeText produced', { chosenCount: chosen.length, limit });
     return result;
@@ -673,7 +743,6 @@ async function sendMessageToActiveTabWithInject(message, _retry = 0) {
 
   // Modal UI for summaries (in-popup)
   function createSummaryModal(title = 'Summary', content = '') {
-    // remove existing
     const old = document.getElementById('clarityread-summary-modal');
     if (old) old.remove();
 
@@ -744,6 +813,7 @@ async function sendMessageToActiveTabWithInject(message, _retry = 0) {
   async function summarizeCurrentPageOrSelection() {
     safeLog('summarizeCurrentPageOrSelection start');
     try {
+      // attempt via helper (background discovery handles best target if we didn't set _targetTabId)
       const res = await sendMessageToActiveTabWithInject({ action: 'getSelection' });
       safeLog('getSelection response', res);
       let text = '';
@@ -751,12 +821,12 @@ async function sendMessageToActiveTabWithInject(message, _retry = 0) {
         text = res.response.selection.text;
         safeLog('summarize using selection text len', text.length);
       } else {
-        // fallback: try get main text via injected script
-        const tabQuery = await new Promise(resolve => chrome.tabs.query({ active: true, lastFocusedWindow: true }, resolve));
-        const tab = tabQuery && tabQuery[0];
+        // fallback: try to pick a good web tab explicitly
+        const tab = await findBestWebTab();
         safeLog('summarize fallback tab', tab && { id: tab.id, url: tab.url });
         if (!tab || !tab.id || !tab.url || tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://')) {
           alert('Cannot summarize internal/extension pages.');
+          safeLog('summarize aborted: no suitable web tab');
           return;
         }
         try {
@@ -840,7 +910,6 @@ async function sendMessageToActiveTabWithInject(message, _retry = 0) {
       if (!savedListEl) { safeLog('savedListEl missing'); return; }
       savedListEl.innerHTML = '';
 
-      // add Summarize All button if there are items
       if (list.length) {
         const topWrap = document.createElement('div');
         topWrap.style.display = 'flex';
@@ -873,18 +942,22 @@ async function sendMessageToActiveTabWithInject(message, _retry = 0) {
 
         const openBtn = document.createElement('button'); openBtn.textContent='Read';
         openBtn.addEventListener('click', () => {
-          chrome.storage.sync.set({ voice: voiceSelect?.value||'', rate: Number(rateInput?.value||1), pitch: Number(pitchInput?.value||1) }, () => {
+          chrome.storage.sync.set({ voice: voiceSelect?.value||'', rate: Number(rateInput?.value||1), pitch: Number(pitchInput?.value||1) }, async () => {
             safeLog('saved read open clicked', item.id);
-            sendMessageToActiveTabWithInject({ action:'readAloud', highlight:false, _savedText: item.text }).then(()=>setReadingStatus('Reading...')).catch((e)=>safeLog('readAloud _savedText err', e));
+            const res = await sendMessageToActiveTabWithInject({ action:'readAloud', highlight:false, _savedText: item.text });
+            if (res && res.ok) setReadingStatus('Reading...');
+            else safeLog('readAloud _savedText failed', res);
           });
         });
 
         const openSpeed = document.createElement('button'); openSpeed.textContent='Speed';
-        openSpeed.addEventListener('click', () => {
+        openSpeed.addEventListener('click', async () => {
           const chunk = Number(chunkSizeInput?.value || 3);
           const r = Number(speedRateInput?.value || 1);
           safeLog('saved read openSpeed clicked', item.id, { chunk, r });
-          sendMessageToActiveTabWithInject({ action:'speedRead', text:item.text, chunkSize:chunk, rate:r }).then(()=>setReadingStatus('Reading...')).catch((e)=>safeLog('speedRead _savedText err', e));
+          const res = await sendMessageToActiveTabWithInject({ action:'speedRead', text:item.text, chunkSize:chunk, rate:r });
+          if (res && res.ok) setReadingStatus('Reading...');
+          else safeLog('speedRead _savedText failed', res);
         });
 
         const summarizeBtn = document.createElement('button'); summarizeBtn.textContent = 'Summarize';
@@ -913,33 +986,30 @@ async function sendMessageToActiveTabWithInject(message, _retry = 0) {
       const res = await sendMessageToActiveTabWithInject({ action: 'getSelection' });
       safeLog('getSelection via helper', res);
       if (!res || !res.ok) {
-        // If permission needed, surface a helpful message
         if (res && res.error === 'no-host-permission') {
           alert('Extension lacks permission to access this site. Open the page, click the extension icon, and allow access for this site (or enable host permissions in chrome://extensions).');
           return;
         }
-        // fallback to trying direct scripting (best-effort)
-        chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
-          const tab = tabs && tabs[0];
-          if (!tab || !tab.id) { alert('No active page found.'); safeLog('saveSelection fallback: no active tab'); return; }
-          try {
-            chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => { const s = window.getSelection(); const text = s ? s.toString() : ''; return { text: text, title: document.title || '', url: location.href || '' }; } }, (results) => {
-              if (chrome.runtime.lastError) {
-                console.warn('getSelection exec failed', chrome.runtime.lastError);
-                safeLog('scripting.executeScript failed', chrome.runtime.lastError);
-                const msg = (chrome.runtime.lastError.message || '').toLowerCase();
-                if (msg.includes('must request permission') || msg.includes('cannot access contents of the page')) {
-                  alert('Extension lacks permission to access this site. Open the page, click the extension icon, and allow access for this site (or enable host permissions in chrome://extensions).');
-                } else alert('Failed to fetch selection (see console).');
-                return;
-              }
-              const result = results && results[0] && results[0].result;
-              if (!result || !result.text || !result.text.trim()) { alert('No selection found on the page.'); safeLog('scripting returned no selection'); return; }
-              const item = { id: Date.now() + '-' + Math.floor(Math.random()*1000), text: result.text, title: result.title || result.text.slice(0,80), url: result.url, ts: Date.now() };
-              chrome.storage.local.get(['savedReads'], (r) => { const arr = r.savedReads || []; arr.push(item); chrome.storage.local.set({ savedReads: arr }, () => { alert('Selection saved!'); safeLog('selection saved via scripting', item.id); renderSavedList(); }); });
-            });
-          } catch (err) { console.warn('save selection scripting failed', err); safeLog('save selection scripting failed', err); alert('Failed to fetch selection (see console).'); }
-        });
+        // fallback: try to find a good web tab and run scripting there
+        const tab = await findBestWebTab();
+        if (!tab || !tab.id) { alert('No active page found.'); safeLog('saveSelection fallback: no web tab'); return; }
+        try {
+          chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => { const s = window.getSelection(); const text = s ? s.toString() : ''; return { text: text, title: document.title || '', url: location.href || '' }; } }, (results) => {
+            if (chrome.runtime.lastError) {
+              console.warn('getSelection exec failed', chrome.runtime.lastError);
+              safeLog('scripting.executeScript failed', chrome.runtime.lastError);
+              const msg = (chrome.runtime.lastError.message || '').toLowerCase();
+              if (msg.includes('must request permission') || msg.includes('cannot access contents of the page')) {
+                alert('Extension lacks permission to access this site. Open the page, click the extension icon, and allow access for this site (or enable host permissions in chrome://extensions).');
+              } else alert('Failed to fetch selection (see console).');
+              return;
+            }
+            const result = results && results[0] && results[0].result;
+            if (!result || !result.text || !result.text.trim()) { alert('No selection found on the page.'); safeLog('scripting returned no selection'); return; }
+            const item = { id: Date.now() + '-' + Math.floor(Math.random()*1000), text: result.text, title: result.title || result.text.slice(0,80), url: result.url, ts: Date.now() };
+            chrome.storage.local.get(['savedReads'], (r) => { const arr = r.savedReads || []; arr.push(item); chrome.storage.local.set({ savedReads: arr }, () => { alert('Selection saved!'); safeLog('selection saved via scripting', item.id); renderSavedList(); }); });
+          });
+        } catch (err) { console.warn('save selection scripting failed', err); safeLog('save selection scripting failed', err); alert('Failed to fetch selection (see console).'); }
         return;
       }
 
