@@ -600,6 +600,18 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  // helper to robustly extract selection object from helper response
+  function extractSelection(res) {
+    if (!res) return null;
+    // possible shapes:
+    // 1) { ok: true, response: { selection: {...} } }    <- desired after background fix
+    // 2) { ok: true, response: { ok: true, response: { selection: {...} } } } <- older double-wrap
+    if (res.response && res.response.selection) return res.response.selection;
+    if (res.response && res.response.response && res.response.response.selection) return res.response.response.selection;
+    if (res.selection) return res.selection;
+    return null;
+  }
+
   // Read button
   safeOn(readBtn, 'click', () => {
     safeLog('readBtn clicked', { isReading, isPaused });
@@ -817,10 +829,21 @@ document.addEventListener('DOMContentLoaded', () => {
       const res = await sendMessageToActiveTabWithInject({ action: 'getSelection' });
       safeLog('getSelection response', res);
       let text = '';
-      if (res && res.ok && res.response && res.response.selection && res.response.selection.text) {
-        text = res.response.selection.text;
-        safeLog('summarize using selection text len', text.length);
-      } else {
+
+      const selectionObj = extractSelection(res);
+      if (selectionObj && selectionObj.text && selectionObj.text.trim()) {
+        // Ask the user whether to summarize selection or whole page
+        const wantSelection = confirm('Summarize selected text? Click "OK" to summarize the selection, or "Cancel" to summarize the full page.');
+        if (wantSelection) {
+          text = selectionObj.text;
+          safeLog('summarize using selection text len', text.length);
+        } else {
+          safeLog('user opted to summarize full page instead of selection');
+          text = ''; // fallthrough to page extraction below
+        }
+      }
+
+      if (!text) {
         // fallback: try to pick a good web tab explicitly
         const tab = await findBestWebTab();
         safeLog('summarize fallback tab', tab && { id: tab.id, url: tab.url });
@@ -1013,7 +1036,8 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
 
-      const selection = res.response && res.response.selection;
+      // robustly extract selection from possibly-wrapped responses
+      const selection = extractSelection(res);
       safeLog('selection from helper', selection && { textLen: selection.text && selection.text.length, title: selection.title });
       if (!selection || !selection.text || !selection.text.trim()) { alert('No selection found on the page.'); return; }
       const item = { id: Date.now() + '-' + Math.floor(Math.random()*1000), text: selection.text, title: selection.title || selection.text.slice(0,80), url: selection.url, ts: Date.now() };
