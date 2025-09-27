@@ -1201,20 +1201,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-      // robustly extract selection from possibly-wrapped responses
-      const selection = extractSelection(resRaw);
-      safeLog('selection from helper', selection && { textLen: selection.text && selection.text.length, title: selection.title });
-      if (!selection || !selection.text || !selection.text.trim()) { toast('No selection found on the page.', 'info'); saveSelectionBtn.disabled = false; return; }
-      const item = { id: Date.now() + '-' + Math.floor(Math.random()*1000), text: selection.text, title: selection.title || selection.text.slice(0,80), url: selection.url, ts: Date.now() };
-      chrome.storage.local.get(['savedReads'], (r) => { const arr = r.savedReads || []; arr.push(item); chrome.storage.local.set({ savedReads: arr }, () => { toast('Selection saved.', 'success'); safeLog('selection saved', item.id); renderSavedList(); saveSelectionBtn.disabled = false; }); });
-    } catch (e) {
-      console.warn('saveSelection flow failed', e);
-      safeLog('saveSelection exception', e);
-      toast('Failed to save selection (see console).', 'error');
-      saveSelectionBtn.disabled = false;
-    }
-  });
-
   safeOn(openSavedManagerBtn, 'click', () => { safeLog('openSavedManagerBtn clicked'); renderSavedList(); });
 
   // Generate image for sharing stats
