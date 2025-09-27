@@ -19,11 +19,22 @@ document.addEventListener('DOMContentLoaded', () => {
     c.style.gap = '8px';
     document.body.appendChild(c);
   }
+  // toast (dedupes identical messages shown in a short window)
+  let _lastToastKey = null;
+  let _lastToastTs = 0;
   function toast(msg, type = 'info', ttl = 3500) {
     try {
-      createToastContainer();
+      // simple dedupe: ignore identical toasts within 1400ms
+      const key = `${type}::${String(msg)}`;
+      const now = Date.now();
+      if (_lastToastKey === key && (now - _lastToastTs) < 1400) return;
+      _lastToastKey = key;
+      _lastToastTs = now;
+
+      if (!document.getElementById('clarityread-toast-container')) createToastContainer();
       const cont = document.getElementById('clarityread-toast-container');
       if (!cont) return;
+
       const el = document.createElement('div');
       el.className = 'clarityread-toast';
       el.textContent = msg;
@@ -35,11 +46,12 @@ document.addEventListener('DOMContentLoaded', () => {
       el.style.fontSize = '13px';
       el.style.maxWidth = '320px';
       el.style.wordBreak = 'break-word';
+      el.style.transition = 'opacity 0.25s, transform 0.25s';
       cont.appendChild(el);
-      setTimeout(() => {
-        try { el.style.opacity = '0'; el.style.transform = 'translateY(6px)'; } catch(e){}
-      }, ttl - 500);
-      setTimeout(() => { try { el.remove(); } catch(e){} }, ttl);
+
+      // auto-fade and remove
+      setTimeout(() => { try { el.style.opacity = '0'; el.style.transform = 'translateY(6px)'; } catch (e) {} }, Math.max(100, ttl - 500));
+      setTimeout(() => { try { el.remove(); } catch (e) {} }, ttl);
     } catch (e) { safeLog('toast failed', e); }
   }
 
@@ -145,6 +157,10 @@ document.addEventListener('DOMContentLoaded', () => {
   let settingsDebounce = null;
   let opLock = false;            // prevent concurrent sends
   let lastStatus = null;        // dedupe repeated identical status updates
+
+  // small guard so pause/stop are initially disabled until status known
+  if (pauseBtn) pauseBtn.disabled = true;
+  if (stopBtn) stopBtn.disabled = true;
 
   function formatTime(sec) {
     sec = Math.max(0, Math.round(sec || 0));
@@ -361,6 +377,15 @@ document.addEventListener('DOMContentLoaded', () => {
           console.warn('Chart.js not loaded — graph will be blank.');
           safeLog('Chart.js undefined, cannot render chart');
         } else {
+          // ensure canvas occupies reasonable height to avoid awkward whitespace
+          try {
+            const desiredChartHeight = 160; // tweak if you want taller/shorter
+            if (statsChartEl) {
+              statsChartEl.style.width = '100%';
+              statsChartEl.style.height = desiredChartHeight + 'px';
+            }
+          } catch (e) { safeLog('chart sizing failed', e); }
+
           chart = new Chart(ctx || statsChartEl, {
             type: 'bar',
             data: { labels: series.labels, datasets: [{ label: 'Pages Read', data: series.data, backgroundColor: '#4caf50' }] },
@@ -456,7 +481,25 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  safeOn(themeToggleBtn, 'click', () => { document.body.classList.toggle('dark-theme'); safeLog('theme toggled', document.body.classList.contains('dark-theme')); });
+  safeOn(themeToggleBtn, 'click', () => {
+    const dark = document.body.classList.toggle('dark-theme');
+    safeLog('theme toggled', dark);
+    // ensure primary controls remain visible in dark mode
+    const btns = [readBtn, pauseBtn, stopBtn, focusModeBtn, summarizePageBtn];
+    btns.forEach(b => {
+      if (!b) return;
+      if (dark) {
+        b.style.background = b.style.background || '#2f2f2f';
+        b.style.color = b.style.color || '#fff';
+        b.style.border = b.style.border || '1px solid rgba(255,255,255,0.06)';
+      } else {
+        // clear inline overrides so CSS can control appearance
+        b.style.background = '';
+        b.style.color = '';
+        b.style.border = '';
+      }
+    });
+  });
 
   // --- Per-site UI init
   function initPerSiteUI() {
@@ -606,7 +649,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function setReadingStatus(status) {
-    // dedupe identical consecutive statuses to avoid flipping UI
+    // dedupe identical consecutive statuses to avoid flipping UI unnecessarily
     if (status === lastStatus) {
       safeLog('setReadingStatus skipped duplicate', status);
       return;
@@ -614,9 +657,24 @@ document.addEventListener('DOMContentLoaded', () => {
     lastStatus = status;
     safeLog('setReadingStatus', status);
     if (readingStatusEl) readingStatusEl.textContent = status;
-    if (status === 'Reading...') { isReading = true; isPaused = false; if (pauseBtn) pauseBtn.textContent = 'Pause'; if (readBtn) readBtn.disabled = true; }
-    else if (status === 'Paused') { isReading = true; isPaused = true; if (pauseBtn) pauseBtn.textContent = 'Resume'; if (readBtn) readBtn.disabled = false; }
-    else { isReading = false; isPaused = false; if (pauseBtn) pauseBtn.textContent = 'Pause'; if (readBtn) readBtn.disabled = false; }
+
+    if (status === 'Reading...') {
+      isReading = true; isPaused = false;
+      if (pauseBtn) { pauseBtn.textContent = 'Pause'; pauseBtn.disabled = false; }
+      if (stopBtn) stopBtn.disabled = false;
+      if (readBtn) readBtn.disabled = true;
+    } else if (status === 'Paused') {
+      isReading = true; isPaused = true;
+      if (pauseBtn) { pauseBtn.textContent = 'Resume'; pauseBtn.disabled = false; }
+      if (stopBtn) stopBtn.disabled = false;
+      if (readBtn) readBtn.disabled = false;
+    } else {
+      // Not Reading / default
+      isReading = false; isPaused = false;
+      if (pauseBtn) { pauseBtn.textContent = 'Pause'; pauseBtn.disabled = true; }
+      if (stopBtn) stopBtn.disabled = true;
+      if (readBtn) readBtn.disabled = false;
+    }
   }
 
   // --- Events hookup
