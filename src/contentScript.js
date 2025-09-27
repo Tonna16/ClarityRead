@@ -245,8 +245,19 @@
   function clearHighlights() {
     if (fallbackTicker) { clearInterval(fallbackTicker); fallbackTicker = null; fallbackTickerRunning = false; }
 
-    // If we had done any in-place DOM replacements (not used in this overlay-first approach),
-    // attempt to restore them. selectionRestore is reserved for future use.
+    // If overlay is active, simply remove overlay (do not attempt to replace spans)
+    if (overlayActive) {
+      try { removeReaderOverlay(); } catch (e) { safeLog('clearHighlights remove overlay failed', e); }
+      highlightSpans = [];
+      highlightIndex = 0;
+      cumLengths = [];
+      overlayActive = false;
+      overlayTextSplice = null;
+      safeLog('clearHighlights cleared (overlay mode)');
+      return;
+    }
+
+    // Otherwise attempt to restore any in-place replacements (legacy support)
     if (selectionRestore && selectionRestore.wrapperSelector) {
       try {
         const wrapper = document.querySelector(selectionRestore.wrapperSelector);
@@ -392,16 +403,19 @@
     } catch (ex) { safeLog('onboundary attach failed', ex); }
 
     utter.onpause = () => {
-      if (sessionId && sessionId !== sessionId) {} // no-op to show pattern
+      // only act if still current session
+      try { if (mySessionId !== sessionId) return; } catch(e){}
       sendState('Paused');
       safeLog('utter.onpause');
     };
     utter.onresume = () => {
+      try { if (mySessionId !== sessionId) return; } catch(e){}
       sendState('Reading...');
       safeLog('utter.onresume');
     };
 
     utter.onerror = (errEvent) => {
+      if (mySessionId !== sessionId) { safeLog('utter.onerror ignored due to session mismatch', mySessionId, sessionId); return; }
       safeLog('utter.onerror', errEvent);
       // attempt fallback once
       if (!errorFallbackAttempted) {
@@ -550,16 +564,20 @@
       utter.pitch = pitch;
       currentUtterance = utter;
 
+      // attach handlers (start/boundary/pause/resume/error)
       attachUtterHandlers(utter, mySessionId);
 
+      // onend continues the chain only if still in same session
       utter.onend = () => {
-        // only continue if still current session
         setTimeout(() => {
           if (mySessionId !== sessionId) { safeLog('onend not continuing due session mismatch', mySessionId, sessionId); return; }
           speakNext();
         }, 50);
       };
+
+      // onerror fallback at chunk-level
       utter.onerror = (err) => {
+        if (mySessionId !== sessionId) { safeLog('chunk onerror ignored due to session mismatch', mySessionId, sessionId); return; }
         let m = '';
         try { m = (err && (err.error || err.message)) ? String(err.error || err.message) : String(err); } catch(e) { m = String(err); }
         if (m && /interrupt/i.test(m)) {
@@ -724,7 +742,7 @@
       sendState('Not Reading');
       safeLog('stopReadingAll called, sent stats seconds:', toSend);
       // reset stoppedAlready after a short delay so future reads allowed
-      setTimeout(() => { stoppedAlready = false; }, 200);
+      setTimeout(() => { stoppedAlready = false; }, 250);
       return { ok: true };
     } catch (e) { safeLog('stopReadingAll error', e); stoppedAlready = false; return { ok: false, error: String(e) }; }
   }
@@ -732,8 +750,9 @@
   // --- Helpers to get page text or selection
   function getTextToRead() {
     try {
+      // Accept any explicit non-empty selection
       const s = (window.getSelection && window.getSelection().toString()) || '';
-      if (s && s.trim().length > 20) {
+      if (s && s.trim().length > 0) {
         safeLog('getTextToRead returning selection length', s.length);
         return s.trim();
       }
@@ -882,7 +901,7 @@
           try {
             const selText = window.getSelection ? window.getSelection().toString().trim() : '';
             const resp = { ok: true, selection: { text: selText || '', title: document.title || '', url: location.href || '' } };
-            // Always return a flat shape so background/popup can rely on response.selection
+            // Return flat shape { ok, selection } so background/popup can rely on response.selection
             sendResponse(resp);
             safeLog('getSelection responded', { textLen: (selText||'').length, title: document.title });
           } catch (e) {
