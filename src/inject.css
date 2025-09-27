@@ -1,8 +1,8 @@
 /* src/inject.css - ReadEasy injected styling (copy-paste ready)
-   Includes aliases for clarityread-* class names used by the content script */
+   Includes aliases for clarityread-* class names used by the content script
+*/
 
-/* Apply dyslexia font to the entire document when the html has the class.
-   Accept both readeasy-* and clarityread-* class namespaces for compatibility */
+/* --- Dyslexia font (both namespaces) --- */
 html.readeasy-dyslexic,
 html.readeasy-dyslexic *,
 .readeasy-dyslexic,
@@ -14,16 +14,20 @@ html.clarityread-dyslexic *,
   font-family: 'OpenDyslexic', Arial, sans-serif !important;
 }
 
-/* Reflow / reading mode — accept both namespaces */
+/* --- Reflow / reading mode (both namespaces) --- */
+html.readeasy-reflow,
 html.readeasy-reflow body,
 html.readeasy-reflow article,
 html.readeasy-reflow main,
+.readeasy-reflow,
 .readeasy-reflow body,
 .readeasy-reflow article,
 .readeasy-reflow main,
+html.clarityread-reflow,
 html.clarityread-reflow body,
 html.clarityread-reflow article,
 html.clarityread-reflow main,
+.clarityread-reflow,
 .clarityread-reflow body,
 .clarityread-reflow article,
 .clarityread-reflow main {
@@ -33,6 +37,7 @@ html.clarityread-reflow main,
   padding: 0 18px !important;
   word-break: break-word !important;
   overflow-wrap: break-word !important;
+  box-sizing: border-box !important;
 }
 
 /* Size presets (applies when reflow class is present) */
@@ -43,20 +48,23 @@ html.clarityread-reflow main,
 .readeasy-reflow.readeasy-size-large,
 .clarityread-reflow.clarityread-size-large { font-size: 24px !important; }
 
-.readeasy-reflow p, .clarityread-reflow p { margin-bottom: 1.1em !important; }
+.readeasy-reflow p,
+.clarityread-reflow p { margin-bottom: 1.1em !important; }
 
-/* High contrast mode: strong overrides (both namespaces) */
+/* --- High contrast mode --- */
 .readeasy-contrast *,
 .clarityread-contrast * {
   background: #000 !important;
   color: #fff !important;
 }
 
-/* Make links clearly visible */
+/* Links & form elements in contrast mode */
 .readeasy-contrast a,
-.clarityread-contrast a { color: #00ffff !important; text-decoration: underline !important; }
+.clarityread-contrast a {
+  color: #00ffff !important;
+  text-decoration: underline !important;
+}
 
-/* Form elements in contrast mode */
 .readeasy-contrast button,
 .readeasy-contrast input,
 .readeasy-contrast textarea,
@@ -72,15 +80,19 @@ html.clarityread-reflow main,
 }
 
 /* Images dimmed slightly for better focus */
-.readeasy-contrast img, .clarityread-contrast img {
+.readeasy-contrast img,
+.clarityread-contrast img {
   opacity: 0.85 !important;
   filter: grayscale(60%) contrast(130%) !important;
 }
 
-/* Full invert mode */
-.readeasy-invert, .clarityread-invert { filter: invert(100%) hue-rotate(180deg) !important; }
+/* --- Full invert mode (use double-invert on media to keep them visually natural) --- */
+.readeasy-invert,
+.clarityread-invert {
+  filter: invert(100%) hue-rotate(180deg) !important;
+}
 
-/* Fix images/videos so they aren’t inverted twice */
+/* For images/videos, apply same invert so they visually cancel the parent invert (keeps images looking correct) */
 .readeasy-invert img,
 .readeasy-invert video,
 .clarityread-invert img,
@@ -88,32 +100,36 @@ html.clarityread-reflow main,
   filter: invert(100%) hue-rotate(180deg) !important;
 }
 
-/* Prefer invert when both are present */
+/* Prefer invert when both invert+contrast present */
 .readeasy-invert.readeasy-contrast,
-.clarityread-invert.clarityread-contrast { filter: invert(100%) hue-rotate(180deg) !important; }
+.clarityread-invert.clarityread-contrast {
+  filter: invert(100%) hue-rotate(180deg) !important;
+}
 
-/* Ensure word spans behave like normal text and preserve spacing
-   Accept both readeasy-word and clarityread-word */
+/* --- Word-span behaviour (overlay words) --- */
 .readeasy-word,
 .clarityread-word {
   display: inline !important;
   white-space: pre-wrap !important;
   line-height: inherit !important;
-}
-
-/* Highlighted/current word — readable across modes
-   Accept both readeasy-highlight and clarityread-highlight */
-.readeasy-highlight,
-.clarityread-highlight {
-  background-color: #ffec3d !important; /* bright yellow-ish */
-  color: #000 !important;
-  transition: background-color 0.12s linear !important;
-  padding: 0 0.06em !important;
   box-decoration-break: clone !important;
   -webkit-box-decoration-break: clone !important;
 }
 
-/* If invert is active, ensure highlight remains visible */
+/* --- Highlight / current word styling --- */
+.readeasy-highlight,
+.clarityread-highlight {
+  background-color: #ffec3d !important; /* bright yellow-ish */
+  color: #000 !important;
+  transition: background-color 0.12s linear, transform 0.08s linear !important;
+  padding: 0 0.08em !important;
+  border-radius: 3px !important;
+  box-shadow: 0 1px 0 rgba(0,0,0,0.04) inset !important;
+  box-decoration-break: clone !important;
+  -webkit-box-decoration-break: clone !important;
+}
+
+/* Ensure highlight stands out under invert/contrast combos */
 .readeasy-invert .readeasy-highlight,
 .readeasy-invert.readeasy-contrast .readeasy-highlight,
 .clarityread-invert .clarityread-highlight,
@@ -123,18 +139,35 @@ html.clarityread-reflow main,
   filter: none !important;
 }
 
-/* Reader overlay styles (when overlay fallback is used)
-   Accept both IDs used in different files */
+/* --- Overlay container (used by content script) --- */
 #readeasy-reader-overlay,
 #clarityread-overlay {
   font-family: 'OpenDyslexic', system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif !important;
   box-sizing: border-box !important;
+  background: #fff !important;
+  color: #111 !important;
+  padding: 18px !important;
+  border-radius: 8px !important;
+  max-height: 88vh !important;
+  overflow: auto !important;
+  line-height: 1.6 !important;
 }
 
-/* ensure highlight spans inside overlay also follow the same highlight rules */
+/* Ensure highlight spans inside overlay also follow same rules */
 #readeasy-reader-overlay .readeasy-highlight,
 #clarityread-overlay .clarityread-highlight {
   background-color: #ffec3d !important;
   color: #000 !important;
   padding: 0 0.06em !important;
+}
+
+/* Minor accessibility: make close buttons / controls inside overlay obvious */
+#readeasy-reader-overlay button,
+#clarityread-overlay button {
+  appearance: none !important;
+  background: rgba(0,0,0,0.06) !important;
+  border: 1px solid rgba(0,0,0,0.06) !important;
+  padding: 6px 8px !important;
+  border-radius: 6px !important;
+  cursor: pointer !important;
 }
