@@ -5,6 +5,44 @@ document.addEventListener('DOMContentLoaded', () => {
   console.info('ClarityRead popup initializing...');
   safeLog('DOMContentLoaded');
 
+  // --- Simple toast system (non-blocking notifications)
+  function createToastContainer() {
+    if (document.getElementById('clarityread-toast-container')) return;
+    const c = document.createElement('div');
+    c.id = 'clarityread-toast-container';
+    c.style.position = 'fixed';
+    c.style.right = '12px';
+    c.style.bottom = '12px';
+    c.style.zIndex = 2147483647;
+    c.style.display = 'flex';
+    c.style.flexDirection = 'column';
+    c.style.gap = '8px';
+    document.body.appendChild(c);
+  }
+  function toast(msg, type = 'info', ttl = 3500) {
+    try {
+      createToastContainer();
+      const cont = document.getElementById('clarityread-toast-container');
+      if (!cont) return;
+      const el = document.createElement('div');
+      el.className = 'clarityread-toast';
+      el.textContent = msg;
+      el.style.padding = '8px 12px';
+      el.style.borderRadius = '8px';
+      el.style.boxShadow = '0 6px 18px rgba(0,0,0,0.12)';
+      el.style.background = (type === 'error' ? '#ffeced' : (type === 'success' ? '#e8f5e9' : '#fff7e6'));
+      el.style.color = '#111';
+      el.style.fontSize = '13px';
+      el.style.maxWidth = '320px';
+      el.style.wordBreak = 'break-word';
+      cont.appendChild(el);
+      setTimeout(() => {
+        try { el.style.opacity = '0'; el.style.transform = 'translateY(6px)'; } catch(e){}
+      }, ttl - 500);
+      setTimeout(() => { try { el.remove(); } catch(e){} }, ttl);
+    } catch (e) { safeLog('toast failed', e); }
+  }
+
   // --- Ensure Chart.js loaded if popup opened as standalone window
   function ensureChartReady(callback) {
     safeLog('ensureChartReady check Chart global', typeof Chart !== 'undefined');
@@ -170,6 +208,23 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  // Normalize possibly-wrapped background responses (unwrap `response` nesting)
+  function normalizeBgResponse(res) {
+    try {
+      let r = res;
+      // If background wrapped: { ok: true, response: { ok:true, response: {...} } } etc.
+      let depth = 0;
+      while (r && typeof r === 'object' && ('response' in r) && (depth < 6)) {
+        r = r.response;
+        depth++;
+      }
+      return r;
+    } catch (e) {
+      safeLog('normalizeBgResponse threw', e);
+      return res;
+    }
+  }
+
   // Robust send helper - popup -> background forward wrapper
   // Attaches _targetTabId/_targetTabUrl (only if we can reliably determine a web tab).
   // If active tab is an extension/internal page, we try to find a real web tab via findBestWebTab().
@@ -229,13 +284,15 @@ document.addEventListener('DOMContentLoaded', () => {
           }
 
           try {
-            chrome.runtime.sendMessage(message, async (res) => {
+            chrome.runtime.sendMessage(message, async (resRaw) => {
               if (chrome.runtime.lastError) {
                 safeLog('popup > background send error:', chrome.runtime.lastError && chrome.runtime.lastError.message);
                 opLock = false;
                 return resolve({ ok: false, error: chrome.runtime.lastError && chrome.runtime.lastError.message });
               }
-              if (!res) { opLock = false; return resolve({ ok: false, error: 'no-response' }); }
+              if (!resRaw) { opLock = false; return resolve({ ok: false, error: 'no-response' }); }
+
+              const res = normalizeBgResponse(resRaw);
 
               // background requests host permission -> prompt user once
               if (res && res.ok === false && res.error === 'no-host-permission' && _retry < 1) {
@@ -515,14 +572,18 @@ document.addEventListener('DOMContentLoaded', () => {
   function sendSettingsAndToggles(settings) {
     safeLog('sendSettingsAndToggles', settings);
     return sendMessageToActiveTabWithInject({ action: 'applySettings', ...settings })
-      .then((res) => {
+      .then((resRaw) => {
+        const res = normalizeBgResponse(resRaw);
         safeLog('applySettings response', res);
         if (!res || !res.ok) {
           console.warn('applySettings failed:', JSON.stringify(res));
+          toast('Failed to apply settings to page.', 'error');
+        } else {
+          toast('Settings applied.', 'success', 1800);
         }
         return res;
       })
-      .catch(err => { console.warn('applySettings err', err); safeLog('applySettings err', err); return { ok:false, error: String(err) }; });
+      .catch(err => { console.warn('applySettings err', err); safeLog('applySettings err', err); toast('Failed to apply settings (see console).', 'error'); return { ok:false, error: String(err) }; });
   }
 
   function gatherAndSendSettings() {
@@ -601,21 +662,20 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // helper to robustly extract selection object from helper response
-  function extractSelection(res) {
+  function extractSelection(resRaw) {
+    const res = normalizeBgResponse(resRaw);
     if (!res) return null;
-    // possible shapes:
-    // 1) { ok: true, response: { selection: {...} } }    <- desired after background fix
-    // 2) { ok: true, response: { ok: true, response: { selection: {...} } } } <- older double-wrap
-    if (res.response && res.response.selection) return res.response.selection;
-    if (res.response && res.response.response && res.response.response.selection) return res.response.response.selection;
+    // possible shapes handled: { ok:true, selection: {...}}, { ok:true, response:{ selection:{}}}
     if (res.selection) return res.selection;
+    if (res.response && res.response.selection) return res.response.selection;
+    if (res.ok && res.selection) return res.selection;
     return null;
   }
 
   // Read button
   safeOn(readBtn, 'click', () => {
     safeLog('readBtn clicked', { isReading, isPaused });
-    if (isReading) { alert('Reading already in progress. Pause or stop it before starting new read.'); return; }
+    if (isReading) { toast('Already reading. Pause or stop before starting a new read.', 'info'); return; }
     const settings = gatherSettingsObject();
     chrome.storage.sync.set({ voice: settings.voice, rate: settings.rate, pitch: settings.pitch, highlight: settings.highlight }, async () => {
       const voices = await ensureVoicesLoaded(500);
@@ -627,6 +687,7 @@ document.addEventListener('DOMContentLoaded', () => {
           chrome.storage.sync.set({ voice: settings.voice });
           persistVoiceOverrideForCurrentSite(settings.voice);
           safeLog('readBtn voice fallback applied', settings.voice);
+          toast('Selected voice not available on this device — using fallback.', 'info', 3000);
         }
       }
 
@@ -634,64 +695,86 @@ document.addEventListener('DOMContentLoaded', () => {
         const chunkSize = Number(chunkSizeInput?.value || 3);
         const rate = Number(speedRateInput?.value || settings.rate || 1);
         safeLog('starting speedRead', { chunkSize, rate });
+        readBtn.disabled = true;
         const res = await sendMessageToActiveTabWithInject({ action: 'speedRead', chunkSize, rate });
         safeLog('speedRead send result', res);
-        if (!res || !res.ok) {
-          console.warn('speedRead failed:', JSON.stringify(res));
-          alert('Speed-read failed (see console). Falling back to normal read.');
-          await sendMessageToActiveTabWithInject({ action: 'readAloud', highlight: settings.highlight });
+        readBtn.disabled = false;
+        const r = normalizeBgResponse(res);
+        if (!r || !r.ok) {
+          safeLog('speedRead failed', r);
+          toast('Speed-read failed. Falling back to normal read.', 'error', 3500);
+          const fallback = await sendMessageToActiveTabWithInject({ action: 'readAloud', highlight: settings.highlight });
+          if (normalizeBgResponse(fallback)?.ok) setReadingStatus('Reading...');
+        } else {
           setReadingStatus('Reading...');
-        } else setReadingStatus('Reading...');
+        }
         return;
       }
 
       safeLog('sending readAloud', settings);
+      readBtn.disabled = true;
       const result = await sendMessageToActiveTabWithInject({ action: 'readAloud', highlight: settings.highlight, voice: settings.voice, rate: settings.rate, pitch: settings.pitch });
+      readBtn.disabled = false;
       safeLog('readAloud send response', result);
-      if (!result || !result.ok) {
-        console.warn('readAloud send failed:', JSON.stringify(result));
-        if (result && result.error === 'no-host-permission') alert('Cannot read the current page because the extension lacks permission for this site. Click the extension icon while on the page to grant access, or allow access when prompted.');
-        else if (result && result.error === 'unsupported-page') alert('This page cannot be controlled (internal/extension page). Open the target tab and try again.');
-        else if (result && result.error === 'tab-discarded') alert('The target tab is suspended or not available. Reload the page and try again.');
-        else if (result && result.error === 'no-tab') alert('No active tab found.');
-        else alert('Failed to start reading (see console).');
+      const r = normalizeBgResponse(result);
+      if (!r || !r.ok) {
+        safeLog('readAloud send failed:', JSON.stringify(r));
+        if (r && r.error === 'no-host-permission') toast('Permission needed to access this site. Click the extension icon on the page and allow access.', 'error', 7000);
+        else if (r && r.error === 'unsupported-page') toast('Cannot control this page (internal/extension page). Open the target tab and try again.', 'error', 6000);
+        else if (r && r.error === 'tab-discarded') toast('Target tab is suspended. Reload the page and try again.', 'error', 6000);
+        else if (r && r.error === 'no-tab') toast('No active tab found to read.', 'error', 4000);
+        else toast('Failed to start reading. See console for details.', 'error', 5000);
       } else setReadingStatus('Reading...');
     });
   });
 
   safeOn(stopBtn, 'click', async () => {
     safeLog('stopBtn clicked');
+    stopBtn.disabled = true;
     const res = await sendMessageToActiveTabWithInject({ action: 'stopReading' });
+    stopBtn.disabled = false;
     safeLog('stopReading response', res);
-    if (!res || (!res.ok && res.error === 'unsupported-page')) alert('Stop failed: popup cannot control this page.');
+    const r = normalizeBgResponse(res);
+    if (!r || (!r.ok && r.error === 'unsupported-page')) toast('Stop failed: cannot control this page.', 'error', 4500);
+    else toast('Stopped reading.', 'success', 1200);
     setReadingStatus('Not Reading');
   });
 
   safeOn(pauseBtn, 'click', async () => {
     safeLog('pauseBtn clicked', { isReading, isPaused });
-    if (!isReading) { alert('Nothing is currently reading.'); return; }
+    if (!isReading) { toast('Nothing is currently reading.', 'info'); return; }
     if (!isPaused) {
+      pauseBtn.disabled = true;
       const r = await sendMessageToActiveTabWithInject({ action: 'pauseReading' });
+      pauseBtn.disabled = false;
       safeLog('pauseReading response', r);
-      if (r && r.ok) setReadingStatus('Paused');
+      if (normalizeBgResponse(r)?.ok) setReadingStatus('Paused');
+      else toast('Pause failed.', 'error');
     } else {
+      pauseBtn.disabled = true;
       const r2 = await sendMessageToActiveTabWithInject({ action: 'resumeReading' });
+      pauseBtn.disabled = false;
       safeLog('resumeReading response', r2);
-      if (r2 && r2.ok) setReadingStatus('Reading...');
+      if (normalizeBgResponse(r2)?.ok) setReadingStatus('Reading...');
+      else toast('Resume failed.', 'error');
     }
   });
 
   // Focus mode button
   safeOn(focusModeBtn, 'click', async () => {
     safeLog('focusModeBtn clicked');
+    focusModeBtn.disabled = true;
     const res = await sendMessageToActiveTabWithInject({ action: 'toggleFocusMode' });
+    focusModeBtn.disabled = false;
     safeLog('toggleFocusMode response', res);
-    if (!res || !res.ok) {
-      if (res && res.error === 'no-host-permission') alert('Extension needs permission to show focus mode for this site. Grant access and try again.');
-      else if (res && res.error === 'tab-discarded') alert('The target tab is suspended or not available. Reload the page and try again.');
-      else console.warn('toggleFocusMode failed', res);
+    const r = normalizeBgResponse(res);
+    if (!r || !r.ok) {
+      if (r && r.error === 'no-host-permission') toast('Permission required to show focus mode for this site.', 'error', 6000);
+      else if (r && r.error === 'tab-discarded') toast('The target tab is suspended. Reload the page and try again.', 'error', 5000);
+      else toast('Failed to toggle focus mode.', 'error', 4500);
     } else {
-      focusModeBtn.textContent = (res.overlayActive ? 'Close Focus' : 'Focus Mode');
+      focusModeBtn.textContent = (r.overlayActive ? 'Close Focus' : 'Focus Mode');
+      toast(r.overlayActive ? 'Focus mode opened.' : 'Focus mode closed.', 'success', 1400);
       safeLog('focusModeBtn UI updated', focusModeBtn.textContent);
     }
   });
@@ -790,7 +873,8 @@ document.addEventListener('DOMContentLoaded', () => {
         await navigator.clipboard.writeText(content);
         copyBtn.textContent = 'Copied';
         setTimeout(() => copyBtn.textContent = 'Copy', 1200);
-      } catch (e) { console.warn('copy failed', e); safeLog('summary copy failed', e); alert('Copy failed'); }
+        toast('Summary copied to clipboard.', 'success');
+      } catch (e) { console.warn('copy failed', e); safeLog('summary copy failed', e); toast('Copy failed.', 'error'); }
     });
     const closeBtn = document.createElement('button'); closeBtn.textContent = 'Close';
     closeBtn.addEventListener('click', () => modal.remove());
@@ -801,6 +885,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a'); a.href = url; a.download = 'summary.txt'; a.click();
       URL.revokeObjectURL(url);
+      toast('Summary downloaded.', 'success', 1400);
     });
 
     actions.appendChild(downloadBtn);
@@ -825,7 +910,6 @@ document.addEventListener('DOMContentLoaded', () => {
   async function summarizeCurrentPageOrSelection() {
     safeLog('summarizeCurrentPageOrSelection start');
     try {
-      // attempt via helper (background discovery handles best target if we didn't set _targetTabId)
       const res = await sendMessageToActiveTabWithInject({ action: 'getSelection' });
       safeLog('getSelection response', res);
       let text = '';
@@ -848,7 +932,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const tab = await findBestWebTab();
         safeLog('summarize fallback tab', tab && { id: tab.id, url: tab.url });
         if (!tab || !tab.id || !tab.url || tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://')) {
-          alert('Cannot summarize internal/extension pages.');
+          toast('Cannot summarize internal or extension pages.', 'error');
           safeLog('summarize aborted: no suitable web tab');
           return;
         }
@@ -877,14 +961,14 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (e) { console.warn('summarize fallback exec failed', e); safeLog('summarize fallback exec failed', e); }
       }
 
-      if (!text || !text.trim()) { alert('No text to summarize (select text on the page or ensure the page has readable content).'); safeLog('summarize no text'); return; }
+      if (!text || !text.trim()) { toast('No text to summarize — select text on the page or ensure the page has readable content.', 'info'); safeLog('summarize no text'); return; }
       const summary = summarizeText(text, 3);
       createSummaryModal('Page Summary', summary);
       safeLog('summarize created summary len', summary.length);
     } catch (e) {
       console.warn('summarizeCurrentPageOrSelection failed', e);
       safeLog('summarize exception', e);
-      alert('Failed to summarize (see console).');
+      toast('Failed to summarize (see console).', 'error');
     }
   }
 
@@ -892,14 +976,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // --- Profiles, saved reads, selection, stats
   function updateProfileDropdown(profiles = {}, selectedName = '') { if (!profileSelect) return; profileSelect.innerHTML = '<option value="">Select profile</option>'; for (const name in profiles) { const opt=document.createElement('option'); opt.value=name; opt.textContent=name; profileSelect.appendChild(opt);} if (selectedName) profileSelect.value = selectedName; }
-  function saveProfile(name, profile) { chrome.storage.local.get(['profiles'], (res) => { const profiles = res.profiles || {}; profiles[name] = profile; chrome.storage.local.set({ profiles }, () => { chrome.storage.sync.set({ profiles }, () => { alert('Profile saved!'); updateProfileDropdown(profiles, name); safeLog('profile saved', name, profile); }); }); }); }
+  function saveProfile(name, profile) { chrome.storage.local.get(['profiles'], (res) => { const profiles = res.profiles || {}; profiles[name] = profile; chrome.storage.local.set({ profiles }, () => { chrome.storage.sync.set({ profiles }, () => { toast('Profile saved.', 'success'); updateProfileDropdown(profiles, name); safeLog('profile saved', name, profile); }); }); }); }
   chrome.storage.local.get(['profiles'], (res) => { safeLog('loaded profiles', Object.keys(res.profiles||{})); updateProfileDropdown(res.profiles || {}); });
 
   safeOn(profileSelect, 'change', (e) => { const name = e.target.value; if (!name) return; chrome.storage.local.get(['profiles'], (res) => { const settings = res.profiles?.[name]; safeLog('profile selected', name, settings); if (settings) setUI(settings); gatherAndSendSettings(); }); });
 
   safeOn(saveProfileBtn, 'click', () => { const name = prompt('Enter profile name:'); if (!name) return; const profile = gatherSettingsObject(); saveProfile(name, profile); });
 
-  safeOn(exportProfilesBtn, 'click', () => { chrome.storage.local.get(['profiles'], (res) => { const dataStr = JSON.stringify(res.profiles || {}); const blob = new Blob([dataStr], { type: "application/json" }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'ClarityReadProfiles.json'; a.click(); URL.revokeObjectURL(url); safeLog('exported profiles'); }); });
+  safeOn(exportProfilesBtn, 'click', () => { chrome.storage.local.get(['profiles'], (res) => { const dataStr = JSON.stringify(res.profiles || {}); const blob = new Blob([dataStr], { type: "application/json" }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'ClarityReadProfiles.json'; a.click(); URL.revokeObjectURL(url); toast('Profiles exported.', 'success'); safeLog('exported profiles'); }); });
 
   safeOn(importProfilesBtn, 'click', () => importProfilesInput?.click());
   if (importProfilesInput) {
@@ -913,16 +997,16 @@ document.addEventListener('DOMContentLoaded', () => {
           chrome.storage.local.get(['profiles'], (res) => {
             const profiles = { ...(res.profiles || {}), ...importedProfiles };
             chrome.storage.local.set({ profiles }, () => {
-              chrome.storage.sync.set({ profiles }, () => { alert('Profiles imported!'); updateProfileDropdown(profiles); safeLog('imported profiles', Object.keys(importedProfiles||{})); });
+              chrome.storage.sync.set({ profiles }, () => { toast('Profiles imported.', 'success'); updateProfileDropdown(profiles); safeLog('imported profiles', Object.keys(importedProfiles||{})); });
             });
           });
-        } catch (err) { safeLog('importProfiles parse failed', err); alert('Failed to import profiles: invalid JSON.'); }
+        } catch (err) { safeLog('importProfiles parse failed', err); toast('Failed to import profiles: invalid JSON.', 'error'); }
       };
       reader.readAsText(file);
     });
   }
 
-  safeOn(resetStatsBtn, 'click', () => { if (!confirm('Reset all reading stats?')) return; chrome.runtime.sendMessage({ action: 'resetStats' }, () => { safeLog('resetStats requested'); loadStats(); setReadingStatus('Not Reading'); }); });
+  safeOn(resetStatsBtn, 'click', () => { if (!confirm('Reset all reading stats?')) return; chrome.runtime.sendMessage({ action: 'resetStats' }, () => { safeLog('resetStats requested'); loadStats(); setReadingStatus('Not Reading'); toast('Stats reset.', 'success'); }); });
 
   // Render saved reads, with Summarize and Summarize All
   function renderSavedList() {
@@ -968,8 +1052,8 @@ document.addEventListener('DOMContentLoaded', () => {
           chrome.storage.sync.set({ voice: voiceSelect?.value||'', rate: Number(rateInput?.value||1), pitch: Number(pitchInput?.value||1) }, async () => {
             safeLog('saved read open clicked', item.id);
             const res = await sendMessageToActiveTabWithInject({ action:'readAloud', highlight:false, _savedText: item.text });
-            if (res && res.ok) setReadingStatus('Reading...');
-            else safeLog('readAloud _savedText failed', res);
+            if (normalizeBgResponse(res)?.ok) { setReadingStatus('Reading...'); toast('Started reading saved item.', 'success'); }
+            else { safeLog('readAloud _savedText failed', res); toast('Failed to play saved item.', 'error'); }
           });
         });
 
@@ -979,8 +1063,8 @@ document.addEventListener('DOMContentLoaded', () => {
           const r = Number(speedRateInput?.value || 1);
           safeLog('saved read openSpeed clicked', item.id, { chunk, r });
           const res = await sendMessageToActiveTabWithInject({ action:'speedRead', text:item.text, chunkSize:chunk, rate:r });
-          if (res && res.ok) setReadingStatus('Reading...');
-          else safeLog('speedRead _savedText failed', res);
+          if (normalizeBgResponse(res)?.ok) { setReadingStatus('Reading...'); toast('Started speed-read of saved item.', 'success'); }
+          else { safeLog('speedRead _savedText failed', res); toast('Failed to start speed-read.', 'error'); }
         });
 
         const summarizeBtn = document.createElement('button'); summarizeBtn.textContent = 'Summarize';
@@ -990,7 +1074,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         const delBtn = document.createElement('button'); delBtn.textContent='Delete';
-        delBtn.addEventListener('click', () => { if (!confirm('Delete saved item?')) return; chrome.storage.local.get(['savedReads'], (r2)=>{ const arr = r2.savedReads || []; const filtered = arr.filter(x=>x.id!==item.id); chrome.storage.local.set({ savedReads: filtered }, () => { safeLog('deleted saved item', item.id); renderSavedList(); }); }); });
+        delBtn.addEventListener('click', () => { if (!confirm('Delete saved item?')) return; chrome.storage.local.get(['savedReads'], (r2)=>{ const arr = r2.savedReads || []; const filtered = arr.filter(x=>x.id!==item.id); chrome.storage.local.set({ savedReads: filtered }, () => { safeLog('deleted saved item', item.id); renderSavedList(); toast('Saved item deleted.', 'info'); }); }); });
 
         actions.appendChild(openBtn);
         actions.appendChild(openSpeed);
@@ -1006,46 +1090,51 @@ document.addEventListener('DOMContentLoaded', () => {
   safeOn(saveSelectionBtn, 'click', async () => {
     safeLog('saveSelectionBtn clicked');
     try {
-      const res = await sendMessageToActiveTabWithInject({ action: 'getSelection' });
-      safeLog('getSelection via helper', res);
+      saveSelectionBtn.disabled = true;
+      const resRaw = await sendMessageToActiveTabWithInject({ action: 'getSelection' });
+      safeLog('getSelection via helper', resRaw);
+      const res = normalizeBgResponse(resRaw);
       if (!res || !res.ok) {
         if (res && res.error === 'no-host-permission') {
-          alert('Extension lacks permission to access this site. Open the page, click the extension icon, and allow access for this site (or enable host permissions in chrome://extensions).');
+          toast('Extension lacks permission to access this site. Open the page and allow access.', 'error', 7000);
+          saveSelectionBtn.disabled = false;
           return;
         }
         // fallback: try to find a good web tab and run scripting there
         const tab = await findBestWebTab();
-        if (!tab || !tab.id) { alert('No active page found.'); safeLog('saveSelection fallback: no web tab'); return; }
+        if (!tab || !tab.id) { toast('No active page found.', 'error'); safeLog('saveSelection fallback: no web tab'); saveSelectionBtn.disabled = false; return; }
         try {
           chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => { const s = window.getSelection(); const text = s ? s.toString() : ''; return { text: text, title: document.title || '', url: location.href || '' }; } }, (results) => {
+            saveSelectionBtn.disabled = false;
             if (chrome.runtime.lastError) {
               console.warn('getSelection exec failed', chrome.runtime.lastError);
               safeLog('scripting.executeScript failed', chrome.runtime.lastError);
               const msg = (chrome.runtime.lastError.message || '').toLowerCase();
               if (msg.includes('must request permission') || msg.includes('cannot access contents of the page')) {
-                alert('Extension lacks permission to access this site. Open the page, click the extension icon, and allow access for this site (or enable host permissions in chrome://extensions).');
-              } else alert('Failed to fetch selection (see console).');
+                toast('Extension lacks permission to access this site. Open the page and allow access.', 'error', 7000);
+              } else toast('Failed to fetch selection (see console).', 'error');
               return;
             }
             const result = results && results[0] && results[0].result;
-            if (!result || !result.text || !result.text.trim()) { alert('No selection found on the page.'); safeLog('scripting returned no selection'); return; }
+            if (!result || !result.text || !result.text.trim()) { toast('No selection found on the page.', 'info'); safeLog('scripting returned no selection'); return; }
             const item = { id: Date.now() + '-' + Math.floor(Math.random()*1000), text: result.text, title: result.title || result.text.slice(0,80), url: result.url, ts: Date.now() };
-            chrome.storage.local.get(['savedReads'], (r) => { const arr = r.savedReads || []; arr.push(item); chrome.storage.local.set({ savedReads: arr }, () => { alert('Selection saved!'); safeLog('selection saved via scripting', item.id); renderSavedList(); }); });
+            chrome.storage.local.get(['savedReads'], (r) => { const arr = r.savedReads || []; arr.push(item); chrome.storage.local.set({ savedReads: arr }, () => { toast('Selection saved.', 'success'); safeLog('selection saved via scripting', item.id); renderSavedList(); }); });
           });
-        } catch (err) { console.warn('save selection scripting failed', err); safeLog('save selection scripting failed', err); alert('Failed to fetch selection (see console).'); }
+        } catch (err) { console.warn('save selection scripting failed', err); safeLog('save selection scripting failed', err); toast('Failed to fetch selection (see console).', 'error'); saveSelectionBtn.disabled = false; }
         return;
       }
 
       // robustly extract selection from possibly-wrapped responses
-      const selection = extractSelection(res);
+      const selection = extractSelection(resRaw);
       safeLog('selection from helper', selection && { textLen: selection.text && selection.text.length, title: selection.title });
-      if (!selection || !selection.text || !selection.text.trim()) { alert('No selection found on the page.'); return; }
+      if (!selection || !selection.text || !selection.text.trim()) { toast('No selection found on the page.', 'info'); saveSelectionBtn.disabled = false; return; }
       const item = { id: Date.now() + '-' + Math.floor(Math.random()*1000), text: selection.text, title: selection.title || selection.text.slice(0,80), url: selection.url, ts: Date.now() };
-      chrome.storage.local.get(['savedReads'], (r) => { const arr = r.savedReads || []; arr.push(item); chrome.storage.local.set({ savedReads: arr }, () => { alert('Selection saved!'); safeLog('selection saved', item.id); renderSavedList(); }); });
+      chrome.storage.local.get(['savedReads'], (r) => { const arr = r.savedReads || []; arr.push(item); chrome.storage.local.set({ savedReads: arr }, () => { toast('Selection saved.', 'success'); safeLog('selection saved', item.id); renderSavedList(); saveSelectionBtn.disabled = false; }); });
     } catch (e) {
       console.warn('saveSelection flow failed', e);
       safeLog('saveSelection exception', e);
-      alert('Failed to save selection (see console).');
+      toast('Failed to save selection (see console).', 'error');
+      saveSelectionBtn.disabled = false;
     }
   });
 
@@ -1074,15 +1163,15 @@ document.addEventListener('DOMContentLoaded', () => {
         ctx.fillStyle = '#666'; ctx.font = '12px Inter, Arial, sans-serif'; ctx.fillText(labels[i].slice(5), bx, chartY + chartH + 16);
       }
       c.toBlob(async (blob) => {
-        if (!blob) { alert('Failed to generate image.'); safeLog('canvas toBlob returned null'); return; }
+        if (!blob) { toast('Failed to generate image.', 'error'); safeLog('canvas toBlob returned null'); return; }
         const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'ClarityReadStats.png'; a.click(); URL.revokeObjectURL(url);
         safeLog('stats image generated and downloaded');
         if (navigator.clipboard && window.ClipboardItem) {
-          try { await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]); alert('Image saved and copied to clipboard!'); safeLog('image copied to clipboard'); }
-          catch (e) { console.warn('clipboard write failed', e); safeLog('clipboard write failed', e); alert('Image downloaded. Clipboard copy was not available.'); }
-        } else { alert('Image downloaded. To copy to clipboard, allow clipboard access or use the downloaded file.'); }
+          try { await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]); toast('Image saved and copied to clipboard!', 'success'); safeLog('image copied to clipboard'); }
+          catch (e) { console.warn('clipboard write failed', e); safeLog('clipboard write failed', e); toast('Image downloaded. Clipboard copy not available.', 'info'); }
+        } else { toast('Image downloaded. To copy to clipboard, allow clipboard access or use the downloaded file.', 'info'); }
       });
-    } catch (e) { console.warn('generateStatsImage failed', e); safeLog('generateStatsImage failed', e); alert('Failed to generate stats image (see console).'); }
+    } catch (e) { console.warn('generateStatsImage failed', e); safeLog('generateStatsImage failed', e); toast('Failed to generate stats image (see console).', 'error'); }
   }
 
   safeOn(shareStatsBtn, 'click', generateStatsImageAndDownload);
@@ -1091,9 +1180,9 @@ document.addEventListener('DOMContentLoaded', () => {
     safeLog('chrome.runtime.onMessage received', msg, sender && sender.tab && { tabId: sender.tab.id, url: sender.tab.url });
     if (!msg?.action) { sendResponse({ ok: false }); return true; }
     if (msg.action === 'statsUpdated') { safeLog('msg statsUpdated -> loadStats'); loadStats(); }
-    else if (msg.action === 'readingStopped') { safeLog('msg readingStopped'); setReadingStatus('Not Reading'); }
-    else if (msg.action === 'readingPaused') { safeLog('msg readingPaused'); setReadingStatus('Paused'); }
-    else if (msg.action === 'readingResumed') { safeLog('msg readingResumed'); setReadingStatus('Reading...'); }
+    else if (msg.action === 'readingStopped') { safeLog('msg readingStopped'); setReadingStatus('Not Reading'); toast('Reading stopped.', 'info'); }
+    else if (msg.action === 'readingPaused') { safeLog('msg readingPaused'); setReadingStatus('Paused'); toast('Reading paused.', 'info'); }
+    else if (msg.action === 'readingResumed') { safeLog('msg readingResumed'); setReadingStatus('Reading...'); toast('Reading started.', 'info'); }
     sendResponse({ ok: true });
     return true;
   });
