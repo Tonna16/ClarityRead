@@ -1,125 +1,131 @@
-/* src/popup.css - responsive, roomy popup layout */
+/* src/popup.css - polished modern flat UI (Notion-like) */
 
-/* Base variables */
+/* Variables */
 :root{
   --popup-padding: 14px;
-  --gap: 12px;
-  --panel-bg: #fff;
-  --muted: #666;
-  --accent: #4caf50;
-  --card-bg: #fbfbfb;
-  --card-border: #e6e6e6;
+  --gap: 14px;
+  --panel-bg: #f7f7f8;
+  --muted: #6b7280;
+  --accent: #2e8b57; /* slightly deeper green */
+  --card-bg: #ffffff;
+  --card-border: rgba(15,15,15,0.06);
+  --radius: 10px;
+  --shadow: 0 6px 18px rgba(15,15,15,0.06);
+  --btn-padding: 8px 12px;
+  --text-size: 13px;
 }
 
 /* Reset */
 *{box-sizing:border-box}
-html,body{height:100%;margin:0;padding:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial;font-size:13px}
+html,body{height:100%;margin:0;padding:0;font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial;font-size:var(--text-size)}
 body{
   background:var(--panel-bg);
   color:#111;
   padding:var(--popup-padding);
-  /* be roomy but flexible: prefer wide windows but don't force fixed width */
-  min-width:320px;   /* reduced from 600 -> more tolerant */
+  min-width:320px;
   max-width:1000px;
   width:auto;
 }
 
-/* auto;
-/* Layout: two-column grid */
+/* Layout */
 .container{
   display:grid;
   grid-template-columns: 1fr 360px;
   gap:var(--gap);
   align-items:start;
-  height: calc(100vh - 32px);
-  /* allow the second column to shrink gracefully */
-  grid-auto-columns: minmax(0, 360px)
-
+  height: calc(100vh - 28px);
+  grid-auto-columns: minmax(0, 360px);
 }
 
-
-
-/* Card style used for blocks */
+/* Card base */
 .card{
   background:var(--card-bg);
   border:1px solid var(--card-border);
-  border-radius:8px;
-  padding:10px;
-  box-shadow: 0 1px 0 rgba(0,0,0,0.02);
-}
-
-/* Controls column: scrollable independently */
-.controls{
-  display:flex;
-  flex-direction:column;
-  gap:12px;
-  overflow:auto;
-  padding-right:4px;
+  border-radius:var(--radius);
+  padding:12px;
+  box-shadow: var(--shadow);
 }
 
 /* Header */
-.header{
-  display:flex;
-  justify-content:space-between;
-  align-items:center;
-}
-.header h3{margin:0;font-size:16px}
-.readingStatus{
-  font-size:12px;
-  color:var(--muted);
-  margin-top:6px;
-}
+.header-card{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;margin-bottom:2px}
+.header-left{display:flex;align-items:center;gap:10px}
+.logo{width:40px;height:40px;border-radius:8px;object-fit:cover}
+.title-wrap{display:flex;flex-direction:column}
+.title{margin:0;font-size:16px;font-weight:600;line-height:1}
+.readingStatus{font-size:12px;color:var(--muted);margin-top:2px}
 
-/* Sidebar: scrollable independently */
-.sidebar{
-  display:flex;
-  flex-direction:column;
-  gap:12px;
-  overflow:auto;
-  padding-left:4px;
-  min-width:280px;
-}
+/* Header actions */
+.header-actions{display:flex;gap:8px;align-items:center}
 
-/* Toggles & small UI */
-.toggles label, .checkbox, .profiles label{display:block;margin:6px 0}
-.sizeOptions{margin-left:6px;margin-top:8px}
+/* Controls column */
+.controls{display:flex;flex-direction:column;gap:12px;overflow:auto;padding-right:4px}
+
+/* Sidebar */
+.sidebar{display:flex;flex-direction:column;gap:12px;overflow:auto;padding-left:4px;min-width:280px}
+
+/* Section titles */
+.section-title{margin:0 0 8px 0;font-size:13px;color:#111;font-weight:600}
+
+/* Toggles */
+.toggles .card-row{display:flex;gap:8px;align-items:center;margin-bottom:8px}
+.switch{display:flex;align-items:center;gap:8px;font-size:13px}
+.switch input{transform:scale(1.05);margin-right:6px}
+
+/* Size options */
+.sizeOptions{margin-top:8px}
+.range{width:100%}
+
+/* Profiles */
 .row{display:flex;gap:8px;align-items:center;margin-bottom:6px}
 .fullwidth{flex:1}
 
-/* Read area and controls */
-.readArea h4, .profiles h4, .shortcuts h4, .statsPanel h4{margin:0 0 8px 0;font-size:14px}
-.form-row{margin:6px 0}
+/* Read area */
+.readArea .form-row{margin:6px 0}
 .form-row.smalls{display:flex;gap:8px}
 .form-row.smalls label{flex:1}
+.label{display:block;font-size:13px;margin-bottom:6px}
 
-/* Buttons row */
+/* Controls row buttons */
 .controls-row{display:flex;gap:10px;flex-wrap:wrap}
+.save-controls{display:flex;gap:8px;align-items:center;margin-bottom:8px}
+
+/* Buttons */
 button{
-  padding:6px 10px;
-  border-radius:6px;
-  border:1px solid #ccc;
-  background:#f6f6f6;
+  padding:var(--btn-padding);
+  border-radius:8px;
+  border:1px solid rgba(0,0,0,0.06);
+  background:transparent;
   cursor:pointer;
+  font-size:13px;
+  transition:transform .08s ease, box-shadow .12s ease, background .12s;
 }
 button:active{transform:translateY(1px)}
-button:focus{outline:2px solid rgba(76,175,80,0.25);outline-offset:2px}
+button:focus{outline:3px solid rgba(46,139,87,0.12);outline-offset:2px}
 
-/* Theme row */
-.themeRow{display:flex;justify-content:flex-end;margin-bottom:6px;gap:8px}
+/* Primary / Ghost */
+.btn.primary, .primary{
+  background: linear-gradient(180deg, var(--accent), #26774a);
+  color: #fff;
+  border-color: rgba(0,0,0,0.08);
+  box-shadow: 0 6px 18px rgba(46,139,87,0.12);
+}
+.btn.primary:hover{filter:brightness(1.04)}
+.btn{background:#f3f6f4;border:1px solid rgba(0,0,0,0.06)}
+.ghost{background:transparent;border:1px solid transparent;color:var(--muted)}
 
-/* Chart wrapper and canvas */
-.chartWrapper{
-  width:100%;
-  height:220px;          /* prevents the chart from being squashed */
-  padding:6px;
-}
-#statsChart{
-  width:100% !important;
-  height:100% !important; /* canvas will fill the wrapper; Chart.js maintainAspectRatio:false in JS will follow this */
-  display:block;
-  border-radius:6px;
-  background:transparent;
-}
+/* Inputs */
+input[type="range"]{width:180px}
+input[type="number"],select{padding:6px;border-radius:6px;border:1px solid rgba(0,0,0,0.06)}
+select.wide{min-width:180px}
+
+/* Saved list */
+.saved-list{max-height:120px;overflow:auto;font-size:13px;color:#222;padding-top:6px}
+.saved-list .item{display:flex;justify-content:space-between;align-items:center;padding:6px;border-radius:8px}
+.saved-list .meta{font-size:12px;color:var(--muted)}
+
+/* Chart wrapper */
+.chartWrapper{width:100%;height:220px;padding:6px}
+#statsChart{width:100% !important;height:100% !important;display:block;border-radius:6px;background:transparent}
 
 /* Stats rows */
 #statsPanel{display:flex;flex-direction:column;gap:8px;margin-top:6px}
@@ -127,34 +133,35 @@ button:focus{outline:2px solid rgba(76,175,80,0.25);outline-offset:2px}
 
 /* Badges */
 .badges{display:flex;flex-wrap:wrap;gap:8px}
-.badges span{padding:6px 8px;border-radius:6px;background:rgba(0,0,0,0.06);font-size:12px}
+.badges span{padding:6px 8px;border-radius:8px;background:rgba(0,0,0,0.04);font-size:12px;color:var(--muted)}
 
-/* Export/import and shortcuts */
-.exportImport{display:flex;gap:8px;align-items:center}
+/* Stats actions */
+.stats-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:10px}
+
+/* Shortcuts & footer */
 .shortcuts ul{padding-left:18px;margin:6px 0}
-
-/* Footer */
-.footer{margin-top:8px;color:var(--muted);font-size:12px}
-
-/* Inputs*/
-input[type="range"]{width:180px}
-input[type="number"],select{padding:4px}
+.footer{margin-top:8px;color:var(--muted);font-size:12px;text-align:left}
 
 /* Dark theme */
-body.dark-theme{background:#222;color:#eee}
-body.dark-theme .card{background:#2a2a2a;border-color:#333}
-body.dark-theme button{background:#333;border-color:#444;color:#eee}
+body.dark-theme{
+  --panel-bg:#121212;
+  --card-bg:#1b1b1b;
+  --card-border:rgba(255,255,255,0.04);
+  --muted:#c0c0c0;
+  color:#eaeaea;
+}
+body.dark-theme .logo{filter:brightness(.95)}
+body.dark-theme button{color:#eaeaea}
 
 /* Responsive: stack columns on narrow widths */
 @media (max-width: 920px){
   .container{ grid-template-columns: 1fr; height:auto }
-  body{ min-width:320px }
   .chartWrapper{height:180px}
   .sidebar{order:2}
   .controls{order:1}
 }
 
-/* Very small */
+/* Very small screens */
 @media (max-width: 380px){
   .chartWrapper{height:140px}
   button{font-size:12px;padding:6px}
