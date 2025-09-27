@@ -660,16 +660,33 @@ document.addEventListener('DOMContentLoaded', () => {
       }, timeoutMs);
     });
   }
-
   // helper to robustly extract selection object from helper response
   function extractSelection(resRaw) {
-    const res = normalizeBgResponse(resRaw);
-    if (!res) return null;
-    // possible shapes handled: { ok:true, selection: {...}}, { ok:true, response:{ selection:{}}}
-    if (res.selection) return res.selection;
-    if (res.response && res.response.selection) return res.response.selection;
-    if (res.ok && res.selection) return res.selection;
-    return null;
+    try {
+      // Normalize first (handles various background wrappings)
+      const r = normalizeBgResponse(resRaw);
+      if (!r) return null;
+
+      // If final object already contains a `selection` object
+      if (r.selection && typeof r.selection === 'object') return r.selection;
+
+      // Some paths may return flat { text, title, url }
+      if (typeof r.text === 'string' && r.text.trim().length) {
+        return { text: r.text, title: r.title || '', url: r.url || '' };
+      }
+
+      // Dive into nested response fields defensively (avoid infinite recursion)
+      if (r.response && typeof r.response === 'object') {
+        // note: normalizeBgResponse already unwraps many levels, but handle any remaining nesting
+        if (r.response.selection && typeof r.response.selection === 'object') return r.response.selection;
+        if (typeof r.response.text === 'string' && r.response.text.trim()) return { text: r.response.text, title: r.response.title || '', url: r.response.url || '' };
+      }
+
+      return null;
+    } catch (e) {
+      safeLog('extractSelection threw', e);
+      return null;
+    }
   }
 
   // Read button
@@ -1085,44 +1102,104 @@ document.addEventListener('DOMContentLoaded', () => {
       });
     });
   }
-
   // Save selection -> use background/content messaging helper which handles injecting + permission flow
   safeOn(saveSelectionBtn, 'click', async () => {
     safeLog('saveSelectionBtn clicked');
+    if (!saveSelectionBtn) return;
+    saveSelectionBtn.disabled = true;
     try {
-      saveSelectionBtn.disabled = true;
       const resRaw = await sendMessageToActiveTabWithInject({ action: 'getSelection' });
       safeLog('getSelection via helper', resRaw);
+
       const res = normalizeBgResponse(resRaw);
-      if (!res || !res.ok) {
-        if (res && res.error === 'no-host-permission') {
+
+      // If background explicitly returned a permission error, surface to user
+      if (res && res.ok === false) {
+        if (res.error === 'no-host-permission') {
           toast('Extension lacks permission to access this site. Open the page and allow access.', 'error', 7000);
           saveSelectionBtn.disabled = false;
           return;
         }
-        // fallback: try to find a good web tab and run scripting there
-        const tab = await findBestWebTab();
-        if (!tab || !tab.id) { toast('No active page found.', 'error'); safeLog('saveSelection fallback: no web tab'); saveSelectionBtn.disabled = false; return; }
-        try {
-          chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => { const s = window.getSelection(); const text = s ? s.toString() : ''; return { text: text, title: document.title || '', url: location.href || '' }; } }, (results) => {
+        // other explicit failures: fallthrough to fallback scripting below
+      }
+
+      // Try to extract selection
+      const selection = extractSelection(resRaw);
+      safeLog('selection from helper', selection && { textLen: selection.text && selection.text.length, title: selection.title });
+
+      if (selection && selection.text && selection.text.trim()) {
+        const item = { id: Date.now() + '-' + Math.floor(Math.random()*1000), text: selection.text, title: selection.title || selection.text.slice(0,80), url: selection.url, ts: Date.now() };
+        chrome.storage.local.get(['savedReads'], (r) => {
+          const arr = r.savedReads || [];
+          arr.push(item);
+          chrome.storage.local.set({ savedReads: arr }, () => {
+            toast('Selection saved.', 'success');
+            safeLog('selection saved', item.id);
+            renderSavedList();
             saveSelectionBtn.disabled = false;
-            if (chrome.runtime.lastError) {
-              console.warn('getSelection exec failed', chrome.runtime.lastError);
-              safeLog('scripting.executeScript failed', chrome.runtime.lastError);
-              const msg = (chrome.runtime.lastError.message || '').toLowerCase();
-              if (msg.includes('must request permission') || msg.includes('cannot access contents of the page')) {
-                toast('Extension lacks permission to access this site. Open the page and allow access.', 'error', 7000);
-              } else toast('Failed to fetch selection (see console).', 'error');
-              return;
-            }
-            const result = results && results[0] && results[0].result;
-            if (!result || !result.text || !result.text.trim()) { toast('No selection found on the page.', 'info'); safeLog('scripting returned no selection'); return; }
-            const item = { id: Date.now() + '-' + Math.floor(Math.random()*1000), text: result.text, title: result.title || result.text.slice(0,80), url: result.url, ts: Date.now() };
-            chrome.storage.local.get(['savedReads'], (r) => { const arr = r.savedReads || []; arr.push(item); chrome.storage.local.set({ savedReads: arr }, () => { toast('Selection saved.', 'success'); safeLog('selection saved via scripting', item.id); renderSavedList(); }); });
           });
-        } catch (err) { console.warn('save selection scripting failed', err); safeLog('save selection scripting failed', err); toast('Failed to fetch selection (see console).', 'error'); saveSelectionBtn.disabled = false; }
+        });
         return;
       }
+
+      // Fallback: try to find a good web tab and run scripting there
+      const tab = await findBestWebTab();
+      safeLog('saveSelection fallback tab', tab && { id: tab.id, url: tab.url });
+      if (!tab || !tab.id) {
+        toast('No active page found.', 'error');
+        safeLog('saveSelection fallback: no web tab');
+        saveSelectionBtn.disabled = false;
+        return;
+      }
+
+      try {
+        chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: () => {
+            const s = window.getSelection();
+            const text = s ? s.toString() : '';
+            return { text: text, title: document.title || '', url: location.href || '' };
+          }
+        }, (results) => {
+          saveSelectionBtn.disabled = false;
+          if (chrome.runtime.lastError) {
+            safeLog('scripting.executeScript failed', chrome.runtime.lastError);
+            const msg = (chrome.runtime.lastError.message || '').toLowerCase();
+            if (msg.includes('must request permission') || msg.includes('cannot access contents of the page')) {
+              toast('Extension lacks permission to access this site. Open the page and allow access.', 'error', 7000);
+            } else {
+              toast('Failed to fetch selection (see console).', 'error');
+            }
+            return;
+          }
+          const result = results && results[0] && results[0].result;
+          if (!result || !result.text || !result.text.trim()) {
+            toast('No selection found on the page.', 'info');
+            safeLog('scripting returned no selection');
+            return;
+          }
+          const item = { id: Date.now() + '-' + Math.floor(Math.random()*1000), text: result.text, title: result.title || result.text.slice(0,80), url: result.url, ts: Date.now() };
+          chrome.storage.local.get(['savedReads'], (r) => {
+            const arr = r.savedReads || [];
+            arr.push(item);
+            chrome.storage.local.set({ savedReads: arr }, () => {
+              toast('Selection saved.', 'success');
+              safeLog('selection saved via scripting', item.id);
+              renderSavedList();
+            });
+          });
+        });
+      } catch (err) {
+        safeLog('save selection scripting failed', err);
+        toast('Failed to fetch selection (see console).', 'error');
+        saveSelectionBtn.disabled = false;
+      }
+    } catch (e) {
+      safeLog('saveSelection exception', e);
+      toast('Failed to save selection (see console).', 'error');
+      saveSelectionBtn.disabled = false;
+    }
+  });
 
       // robustly extract selection from possibly-wrapped responses
       const selection = extractSelection(resRaw);
