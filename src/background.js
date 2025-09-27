@@ -55,6 +55,21 @@
     });
   }
 
+  // Small helper to unwrap nested background/content responses
+  function unwrapResponseMaybe(obj) {
+    try {
+      let r = obj;
+      let depth = 0;
+      while (r && typeof r === 'object' && ('response' in r) && depth < 6) {
+        r = r.response;
+        depth++;
+      }
+      return r;
+    } catch (e) {
+      return obj;
+    }
+  }
+
   // Try sending a message to a tab; if there's no receiver, try to inject the content script then retry.
   // Resolves with structured result { ok: boolean, response?, error?, detail?, permissionPattern?, cssError? }
   async function sendMessageToTabWithInjection(tabId, message) {
@@ -73,7 +88,9 @@
         chrome.tabs.sendMessage(tabId, message, (response) => {
           if (!chrome.runtime.lastError) {
             safeLog('sendMessage direct succeeded', { tabId, action: message && message.action, response });
-            return finish({ ok: true, response });
+            // unwrap nested response if present
+            const unwrapped = unwrapResponseMaybe(response);
+            return finish({ ok: true, response: unwrapped });
           }
 
           // runtime.lastError -> attempt injection path
@@ -144,8 +161,9 @@
                       return finish({ ok: false, error: 'no-receiver-after-inject', detail: chrome.runtime.lastError.message });
                     }
                     safeLog('sendMessage after inject succeeded', { tabId, action: message && message.action, resp2, cssError: !!cssErrorMsg });
-                    // include cssError message as non-fatal metadata to help debugging
-                    return finish({ ok: true, response: resp2, cssError: cssErrorMsg || null });
+                    // unwrap nested response if present and include cssError metadata
+                    const unwrapped2 = unwrapResponseMaybe(resp2);
+                    return finish({ ok: true, response: unwrapped2, cssError: cssErrorMsg || null });
                   });
                 });
               });
