@@ -1,0 +1,108 @@
+@tailwind  base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+@font-face {
+  font-family: 'OpenDyslexic';
+  src: url('/fonts/OpenDyslexic-Regular.woff2') format('woff2');
+  font-weight: normal;
+  font-style: normal;
+}
+
+:root {
+  --primary: #1976d2;
+  --primary-dark: #1565c0;
+  --secondary: #03dac6;
+  --background: #fafafa;
+  --surface: #ffffff;
+  --surface-variant: #f5f5f5;
+  --on-primary: #ffffff;
+  --on-surface: #212121;
+  --on-surface-variant: #757575;
+  --outline: #e0e0e0;
+  --shadow: rgba(0, 0, 0, 0.1);
+  --shadow-dark: rgba(0, 0, 0, 0.2);
+}
+
+.dark {
+  --primary: #2196f3;
+  --primary-dark: #1976d2;
+  --secondary: #03dac6;
+  --background: #121212;
+  --surface: #1e1e1e;
+  --surface-variant: #2e2e2e;
+  --on-primary: #000000;
+  --on-surface: #ffffff;
+  --on-surface-variant: #b3b3b3;
+  --outline: #3e3e3e;
+  --shadow: rgba(0, 0, 0, 0.3);
+  --shadow-dark: rgba(0, 0, 0, 0.5);
+}
+
+body {
+  font-family: 'Inter', sans-serif;
+  background: var(--background);
+  color: var(--on-surface);
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+.dyslexic {
+  font-family: 'OpenDyslexic', 'Inter', sans-serif;
+}
+
+.material-elevation-1 {
+  box-shadow: 0 1px 3px var(--shadow), 0 1px 2px var(--shadow);
+}
+
+.material-elevation-2 {
+  box-shadow: 0 2px 4px var(--shadow), 0 3px 4px var(--shadow);
+}
+
+.material-elevation-3 {
+  box-shadow: 0 4px 8px var(--shadow), 0 6px 20px var(--shadow);
+}
+
+.material-elevation-4 {
+  box-shadow: 0 8px 12px var(--shadow), 0 8px 24px var(--shadow-dark);
+}
+
+.animate-ripple {
+  position: relative;
+  overflow: hidden;
+  transform: translate3d(0, 0, 0);
+}
+
+.animate-ripple:after {
+  content: "";
+  display: block;
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  background-image: radial-gradient(circle, var(--primary) 10%, transparent 10.01%);
+  background-repeat: no-repeat;
+  background-position: 50%;
+  transform: scale(10, 10);
+  opacity: 0;
+  transition: transform .5s, opacity 1s;
+}
+
+.animate-ripple:active:after {
+  transform: scale(0, 0);
+  opacity: .2;
+  transition: 0s;
+}
+
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+ 
