@@ -1,0 +1,25 @@
+/* Performance optimizations */
+.will-change-transform {
+  will-change: transform;
+}
+
+.will-change-opacity {
+  will-change: opacity;
+}
+
+.gpu-accelerated {
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  perspective: 1000;
+}
+
+/* Add GPU acceleration to animated elements */
+.glass-card,
+.feature-toggle,
+.control-btn,
+.stat-card,
+.shape {
+  transform: translateZ(0);
+  backface-visibility: hidden;
+}
+ 

@@ -1,4 +1,4 @@
-<!doctype html>
+<!doctype  html>
 <html>
 <head>
   <meta charset="utf-8" />
@@ -25,13 +25,13 @@
 
       <div class="toggles card">
         <div class="card-row">
-          <label class="switch"><input id="dyslexicToggle" type="checkbox"><span>Dyslexia font</span></label>
-          <label class="switch"><input id="reflowToggle" type="checkbox"><span>Reading mode</span></label>
+          <label class="switch"><input id="dyslexicToggle" type="checkbox"><span class="switch-slider"></span><span>Dyslexia font</span></label>
+          <label class="switch"><input id="reflowToggle" type="checkbox"><span class="switch-slider"></span><span>Reading mode</span></label>
         </div>
 
         <div class="card-row">
-          <label class="switch"><input id="contrastToggle" type="checkbox"><span>High contrast</span></label>
-          <label class="switch"><input id="invertToggle" type="checkbox"><span>Invert</span></label>
+          <label class="switch"><input id="contrastToggle" type="checkbox"><span class="switch-slider"></span><span>High contrast</span></label>
+          <label class="switch"><input id="invertToggle" type="checkbox"><span class="switch-slider"></span><span>Invert</span></label>
         </div>
 
         <div id="sizeOptions" class="sizeOptions" hidden>
@@ -70,7 +70,7 @@
           </label>
         </div>
 
-        <label class="checkbox"><input type="checkbox" id="highlightReading"> Highlight while reading</label>
+        <label class="checkbox"><input type="checkbox" id="highlightReading"> <span class="checkmark"></span> Highlight while reading</label>
 
         <div class="controls-row">
           <button id="readBtn" class="btn primary">Read ▶</button>
@@ -81,7 +81,7 @@
 
       <div id="speedReadingSettings" class="card">
         <h3 class="section-title">Speed reading</h3>
-        <label class="switch"><input id="speedToggle" type="checkbox"><span>Enable speed-reading</span></label>
+        <label class="switch"><input id="speedToggle" type="checkbox"><span class="switch-slider"></span><span>Enable speed-reading</span></label>
 
         <div class="form-row smalls">
           <label>Chunk size
@@ -157,3 +157,4 @@
   <script src="popup.js"></script>
 </body>
 </html>
+ 

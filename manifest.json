@@ -43,10 +43,9 @@
   "web_accessible_resources": [
   {
     "resources": [
-      "src/fonts/OpenDyslexic-Regular.woff2",
-      "src/fonts/OpenDyslexic-Regular.woff",
-      "src/inject.css",
-      "src/lib/chart.umd.min.js"
+      "public/fonts/OpenDyslexic-Regular.woff2",
+      "public/fonts/OpenDyslexic-Regular.woff",
+      "src/inject.css"
     ],
     "matches": ["<all_urls>"]
   }

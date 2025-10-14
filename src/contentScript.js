@@ -1,4 +1,3 @@
-// src/contentScript.js - ClarityRead content script (copy-paste ready)
 // Handles applySettings, readAloud, speedRead, pause/resume/stop, selection, detectLanguage.
 // All speech synthesis happens in this file only.
 

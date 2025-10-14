@@ -1,8 +1,4 @@
-/* src/inject.css - ReadEasy injected styling (copy-paste ready)
-   Includes aliases for clarityread-* class names used by the content script
-*/
-
-/* --- Dyslexia font (both namespaces) --- */
+/*  --- Enhanced Dyslexia font --- */
 html.readeasy-dyslexic,
 html.readeasy-dyslexic *,
 .readeasy-dyslexic,
@@ -11,10 +7,12 @@ html.clarityread-dyslexic,
 html.clarityread-dyslexic *,
 .clarityread-dyslexic,
 .clarityread-dyslexic * {
-  font-family: 'OpenDyslexic', Arial, sans-serif !important;
+  font-family: 'OpenDyslexic', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif !important;
+  font-weight: 400 !important;
+  letter-spacing: 0.02em !important;
 }
 
-/* --- Reflow / reading mode (both namespaces) --- */
+/* --- Enhanced Reflow / reading mode --- */
 html.readeasy-reflow,
 html.readeasy-reflow body,
 html.readeasy-reflow article,
@@ -32,37 +30,50 @@ html.clarityread-reflow main,
 .clarityread-reflow article,
 .clarityread-reflow main {
   max-width: 760px !important;
-  margin: 18px auto !important;
+  margin: 20px auto !important;
   line-height: 1.8 !important;
-  padding: 0 18px !important;
+  padding: 0 24px !important;
   word-break: break-word !important;
   overflow-wrap: break-word !important;
   box-sizing: border-box !important;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
 }
 
-/* Size presets (applies when reflow class is present) */
+/* Enhanced size presets */
 .readeasy-reflow.readeasy-size-small,
-.clarityread-reflow.clarityread-size-small { font-size: 18px !important; }
+.clarityread-reflow.clarityread-size-small { 
+  font-size: 18px !important; 
+}
 .readeasy-reflow.readeasy-size-medium,
-.clarityread-reflow.clarityread-size-medium { font-size: 20px !important; }
+.clarityread-reflow.clarityread-size-medium { 
+  font-size: 20px !important; 
+}
 .readeasy-reflow.readeasy-size-large,
-.clarityread-reflow.clarityread-size-large { font-size: 24px !important; }
+.clarityread-reflow.clarityread-size-large { 
+  font-size: 24px !important; 
+}
 
 .readeasy-reflow p,
-.clarityread-reflow p { margin-bottom: 1.1em !important; }
+.clarityread-reflow p { 
+  margin-bottom: 1.2em !important; 
+  transition: all 0.2s ease !important;
+}
 
-/* --- High contrast mode --- */
+/* --- Enhanced High contrast mode --- */
 .readeasy-contrast *,
 .clarityread-contrast * {
   background: #000 !important;
   color: #fff !important;
+  border-color: #333 !important;
+  transition: all 0.2s ease !important;
 }
 
-/* Links & form elements in contrast mode */
+/* Enhanced links & form elements */
 .readeasy-contrast a,
 .clarityread-contrast a {
   color: #00ffff !important;
   text-decoration: underline !important;
+  text-shadow: 0 0 2px rgba(0, 255, 255, 0.5) !important;
 }
 
 .readeasy-contrast button,
@@ -76,37 +87,41 @@ html.clarityread-reflow main,
   background: #111 !important;
   color: #fff !important;
   border: 2px solid #fff !important;
-  padding: 4px !important;
+  padding: 6px !important;
+  border-radius: 4px !important;
+  transition: all 0.2s ease !important;
 }
 
-/* Images dimmed slightly for better focus */
+/* Enhanced images */
 .readeasy-contrast img,
 .clarityread-contrast img {
-  opacity: 0.85 !important;
-  filter: grayscale(60%) contrast(130%) !important;
+  opacity: 0.9 !important;
+  filter: grayscale(50%) contrast(140%) brightness(1.1) !important;
+  border: 1px solid #444 !important;
+  transition: all 0.3s ease !important;
 }
 
-/* --- Full invert mode (use double-invert on media to keep them visually natural) --- */
+/* --- Enhanced Full invert mode --- */
 .readeasy-invert,
 .clarityread-invert {
   filter: invert(100%) hue-rotate(180deg) !important;
+  transition: filter 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
 }
 
-/* For images/videos, apply same invert so they visually cancel the parent invert (keeps images looking correct) */
 .readeasy-invert img,
 .readeasy-invert video,
 .clarityread-invert img,
 .clarityread-invert video {
   filter: invert(100%) hue-rotate(180deg) !important;
+  transition: filter 0.3s ease !important;
 }
 
-/* Prefer invert when both invert+contrast present */
 .readeasy-invert.readeasy-contrast,
 .clarityread-invert.clarityread-contrast {
   filter: invert(100%) hue-rotate(180deg) !important;
 }
 
-/* --- Word-span behaviour (overlay words) --- */
+/* --- Enhanced Word-span behaviour --- */
 .readeasy-word,
 .clarityread-word {
   display: inline !important;
@@ -114,60 +129,124 @@ html.clarityread-reflow main,
   line-height: inherit !important;
   box-decoration-break: clone !important;
   -webkit-box-decoration-break: clone !important;
+  transition: all 0.1s ease !important;
 }
 
-/* --- Highlight / current word styling --- */
+/* --- Enhanced Highlight styling --- */
 .readeasy-highlight,
 .clarityread-highlight {
-  background-color: #ffec3d !important; /* bright yellow-ish */
+  background: linear-gradient(135deg, #fef08a, #facc15) !important;
   color: #000 !important;
-  transition: background-color 0.12s linear, transform 0.08s linear !important;
-  padding: 0 0.08em !important;
-  border-radius: 3px !important;
-  box-shadow: 0 1px 0 rgba(0,0,0,0.04) inset !important;
+  transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1) !important;
+  padding: 0 0.1em !important;
+  border-radius: 4px !important;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1), 0 0 0 1px rgba(251, 191, 36, 0.3) !important;
   box-decoration-break: clone !important;
   -webkit-box-decoration-break: clone !important;
+  transform: scale(1.02) !important;
+  position: relative !important;
 }
 
-/* Ensure highlight stands out under invert/contrast combos */
+.readeasy-highlight::before,
+.clarityread-highlight::before {
+  content: '';
+  position: absolute;
+  top: -2px;
+  left: -2px;
+  right: -2px;
+  bottom: -2px;
+  background: linear-gradient(135deg, #fbbf24, #f59e0b);
+  border-radius: 6px;
+  z-index: -1;
+  opacity: 0.3;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.3; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(1.02); }
+}
+
+/* Enhanced highlight under special modes */
 .readeasy-invert .readeasy-highlight,
 .readeasy-invert.readeasy-contrast .readeasy-highlight,
 .clarityread-invert .clarityread-highlight,
 .clarityread-invert.clarityread-contrast .clarityread-highlight {
-  background-color: #ffec3d !important;
+  background: linear-gradient(135deg, #fef08a, #facc15) !important;
   color: #000 !important;
   filter: none !important;
+  box-shadow: 0 0 8px rgba(251, 191, 36, 0.8) !important;
 }
 
-/* --- Overlay container (used by content script) --- */
+/* --- Enhanced Overlay container --- */
 #readeasy-reader-overlay,
 #clarityread-overlay {
-  font-family: 'OpenDyslexic', system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif !important;
+  font-family: 'OpenDyslexic', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
   box-sizing: border-box !important;
-  background: #fff !important;
-  color: #111 !important;
-  padding: 18px !important;
-  border-radius: 8px !important;
-  max-height: 88vh !important;
+  background: linear-gradient(135deg, #fff, #f9fafb) !important;
+  color: #1f2937 !important;
+  padding: 24px !important;
+  border-radius: 12px !important;
+  max-height: 85vh !important;
   overflow: auto !important;
-  line-height: 1.6 !important;
+  line-height: 1.7 !important;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.15), 0 0 0 1px rgba(0,0,0,0.05) !important;
+  border: 1px solid rgba(0,0,0,0.08) !important;
+  backdrop-filter: blur(10px) !important;
+  animation: overlayFadeIn 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
 }
 
-/* Ensure highlight spans inside overlay also follow same rules */
+@keyframes overlayFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(20px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
 #readeasy-reader-overlay .readeasy-highlight,
 #clarityread-overlay .clarityread-highlight {
-  background-color: #ffec3d !important;
+  background: linear-gradient(135deg, #fef08a, #facc15) !important;
   color: #000 !important;
-  padding: 0 0.06em !important;
+  padding: 0 0.08em !important;
+  border-radius: 3px !important;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1) !important;
 }
 
-/* Minor accessibility: make close buttons / controls inside overlay obvious */
+/* Enhanced overlay controls */
 #readeasy-reader-overlay button,
 #clarityread-overlay button {
   appearance: none !important;
-  background: rgba(0,0,0,0.06) !important;
-  border: 1px solid rgba(0,0,0,0.06) !important;
-  padding: 6px 8px !important;
-  border-radius: 6px !important;
+  background: linear-gradient(135deg, #f9fafb, #f3f4f6) !important;
+  border: 1px solid rgba(0,0,0,0.1) !important;
+  padding: 8px 12px !important;
+  border-radius: 8px !important;
   cursor: pointer !important;
+  font-weight: 500 !important;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
+  color: #374151 !important;
 }
+
+#readeasy-reader-overlay button:hover,
+#clarityread-overlay button:hover {
+  background: linear-gradient(135deg, #f3f4f6, #e5e7eb) !important;
+  transform: translateY(-1px) !important;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1) !important;
+}
+
+/* Smooth scrolling for better reading experience */
+html.readeasy-reflow,
+html.clarityread-reflow {
+  scroll-behavior: smooth !important;
+}
+
+/* Focus ring improvements */
+.readeasy-highlight:focus,
+.clarityread-highlight:focus {
+  outline: 2px solid #10b981 !important;
+  outline-offset: 2px !important;
+}
+ 
