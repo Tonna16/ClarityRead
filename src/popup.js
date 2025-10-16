@@ -976,7 +976,7 @@ safeOn(themeToggleBtn, 'click', () => {
 
   safeOn(exportProfilesBtn, 'click', () => { chrome.storage.local.get(['profiles'], (res) => { const dataStr = JSON.stringify(res.profiles || {}); const blob = new Blob([dataStr], { type: "application/json" }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'ClarityReadProfiles.json'; a.click(); URL.revokeObjectURL(url); toast('Profiles exported.', 'success'); safeLog('exported profiles'); }); });
   // ===== Settings export / import (apply on import) =====
-// Export current settings to a JSON file
+ // Export current settings to a JSON file
 const exportSettingsBtn = document.createElement('button');
 exportSettingsBtn.className = 'ghost';
 exportSettingsBtn.textContent = 'Export Settings';
