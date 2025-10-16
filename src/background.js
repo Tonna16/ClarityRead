@@ -3,6 +3,9 @@
 (() => {
   'use strict';
 
+  const HANDSHAKE_KEY = '_handshakeSelection';
+  const HANDSHAKE_TTL_MS = 30 * 1000; // 30s - popup should consume handshake quickly
+
   const safeLog = (...args) => { try { console.log('[ClarityRead bg]', ...args); } catch (e) {} };
   const safeWarn = (...args) => { try { console.warn('[ClarityRead bg]', ...args); } catch (e) {} };
   const safeInfo = (...args) => { try { console.info('[ClarityRead bg]', ...args); } catch (e) {} };
@@ -185,6 +188,58 @@
     });
   }
 
+  // Helper: store handshake selection and try to open/focus popup window
+  function storeHandshakeAndOpenPopup(selectionObj = {}) {
+    const payload = {
+      text: selectionObj.text || '',
+      title: selectionObj.title || '',
+      url: selectionObj.url || '',
+      ts: Date.now()
+    };
+
+    try {
+      chrome.storage.local.set({ [HANDSHAKE_KEY]: payload }, () => {
+        safeLog('handshake stored', payload);
+
+        // Try to find an already-open popup tab and focus its window/tab, otherwise open a new popup window
+        const popupUrl = chrome.runtime.getURL('src/popup.html');
+
+        // Query tabs for already-open popup (best-effort)
+        chrome.tabs.query({ url: popupUrl }, (tabs) => {
+          if (chrome.runtime.lastError) {
+            // If query fails, just open a new window
+            safeWarn('tabs.query for popup failed', chrome.runtime.lastError);
+            chrome.windows.create({ url: popupUrl, type: 'popup', width: 800, height: 600 }, () => {});
+            return;
+          }
+
+          if (tabs && tabs.length > 0) {
+            // Focus the first found popup tab
+            const t = tabs[0];
+            try {
+              chrome.windows.update(t.windowId, { focused: true }, () => {
+                // bring tab to front
+                chrome.tabs.update(t.id, { active: true }, () => {
+                  safeLog('focused existing popup tab', t.id);
+                });
+              });
+            } catch (e) {
+              safeWarn('failed to focus existing popup', e);
+              chrome.windows.create({ url: popupUrl, type: 'popup', width: 800, height: 600 }, () => {});
+            }
+          } else {
+            // no existing popup -> create
+            chrome.windows.create({ url: popupUrl, type: 'popup', width: 800, height: 600 }, () => {
+              safeLog('opened new popup window for handshake');
+            });
+          }
+        });
+      });
+    } catch (e) {
+      safeWarn('storeHandshakeAndOpenPopup failed', e);
+    }
+  }
+
   // Context menu: "Read with ClarityRead" for text selections
   chrome.runtime.onInstalled.addListener(() => {
     try {
@@ -201,14 +256,20 @@
     }
   });
 
+  // NEW: context click now stores handshake and opens/focuses popup instead of messaging the page directly
   chrome.contextMenus.onClicked.addListener((info, tab) => {
     try {
       if (info.menuItemId === 'clarityReadSelection') {
-        if (!tab || !tab.id) return;
-        const txt = info.selectionText || '';
-        sendMessageToTabWithInjection(tab.id, { action: 'readAloud', _savedText: txt })
-          .then(res => { if (!res.ok) safeWarn('context read failed', res); else safeLog('context read ok'); })
-          .catch(err => safeWarn('context read error', err));
+        // Build a safe handshake payload
+        const txt = (info.selectionText || '').toString();
+        const title = (tab && tab.title) ? tab.title : '';
+        const pageUrl = info.pageUrl || (tab && tab.url) || '';
+        safeLog('context menu clicked - storing handshake (no direct messaging)', { textLen: txt.length, pageUrl, title });
+
+        storeHandshakeAndOpenPopup({ text: txt, title, url: pageUrl });
+
+        // don't attempt to sendMessage here — popup will consume the handshake and do the work
+        return;
       }
     } catch (e) {
       safeWarn('contextMenus.onClicked handler error', e);
@@ -243,6 +304,12 @@
         safeLog('command invoked on non-web-url', tab.url);
         return;
       }
+      if (!tab || !isWebUrl(tab.url)) {
+  // open popup to let user select a web tab
+  chrome.windows.create({ url: chrome.runtime.getURL("src/popup.html"), type: "popup", width: 800, height: 600 });
+  return;
+}
+
 
       if (command === "read-aloud") {
         const result = await sendMessageToTabWithInjection(tab.id, { action: "readAloud" });
@@ -462,6 +529,19 @@
       return true;
     }
   });
+
+  // Periodic cleanup: remove stale handshake keys older than TTL (best-effort)
+  setInterval(() => {
+    try {
+      chrome.storage.local.get([HANDSHAKE_KEY], (res) => {
+        if (res && res[HANDSHAKE_KEY] && res[HANDSHAKE_KEY].ts) {
+          if (Date.now() - res[HANDSHAKE_KEY].ts > HANDSHAKE_TTL_MS) {
+            chrome.storage.local.remove(HANDSHAKE_KEY, () => { safeLog('cleaned stale handshake'); });
+          }
+        }
+      });
+    } catch (e) { /* ignore */ }
+  }, 15 * 1000);
 
   safeLog('background service ready');
 })();

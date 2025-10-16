@@ -9,12 +9,12 @@
     "128": "assets/icons/icon128.png"
   },
   "permissions": [
-  "storage",
-  "activeTab",
-  "scripting",
-  "tabs",
-  "contextMenus"
-],
+    "storage",
+    "activeTab",
+    "scripting",
+    "tabs",
+    "contextMenus"
+  ],
   "host_permissions": [
     "https://*/*",
     "http://*/*"
@@ -41,14 +41,16 @@
     }
   ],
   "web_accessible_resources": [
-  {
-    "resources": [
-      "public/fonts/OpenDyslexic-Regular.woff2",
-      "public/fonts/OpenDyslexic-Regular.woff",
-      "src/inject.css"
-    ],
-    "matches": ["<all_urls>"]
-  }
+    {
+      "resources": [
+        "src/fonts/OpenDyslexic-Regular.woff2",
+        "src/fonts/OpenDyslexic-Regular.woff",
+        "src/inject.css",
+        "src/lib/chart.umd.min.js",
+        "src/toast.css"
+      ],
+      "matches": ["<all_urls>"]
+    }
   ],
   "commands": {
     "read-aloud": {

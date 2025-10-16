@@ -177,15 +177,30 @@
 
     try {
       const close = document.createElement('button');
+      close.type = 'button';
       close.textContent = 'Close reader';
+      close.setAttribute('aria-label', 'Close reader');
       close.style.position = 'absolute';
       close.style.right = '16px';
       close.style.top = '10px';
       close.addEventListener('click', () => {
-        try { window.speechSynthesis.cancel(); } catch(e){}
-        removeReaderOverlay();
-        clearHighlights();
-        sendState('Not Reading');
+        try {
+          // Use unified stop routine so paused/edge cases cleanly stop and finalize stats
+          if (typeof stopReadingAll === 'function') {
+            stopReadingAll();
+          } else {
+            try { window.speechSynthesis.cancel(); } catch(e){}
+            removeReaderOverlay();
+            clearHighlights();
+            sendState('Not Reading');
+          }
+        } catch (e) {
+          safeLog('overlay close handler error', e);
+          try { window.speechSynthesis.cancel(); } catch(e){}
+          removeReaderOverlay();
+          clearHighlights();
+          sendState('Not Reading');
+        }
       });
       overlay.appendChild(close);
     } catch(e){ safeLog('overlay close button create failed', e); }
@@ -924,8 +939,16 @@
 
   // cleanup when the page unloads
   window.addEventListener('pagehide', () => {
-    try { window.speechSynthesis.cancel(); } catch(e){}
-    sendState('Not Reading');
-    safeLog('pagehide: canceled speech synthesis');
+    try { 
+      // Ensure full cleanup and stats finalization on page hide/navigation
+      if (typeof stopReadingAll === 'function') {
+        stopReadingAll();
+      } else {
+        try { window.speechSynthesis.cancel(); } catch(e){}
+        sendState('Not Reading');
+      }
+    } catch(e){ safeLog('pagehide cleanup error', e); }
+    safeLog('pagehide: attempted to cancel/stop speech synthesis and finalize stats');
   });
+
 })();

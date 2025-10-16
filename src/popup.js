@@ -1,11 +1,22 @@
-// src/popup.js - upgraded with multilingual, share, saved reads, speed-read + focus-mode + local summarizer
+// src/popup.js - production-ready edits (DEBUG flag, toast improvements, keyboard shortcuts, import fix, UI tweaks)
+// Based on original uploaded file. Improvements: quieter logs, toast dedupe/debounce, import reset, hide Manage button, preserve Focus label.
 document.addEventListener('DOMContentLoaded', () => {
+  // ---------- CONFIG ----------
+  const DEBUG = false; // set true for development, false for production
   const $ = id => document.getElementById(id) || null;
-  const safeLog = (...a) => { try { console.log('[ClarityRead popup]', ...a); } catch(e){} };
-  console.info('ClarityRead popup initializing...');
+  const safeLog = (...a) => { try { if (DEBUG) console.log('[ClarityRead popup]', ...a); } catch(e){} };
+  // ensure popup can receive keyboard events immediately
+try {
+  const body = document.querySelector('body');
+  if (body && typeof body.focus === 'function') {
+    body.setAttribute('tabindex','0');
+    body.focus({ preventScroll: true });
+  }
+} catch (e) { /* noop */ }
+
   safeLog('DOMContentLoaded');
 
-  // --- Simple toast system (non-blocking notifications)
+  // ---------- Toast: deduped + queued, non-spammy ----------
   function createToastContainer() {
     if (document.getElementById('clarityread-toast-container')) return;
     const c = document.createElement('div');
@@ -19,8 +30,19 @@ document.addEventListener('DOMContentLoaded', () => {
     c.style.gap = '8px';
     document.body.appendChild(c);
   }
+
+  // small in-memory dedupe for identical messages for a short period
+  const _toastRecent = new Map(); // msg -> timestamp
   function toast(msg, type = 'info', ttl = 3500) {
     try {
+      // dedupe identical messages within 1500ms
+      const now = Date.now();
+      const last = _toastRecent.get(msg) || 0;
+      if (now - last < 1500) { safeLog('toast deduped', msg); return; }
+      _toastRecent.set(msg, now);
+      // cleanup map entries older than 10s
+      for (const [k, ts] of _toastRecent) if (now - ts > 10000) _toastRecent.delete(k);
+
       createToastContainer();
       const cont = document.getElementById('clarityread-toast-container');
       if (!cont) return;
@@ -35,15 +57,19 @@ document.addEventListener('DOMContentLoaded', () => {
       el.style.fontSize = '13px';
       el.style.maxWidth = '320px';
       el.style.wordBreak = 'break-word';
+      el.style.transition = 'opacity 260ms ease, transform 260ms ease';
+      el.style.opacity = '1';
+      el.style.transform = 'translateY(0)';
       cont.appendChild(el);
+      // hide animation
       setTimeout(() => {
         try { el.style.opacity = '0'; el.style.transform = 'translateY(6px)'; } catch(e){}
-      }, ttl - 500);
+      }, Math.max(200, ttl - 500));
       setTimeout(() => { try { el.remove(); } catch(e){} }, ttl);
     } catch (e) { safeLog('toast failed', e); }
   }
 
-  // --- Ensure Chart.js loaded if popup opened as standalone window
+  // ---------- Ensure Chart.js loaded if popup opened as standalone window ----------
   function ensureChartReady(callback) {
     safeLog('ensureChartReady check Chart global', typeof Chart !== 'undefined');
     if (typeof Chart !== 'undefined') {
@@ -59,21 +85,20 @@ document.addEventListener('DOMContentLoaded', () => {
     const s = document.createElement('script');
     s.setAttribute('data-clarity-chart', '1');
     s.src = src;
-    s.onload = () => { console.info('Chart.js injected and loaded.'); safeLog('Chart.js onload'); if (typeof callback === 'function') callback(); };
-    s.onerror = (e) => { console.error('Failed to load Chart.js from', src, e); safeLog('Chart.js onerror', e); if (typeof callback === 'function') callback(); };
+    s.onload = () => { safeLog('Chart.js injected and loaded'); if (typeof callback === 'function') callback(); };
+    s.onerror = (e) => { console.warn('Failed to load Chart.js from', src, e); if (typeof callback === 'function') callback(); };
     document.head.appendChild(s);
     safeLog('ensureChartReady injected script', src);
   }
 
-  // quick element presence check
+  // ---------- Quick element presence check ----------
   const requiredIds = ['dyslexicToggle','reflowToggle','contrastToggle','invertToggle','readBtn','pauseBtn','stopBtn','pagesRead','timeRead','avgSession','statsChart','voiceSelect'];
   const elPresence = requiredIds.reduce((acc, id) => (acc[id]=!!document.getElementById(id), acc), {});
-  console.info('Popup element presence:', elPresence);
-  safeLog('element presence', elPresence);
+  safeLog('Popup element presence:', elPresence);
 
   ensureChartReady(() => { try { if (typeof loadStats === 'function') loadStats(); } catch (e) { safeLog('ensureChartReady callback loadStats threw', e); } });
 
-  // --- Elements
+  // ---------- Elements ----------
   const dysToggle = $('dyslexicToggle');
   const reflowToggle = $('reflowToggle');
   const contrastToggle = $('contrastToggle');
@@ -112,27 +137,34 @@ document.addEventListener('DOMContentLoaded', () => {
   const savedListEl = $('savedList');
   const shareStatsBtn = $('shareStatsBtn');
 
-  // dynamically add Focus Mode button (if HTML doesn't include it)
+  // dynamic focusMode + summarize presence
   let focusModeBtn = $('focusModeBtn');
   if (!focusModeBtn && document.querySelector('.themeRow')) {
     focusModeBtn = document.createElement('button');
     focusModeBtn.id = 'focusModeBtn';
-    focusModeBtn.textContent = 'Focus Mode';
+    focusModeBtn.textContent = '🔎 Focus Mode';
     focusModeBtn.style.marginRight = '8px';
     document.querySelector('.themeRow').insertBefore(focusModeBtn, themeToggleBtn || null);
     safeLog('added dynamic focusModeBtn');
   }
 
-  // also add Summarize Page button if missing
   let summarizePageBtn = $('summarizePageBtn');
   if (!summarizePageBtn && document.querySelector('.themeRow')) {
     summarizePageBtn = document.createElement('button');
     summarizePageBtn.id = 'summarizePageBtn';
-    summarizePageBtn.textContent = 'Summarize Page';
+    summarizePageBtn.textContent = '📝 Summarize';
     summarizePageBtn.style.marginRight = '8px';
     document.querySelector('.themeRow').insertBefore(summarizePageBtn, focusModeBtn || themeToggleBtn || null);
     safeLog('added dynamic summarizePageBtn');
   }
+
+  // hide redundant "Manage" saved button to reduce UI clutter (you can remove it from HTML later)
+  if (openSavedManagerBtn) {
+    try { openSavedManagerBtn.style.display = 'none'; safeLog('hidden openSavedManagerBtn (Manage)'); } catch(e) {}
+  }
+
+  // preserve the original focus button label (emoji + text) so toggling doesn't clobber emoji
+  const _focusModeOriginalLabel = focusModeBtn ? focusModeBtn.textContent : '🔎 Focus Mode';
 
   const DEFAULTS = { dys: false, reflow: false, contrast: false, invert: false, fontSize: 20 };
   const safeOn = (el, ev, fn) => { if (el) el.addEventListener(ev, fn); };
@@ -144,7 +176,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let chartResizeObserver = null;
   let settingsDebounce = null;
   let opLock = false;            // prevent concurrent sends
-  let lastStatus = null;        // dedupe repeated identical status updates
+  let lastStatus = null;         // dedupe repeated identical status updates
 
   function formatTime(sec) {
     sec = Math.max(0, Math.round(sec || 0));
@@ -162,7 +194,6 @@ document.addEventListener('DOMContentLoaded', () => {
     return arr;
   }
 
-  // helper: build host permission pattern from a tab URL
   function buildOriginPermissionPattern(url) {
     try {
       const u = new URL(url);
@@ -171,32 +202,27 @@ document.addEventListener('DOMContentLoaded', () => {
       return '<all_urls>';
     }
   }
-
   function isWebUrl(u = '') {
     if (!u) return false;
     const s = String(u).toLowerCase();
     return !/^(chrome:\/\/|about:|chrome-extension:\/\/|edge:\/\/|file:\/\/|view-source:|moz-extension:\/\/)/.test(s);
   }
 
-  // find best candidate web tab (prefer focused normal window active tab)
-  function findBestWebTab() {
+  async function findBestWebTab() {
     return new Promise((resolve) => {
       chrome.windows.getAll({ populate: true }, (wins) => {
         if (chrome.runtime.lastError || !wins) return resolve(null);
-        // 1) focused normal window's active web tab
         const focusedWin = wins.find(w => w.focused && w.type === 'normal' && Array.isArray(w.tabs));
         if (focusedWin) {
           const tab = focusedWin.tabs.find(t => t.active && isWebUrl(t.url));
           if (tab) return resolve(tab);
         }
-        // 2) any normal window's active web tab
         for (const w of wins) {
           if (w.type === 'normal' && Array.isArray(w.tabs)) {
             const tab = w.tabs.find(t => t.active && isWebUrl(t.url));
             if (tab) return resolve(tab);
           }
         }
-        // 3) fallback: first web tab anywhere
         for (const w of wins) {
           if (!Array.isArray(w.tabs)) continue;
           for (const t of w.tabs) {
@@ -208,28 +234,20 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // Normalize possibly-wrapped background responses (unwrap `response` nesting)
   function normalizeBgResponse(res) {
     try {
       let r = res;
-      // If background wrapped: { ok: true, response: { ok:true, response: {...} } } etc.
       let depth = 0;
       while (r && typeof r === 'object' && ('response' in r) && (depth < 6)) {
         r = r.response;
         depth++;
       }
       return r;
-    } catch (e) {
-      safeLog('normalizeBgResponse threw', e);
-      return res;
-    }
+    } catch (e) { safeLog('normalizeBgResponse threw', e); return res; }
   }
 
   // Robust send helper - popup -> background forward wrapper
-  // Attaches _targetTabId/_targetTabUrl (only if we can reliably determine a web tab).
-  // If active tab is an extension/internal page, we try to find a real web tab via findBestWebTab().
   async function sendMessageToActiveTabWithInject(message, _retry = 0) {
-    // prevent concurrent operations to avoid racey state updates
     if (opLock) {
       safeLog('sendMessageToActiveTabWithInject blocked: opLock active');
       return { ok: false, error: 'in-flight' };
@@ -239,7 +257,6 @@ document.addEventListener('DOMContentLoaded', () => {
       return await new Promise((resolve) => {
         chrome.tabs.query({ active: true, lastFocusedWindow: true }, async (tabs) => {
           const tab = tabs && tabs[0];
-          // If active tab is an extension or otherwise non-web, try to find a "best" web tab.
           if (tab && tab.url && tab.url.startsWith('chrome-extension://')) {
             safeLog('Popup helper: active tab is extension page — looking for best web tab');
             try {
@@ -249,21 +266,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 message._targetTabUrl = webTab.url;
                 safeLog('Popup helper: selected best web tab', webTab.id, webTab.url);
               } else {
-                safeLog('Popup helper: no web tab found; leaving target to background discovery');
                 delete message._targetTabId;
                 delete message._targetTabUrl;
               }
-            } catch (e) {
-              safeLog('Popup helper: findBestWebTab error', e);
-              delete message._targetTabId;
-              delete message._targetTabUrl;
-            }
+            } catch (e) { safeLog('Popup helper: findBestWebTab error', e); delete message._targetTabId; delete message._targetTabUrl; }
           } else if (tab && tab.id && tab.url && isWebUrl(tab.url)) {
-            // Normal case: active tab is web page
             message._targetTabId = tab.id;
             message._targetTabUrl = tab.url;
           } else if (tab && tab.id && tab.url && !isWebUrl(tab.url)) {
-            // active tab is some internal page (chrome:// or about:) — try find best web tab
             safeLog('Popup helper: active tab is internal page, trying to find best web tab');
             try {
               const webTab = await findBestWebTab();
@@ -275,12 +285,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 delete message._targetTabId;
                 delete message._targetTabUrl;
               }
-            } catch (e) {
-              delete message._targetTabId;
-              delete message._targetTabUrl;
-            }
-          } else {
-            // no active tab found — let background discovery handle it
+            } catch (e) { delete message._targetTabId; delete message._targetTabUrl; }
           }
 
           try {
@@ -312,30 +317,20 @@ document.addEventListener('DOMContentLoaded', () => {
                       sendMessageToActiveTabWithInject(message, _retry + 1).then(r => { opLock = false; resolve(r); }).catch((e) => { opLock = false; resolve({ ok: false, error: String(e) }); });
                     }, 250);
                   });
-                } catch (e) {
-                  safeLog('permission flow threw', e);
-                  opLock = false;
-                  return resolve({ ok: false, error: 'permission-flow-exception', detail: String(e) });
-                }
+                } catch (e) { safeLog('permission flow threw', e); opLock = false; return resolve({ ok: false, error: 'permission-flow-exception', detail: String(e) }); }
                 return;
               }
 
               opLock = false;
               return resolve(res);
             });
-          } catch (ex) {
-            safeLog('popup send wrapper threw', ex);
-            opLock = false;
-            return resolve({ ok: false, error: String(ex) });
-          }
+          } catch (ex) { safeLog('popup send wrapper threw', ex); opLock = false; return resolve({ ok: false, error: String(ex) }); }
         });
       });
-    } finally {
-      opLock = false;
-    }
+    } finally { opLock = false; }
   }
 
-  // --- Stats / badges / chart
+  // ---------- Stats / chart ----------
   function build7DaySeries(daily = []) {
     const labels = lastNDates(7);
     const map = Object.fromEntries((daily || []).map(d => [d.date, d.pages || 0]));
@@ -358,8 +353,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const series = build7DaySeries(stats.daily);
         if (chart) { try { chart.destroy(); } catch (err) { safeLog('chart.destroy error', err); } }
         if (typeof Chart === 'undefined') {
-          console.warn('Chart.js not loaded — graph will be blank.');
-          safeLog('Chart.js undefined, cannot render chart');
+          safeLog('Chart.js not loaded — graph will be blank.');
         } else {
           chart = new Chart(ctx || statsChartEl, {
             type: 'bar',
@@ -394,7 +388,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // --- Voice helpers
+  // ---------- Voices ----------
   function loadVoicesIntoSelect() {
     if (!voiceSelect) { safeLog('voiceSelect missing'); return; }
     const voices = speechSynthesis.getVoices() || [];
@@ -442,7 +436,7 @@ document.addEventListener('DOMContentLoaded', () => {
             selectVoiceByLang(lang);
           } else safeLog('detectPageLanguage no result');
         });
-      } catch (err) { console.warn('detectPageLanguage failed', err); safeLog('detectPageLanguage caught', err); }
+      } catch (err) { safeLog('detectPageLanguage caught', err); }
     });
   }
 
@@ -456,9 +450,10 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  // theme toggle (works)
   safeOn(themeToggleBtn, 'click', () => { document.body.classList.toggle('dark-theme'); safeLog('theme toggled', document.body.classList.contains('dark-theme')); });
 
-  // --- Per-site UI init
+  // ---------- Per-site UI init ----------
   function initPerSiteUI() {
     safeLog('initPerSiteUI start');
     chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
@@ -567,26 +562,43 @@ document.addEventListener('DOMContentLoaded', () => {
     safeLog('gatherSettingsObject', obj);
     return obj;
   }
+  // theme toggle: persist and restore
+function applyThemeFromStorage() {
+  chrome.storage.local.get(['darkTheme'], (res) => {
+    if (res && res.darkTheme) document.body.classList.add('dark-theme');
+    else document.body.classList.remove('dark-theme');
+  });
+}
+applyThemeFromStorage();
+
+safeOn(themeToggleBtn, 'click', () => {
+  const isDark = !document.body.classList.contains('dark-theme');
+  if (isDark) document.body.classList.add('dark-theme'); else document.body.classList.remove('dark-theme');
+  chrome.storage.local.set({ darkTheme: isDark }, () => { toast(isDark ? 'Dark theme on' : 'Dark theme off', 'info'); });
+});
 
   // send settings (single applySettings message)
-  function sendSettingsAndToggles(settings) {
-    safeLog('sendSettingsAndToggles', settings);
+  // Default behavior: do not show toast to avoid spamming during slider changes.
+  // Optionally pass { showToast: true } to show a success toast.
+  function sendSettingsAndToggles(settings, options = { showToast: false }) {
+    safeLog('sendSettingsAndToggles', settings, options);
     return sendMessageToActiveTabWithInject({ action: 'applySettings', ...settings })
       .then((resRaw) => {
         const res = normalizeBgResponse(resRaw);
         safeLog('applySettings response', res);
         if (!res || !res.ok) {
-          console.warn('applySettings failed:', JSON.stringify(res));
-          toast('Failed to apply settings to page.', 'error');
+          safeLog('applySettings failed:', JSON.stringify(res));
+          if (options.showToast) toast('Failed to apply settings to page.', 'error');
         } else {
-          toast('Settings applied.', 'success', 1800);
+          if (options.showToast) toast('Settings applied.', 'success', 1800);
         }
         return res;
       })
-      .catch(err => { console.warn('applySettings err', err); safeLog('applySettings err', err); toast('Failed to apply settings (see console).', 'error'); return { ok:false, error: String(err) }; });
+      .catch(err => { safeLog('applySettings err', err); if (options.showToast) toast('Failed to apply settings (see console).', 'error'); return { ok:false, error: String(err) }; });
   }
 
-  function gatherAndSendSettings() {
+  // gather settings and save to sync/local; by default do not show toast (to avoid slider spam)
+  function gatherAndSendSettings(options = { showToast: false }) {
     const settings = gatherSettingsObject();
     chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
       const tab = tabs && tabs[0];
@@ -601,12 +613,11 @@ document.addEventListener('DOMContentLoaded', () => {
       setUI(settings);
 
       if (settingsDebounce) clearTimeout(settingsDebounce);
-      settingsDebounce = setTimeout(() => { sendSettingsAndToggles(settings); settingsDebounce = null; }, 120);
+      settingsDebounce = setTimeout(() => { sendSettingsAndToggles(settings, options); settingsDebounce = null; }, 120);
     });
   }
 
   function setReadingStatus(status) {
-    // dedupe identical consecutive statuses to avoid flipping UI
     if (status === lastStatus) {
       safeLog('setReadingStatus skipped duplicate', status);
       return;
@@ -619,15 +630,16 @@ document.addEventListener('DOMContentLoaded', () => {
     else { isReading = false; isPaused = false; if (pauseBtn) pauseBtn.textContent = 'Pause'; if (readBtn) readBtn.disabled = false; }
   }
 
-  // --- Events hookup
-  safeOn(dysToggle, 'change', gatherAndSendSettings);
-  safeOn(reflowToggle, 'change', () => { if (sizeOptions) sizeOptions.hidden = !reflowToggle.checked; gatherAndSendSettings(); });
-  safeOn(contrastToggle, 'change', () => { if (contrastToggle?.checked && invertToggle) invertToggle.checked = false; gatherAndSendSettings(); });
-  safeOn(invertToggle, 'change', () => { if (invertToggle?.checked && contrastToggle) contrastToggle.checked = false; gatherAndSendSettings(); });
-  safeOn(fontSizeSlider, 'input', () => { if (fontSizeValue) fontSizeValue.textContent = `${fontSizeSlider.value}px`; gatherAndSendSettings(); });
-  safeOn(rateInput, 'input', gatherAndSendSettings);
-  safeOn(pitchInput, 'input', gatherAndSendSettings);
-  safeOn(highlightCheckbox, 'change', gatherAndSendSettings);
+  // ---------- Events hookup ----------
+  safeOn(dysToggle, 'change', () => gatherAndSendSettings({ showToast: false }));
+  safeOn(reflowToggle, 'change', () => { if (sizeOptions) sizeOptions.hidden = !reflowToggle.checked; gatherAndSendSettings({ showToast: false }); });
+  safeOn(contrastToggle, 'change', () => { if (contrastToggle?.checked && invertToggle) invertToggle.checked = false; gatherAndSendSettings({ showToast: false }); });
+  safeOn(invertToggle, 'change', () => { if (invertToggle?.checked && contrastToggle) contrastToggle.checked = false; gatherAndSendSettings({ showToast: false }); });
+  // slider uses input -> don't show toast on each input event (silent)
+  safeOn(fontSizeSlider, 'input', () => { if (fontSizeValue) fontSizeValue.textContent = `${fontSizeSlider.value}px`; gatherAndSendSettings({ showToast: false }); });
+  safeOn(rateInput, 'input', () => gatherAndSendSettings({ showToast: false }));
+  safeOn(pitchInput, 'input', () => gatherAndSendSettings({ showToast: false }));
+  safeOn(highlightCheckbox, 'change', () => gatherAndSendSettings({ showToast: false }));
 
   safeOn(voiceSelect, 'change', () => {
     const v = voiceSelect.value;
@@ -660,33 +672,21 @@ document.addEventListener('DOMContentLoaded', () => {
       }, timeoutMs);
     });
   }
-  // helper to robustly extract selection object from helper response
+
   function extractSelection(resRaw) {
     try {
-      // Normalize first (handles various background wrappings)
       const r = normalizeBgResponse(resRaw);
       if (!r) return null;
-
-      // If final object already contains a `selection` object
       if (r.selection && typeof r.selection === 'object') return r.selection;
-
-      // Some paths may return flat { text, title, url }
       if (typeof r.text === 'string' && r.text.trim().length) {
         return { text: r.text, title: r.title || '', url: r.url || '' };
       }
-
-      // Dive into nested response fields defensively (avoid infinite recursion)
       if (r.response && typeof r.response === 'object') {
-        // note: normalizeBgResponse already unwraps many levels, but handle any remaining nesting
         if (r.response.selection && typeof r.response.selection === 'object') return r.response.selection;
         if (typeof r.response.text === 'string' && r.response.text.trim()) return { text: r.response.text, title: r.response.title || '', url: r.response.url || '' };
       }
-
       return null;
-    } catch (e) {
-      safeLog('extractSelection threw', e);
-      return null;
-    }
+    } catch (e) { safeLog('extractSelection threw', e); return null; }
   }
 
   // Read button
@@ -714,7 +714,6 @@ document.addEventListener('DOMContentLoaded', () => {
         safeLog('starting speedRead', { chunkSize, rate });
         readBtn.disabled = true;
         const res = await sendMessageToActiveTabWithInject({ action: 'speedRead', chunkSize, rate });
-        safeLog('speedRead send result', res);
         readBtn.disabled = false;
         const r = normalizeBgResponse(res);
         if (!r || !r.ok) {
@@ -745,6 +744,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
+  // Stop
   safeOn(stopBtn, 'click', async () => {
     safeLog('stopBtn clicked');
     stopBtn.disabled = true;
@@ -757,6 +757,7 @@ document.addEventListener('DOMContentLoaded', () => {
     setReadingStatus('Not Reading');
   });
 
+  // Pause / Resume
   safeOn(pauseBtn, 'click', async () => {
     safeLog('pauseBtn clicked', { isReading, isPaused });
     if (!isReading) { toast('Nothing is currently reading.', 'info'); return; }
@@ -777,7 +778,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // Focus mode button
+  // Focus mode toggle — preserve original label (emoji)
   safeOn(focusModeBtn, 'click', async () => {
     safeLog('focusModeBtn clicked');
     focusModeBtn.disabled = true;
@@ -790,34 +791,24 @@ document.addEventListener('DOMContentLoaded', () => {
       else if (r && r.error === 'tab-discarded') toast('The target tab is suspended. Reload the page and try again.', 'error', 5000);
       else toast('Failed to toggle focus mode.', 'error', 4500);
     } else {
-      focusModeBtn.textContent = (r.overlayActive ? 'Close Focus' : 'Focus Mode');
+      // preserve emoji/text from original label
+      focusModeBtn.textContent = (r.overlayActive ? `Close ${_focusModeOriginalLabel}` : _focusModeOriginalLabel);
       toast(r.overlayActive ? 'Focus mode opened.' : 'Focus mode closed.', 'success', 1400);
       safeLog('focusModeBtn UI updated', focusModeBtn.textContent);
     }
   });
 
-  // --- Local summarizer (Option A: extractive sentence scoring)
-  const STOPWORDS = new Set([
-    'the','is','in','and','a','an','to','of','that','it','on','for','with','as','was','were','this','by','are','or','be','from','at','which','but','not','have','has','had','they','you','i'
-  ]);
-
+  // ---------- Local summarizer (unchanged, kept here) ----------
+  const STOPWORDS = new Set(['the','is','in','and','a','an','to','of','that','it','on','for','with','as','was','were','this','by','are','or','be','from','at','which','but','not','have','has','had','they','you','i']);
   function splitIntoSentences(text) {
     if (!text) return [];
-    const sentences = text
-      .replace(/\n+/g, ' ')
-      .split(/(?<=[.?!])\s+(?=[A-Z0-9])/g)
-      .map(s => s.trim())
-      .filter(Boolean);
-    if (sentences.length <= 1) {
-      return text.split(/(?<=\.)\s+/).map(s => s.trim()).filter(Boolean);
-    }
+    const sentences = text.replace(/\n+/g, ' ').split(/(?<=[.?!])\s+(?=[A-Z0-9])/g).map(s => s.trim()).filter(Boolean);
+    if (sentences.length <= 1) return text.split(/(?<=\.)\s+/).map(s => s.trim()).filter(Boolean);
     return sentences;
   }
-
   function scoreSentences(text) {
     const sentences = splitIntoSentences(text);
     if (!sentences.length) return [];
-
     const wordFreq = {};
     const words = text.toLowerCase().match(/\b[^\d\W]+\b/g) || [];
     for (const w of words) {
@@ -825,7 +816,6 @@ document.addEventListener('DOMContentLoaded', () => {
       wordFreq[w] = (wordFreq[w] || 0) + 1;
     }
     const maxFreq = Math.max(1, ...Object.values(wordFreq));
-
     const scores = sentences.map(s => {
       const ws = (s.toLowerCase().match(/\b[^\d\W]+\b/g) || []).filter(w => !STOPWORDS.has(w));
       let sc = 0;
@@ -835,14 +825,12 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     return scores;
   }
-
   function summarizeText(text, maxSentences = 3) {
     if (!text || typeof text !== 'string') return '';
     const cleaned = text.replace(/\s+/g, ' ').trim();
     if (cleaned.length < 200) return cleaned;
     const sentences = splitIntoSentences(cleaned);
     if (sentences.length <= 1) return cleaned;
-
     const scores = scoreSentences(cleaned).filter(s => s.score >= 0);
     scores.sort((a,b) => b.score - a.score);
     const limit = Math.max(1, Math.min(maxSentences, Math.ceil(sentences.length * 0.2)));
@@ -853,11 +841,9 @@ document.addEventListener('DOMContentLoaded', () => {
     return result;
   }
 
-  // Modal UI for summaries (in-popup)
   function createSummaryModal(title = 'Summary', content = '') {
     const old = document.getElementById('clarityread-summary-modal');
     if (old) old.remove();
-
     const modal = document.createElement('div');
     modal.id = 'clarityread-summary-modal';
     modal.style.position = 'fixed';
@@ -891,7 +877,7 @@ document.addEventListener('DOMContentLoaded', () => {
         copyBtn.textContent = 'Copied';
         setTimeout(() => copyBtn.textContent = 'Copy', 1200);
         toast('Summary copied to clipboard.', 'success');
-      } catch (e) { console.warn('copy failed', e); safeLog('summary copy failed', e); toast('Copy failed.', 'error'); }
+      } catch (e) { safeLog('summary copy failed', e); toast('Copy failed.', 'error'); }
     });
     const closeBtn = document.createElement('button'); closeBtn.textContent = 'Close';
     closeBtn.addEventListener('click', () => modal.remove());
@@ -923,29 +909,22 @@ document.addEventListener('DOMContentLoaded', () => {
     return modal;
   }
 
-  // Summarize current page/selection using send helper (falls back to executeScript)
   async function summarizeCurrentPageOrSelection() {
     safeLog('summarizeCurrentPageOrSelection start');
     try {
       const res = await sendMessageToActiveTabWithInject({ action: 'getSelection' });
       safeLog('getSelection response', res);
       let text = '';
-
       const selectionObj = extractSelection(res);
       if (selectionObj && selectionObj.text && selectionObj.text.trim()) {
-        // Ask the user whether to summarize selection or whole page
         const wantSelection = confirm('Summarize selected text? Click "OK" to summarize the selection, or "Cancel" to summarize the full page.');
         if (wantSelection) {
           text = selectionObj.text;
-          safeLog('summarize using selection text len', text.length);
         } else {
-          safeLog('user opted to summarize full page instead of selection');
-          text = ''; // fallthrough to page extraction below
+          text = '';
         }
       }
-
       if (!text) {
-        // fallback: try to pick a good web tab explicitly
         const tab = await findBestWebTab();
         safeLog('summarize fallback tab', tab && { id: tab.id, url: tab.url });
         if (!tab || !tab.id || !tab.url || tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://')) {
@@ -975,38 +954,99 @@ document.addEventListener('DOMContentLoaded', () => {
           });
           safeLog('summarize exec result', !!exec, exec && (exec.text || '').length);
           if (exec && exec.text) text = exec.text;
-        } catch (e) { console.warn('summarize fallback exec failed', e); safeLog('summarize fallback exec failed', e); }
+        } catch (e) { safeLog('summarize fallback exec failed', e); }
       }
-
       if (!text || !text.trim()) { toast('No text to summarize — select text on the page or ensure the page has readable content.', 'info'); safeLog('summarize no text'); return; }
       const summary = summarizeText(text, 3);
       createSummaryModal('Page Summary', summary);
       safeLog('summarize created summary len', summary.length);
-    } catch (e) {
-      console.warn('summarizeCurrentPageOrSelection failed', e);
-      safeLog('summarize exception', e);
-      toast('Failed to summarize (see console).', 'error');
-    }
+    } catch (e) { safeLog('summarize exception', e); toast('Failed to summarize (see console).', 'error'); }
   }
 
   safeOn(summarizePageBtn, 'click', summarizeCurrentPageOrSelection);
 
-  // --- Profiles, saved reads, selection, stats
+  // ---------- Profiles and saved reads ----------
   function updateProfileDropdown(profiles = {}, selectedName = '') { if (!profileSelect) return; profileSelect.innerHTML = '<option value="">Select profile</option>'; for (const name in profiles) { const opt=document.createElement('option'); opt.value=name; opt.textContent=name; profileSelect.appendChild(opt);} if (selectedName) profileSelect.value = selectedName; }
   function saveProfile(name, profile) { chrome.storage.local.get(['profiles'], (res) => { const profiles = res.profiles || {}; profiles[name] = profile; chrome.storage.local.set({ profiles }, () => { chrome.storage.sync.set({ profiles }, () => { toast('Profile saved.', 'success'); updateProfileDropdown(profiles, name); safeLog('profile saved', name, profile); }); }); }); }
   chrome.storage.local.get(['profiles'], (res) => { safeLog('loaded profiles', Object.keys(res.profiles||{})); updateProfileDropdown(res.profiles || {}); });
 
-  safeOn(profileSelect, 'change', (e) => { const name = e.target.value; if (!name) return; chrome.storage.local.get(['profiles'], (res) => { const settings = res.profiles?.[name]; safeLog('profile selected', name, settings); if (settings) setUI(settings); gatherAndSendSettings(); }); });
+  safeOn(profileSelect, 'change', (e) => { const name = e.target.value; if (!name) return; chrome.storage.local.get(['profiles'], (res) => { const settings = res.profiles?.[name]; safeLog('profile selected', name, settings); if (settings) setUI(settings); gatherAndSendSettings({ showToast: true }); }); });
 
   safeOn(saveProfileBtn, 'click', () => { const name = prompt('Enter profile name:'); if (!name) return; const profile = gatherSettingsObject(); saveProfile(name, profile); });
 
   safeOn(exportProfilesBtn, 'click', () => { chrome.storage.local.get(['profiles'], (res) => { const dataStr = JSON.stringify(res.profiles || {}); const blob = new Blob([dataStr], { type: "application/json" }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'ClarityReadProfiles.json'; a.click(); URL.revokeObjectURL(url); toast('Profiles exported.', 'success'); safeLog('exported profiles'); }); });
+  // ===== Settings export / import (apply on import) =====
+// Export current settings to a JSON file
+const exportSettingsBtn = document.createElement('button');
+exportSettingsBtn.className = 'ghost';
+exportSettingsBtn.textContent = 'Export Settings';
+exportSettingsBtn.addEventListener('click', () => {
+  const settings = gatherSettingsObject();
+  const dataStr = JSON.stringify(settings, null, 2);
+  const blob = new Blob([dataStr], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'ClarityReadSettings.json';
+  a.click();
+  URL.revokeObjectURL(url);
+  toast('Settings exported.', 'success');
+});
+ // attach to UI (place near exportProfilesBtn)
+if (exportProfilesBtn && exportProfilesBtn.parentNode) {
+  exportProfilesBtn.parentNode.insertBefore(exportSettingsBtn, exportProfilesBtn.nextSibling);
+}
 
+// Import settings element (hidden file input)
+const importSettingsInput = document.createElement('input');
+importSettingsInput.type = 'file';
+importSettingsInput.accept = '.json,application/json';
+importSettingsInput.style.display = 'none';
+document.body.appendChild(importSettingsInput);
+
+const importSettingsBtn = document.createElement('button');
+importSettingsBtn.className = 'ghost';
+importSettingsBtn.textContent = 'Import Settings';
+importSettingsBtn.addEventListener('click', () => importSettingsInput.click());
+if (exportSettingsBtn && exportSettingsBtn.parentNode) {
+  exportSettingsBtn.parentNode.insertBefore(importSettingsBtn, exportSettingsBtn.nextSibling);
+}
+
+importSettingsInput.addEventListener('change', (ev) => {
+  const file = ev.target.files && ev.target.files[0];
+  if (!file) { importSettingsInput.value = ''; return; }
+  const r = new FileReader();
+  r.onload = (e) => {
+    try {
+      const imported = JSON.parse(e.target.result);
+      // Validate shape:
+      const keys = ['dys','reflow','contrast','invert','fontSize','voice','rate','pitch','highlight'];
+      const valid = keys.some(k => k in imported);
+      if (!valid) { toast('Invalid settings file.', 'error'); importSettingsInput.value = ''; return; }
+
+      // Apply to UI and storage
+      setUI(imported);
+      // persist globally
+      chrome.storage.sync.set(imported, () => {
+        toast('Settings imported to extension.', 'success', 1200);
+        // apply to active tab (and fall back via background injection)
+        gatherAndSendSettings({ showToast: true });
+      });
+    } catch (err) {
+      toast('Failed to import settings: invalid JSON.', 'error');
+      console.warn('importSettings error', err);
+    }
+    importSettingsInput.value = '';
+  };
+  r.readAsText(file);
+});
+
+  // import profiles: reset input after import so same file can be re-imported later
   safeOn(importProfilesBtn, 'click', () => importProfilesInput?.click());
   if (importProfilesInput) {
     importProfilesInput.addEventListener('change', (e) => {
       const file = e.target.files?.[0];
-      if (!file) return;
+      if (!file) { importProfilesInput.value = ''; return; }
       const reader = new FileReader();
       reader.onload = (event) => {
         try {
@@ -1018,6 +1058,8 @@ document.addEventListener('DOMContentLoaded', () => {
             });
           });
         } catch (err) { safeLog('importProfiles parse failed', err); toast('Failed to import profiles: invalid JSON.', 'error'); }
+        // allow re-importing same file by clearing input
+        importProfilesInput.value = '';
       };
       reader.readAsText(file);
     });
@@ -1025,7 +1067,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   safeOn(resetStatsBtn, 'click', () => { if (!confirm('Reset all reading stats?')) return; chrome.runtime.sendMessage({ action: 'resetStats' }, () => { safeLog('resetStats requested'); loadStats(); setReadingStatus('Not Reading'); toast('Stats reset.', 'success'); }); });
 
-  // Render saved reads, with Summarize and Summarize All
+  // ---------- Saved reads rendering ----------
   function renderSavedList() {
     safeLog('renderSavedList start');
     chrome.storage.local.get(['savedReads'], (res) => {
@@ -1102,6 +1144,7 @@ document.addEventListener('DOMContentLoaded', () => {
       });
     });
   }
+
   // Save selection -> use background/content messaging helper which handles injecting + permission flow
   safeOn(saveSelectionBtn, 'click', async () => {
     safeLog('saveSelectionBtn clicked');
@@ -1112,18 +1155,14 @@ document.addEventListener('DOMContentLoaded', () => {
       safeLog('getSelection via helper', resRaw);
 
       const res = normalizeBgResponse(resRaw);
-
-      // If background explicitly returned a permission error, surface to user
       if (res && res.ok === false) {
         if (res.error === 'no-host-permission') {
           toast('Extension lacks permission to access this site. Open the page and allow access.', 'error', 7000);
           saveSelectionBtn.disabled = false;
           return;
         }
-        // other explicit failures: fallthrough to fallback scripting below
       }
 
-      // Try to extract selection
       const selection = extractSelection(resRaw);
       safeLog('selection from helper', selection && { textLen: selection.text && selection.text.length, title: selection.title });
 
@@ -1142,7 +1181,7 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
 
-      // Fallback: try to find a good web tab and run scripting there
+      // Fallback: use scripting on best web tab
       const tab = await findBestWebTab();
       safeLog('saveSelection fallback tab', tab && { id: tab.id, url: tab.url });
       if (!tab || !tab.id) {
@@ -1201,9 +1240,10 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  safeOn(openSavedManagerBtn, 'click', () => { safeLog('openSavedManagerBtn clicked'); renderSavedList(); });
+  // removed "Manage" button user-flow; renderSavedList exposed for any UI actions
+  // safeOn(openSavedManagerBtn, 'click', () => { renderSavedList(); });
 
-  // Generate image for sharing stats
+  // ---------- Sharing stats image ----------
   async function generateStatsImageAndDownload() {
     safeLog('generateStatsImageAndDownload start');
     try {
@@ -1231,14 +1271,15 @@ document.addEventListener('DOMContentLoaded', () => {
         safeLog('stats image generated and downloaded');
         if (navigator.clipboard && window.ClipboardItem) {
           try { await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]); toast('Image saved and copied to clipboard!', 'success'); safeLog('image copied to clipboard'); }
-          catch (e) { console.warn('clipboard write failed', e); safeLog('clipboard write failed', e); toast('Image downloaded. Clipboard copy not available.', 'info'); }
+          catch (e) { safeLog('clipboard write failed', e); toast('Image downloaded. Clipboard copy not available.', 'info'); }
         } else { toast('Image downloaded. To copy to clipboard, allow clipboard access or use the downloaded file.', 'info'); }
       });
-    } catch (e) { console.warn('generateStatsImage failed', e); safeLog('generateStatsImage failed', e); toast('Failed to generate stats image (see console).', 'error'); }
+    } catch (e) { safeLog('generateStatsImage failed', e); toast('Failed to generate stats image (see console).', 'error'); }
   }
 
   safeOn(shareStatsBtn, 'click', generateStatsImageAndDownload);
 
+  // ---------- Messages from background/content ----------
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     safeLog('chrome.runtime.onMessage received', msg, sender && sender.tab && { tabId: sender.tab.id, url: sender.tab.url });
     if (!msg?.action) { sendResponse({ ok: false }); return true; }
@@ -1250,7 +1291,26 @@ document.addEventListener('DOMContentLoaded', () => {
     return true;
   });
 
-  // Init
+  // ---------- Popup keyboard shortcuts (active while popup open) ----------
+  window.addEventListener('keydown', (e) => {
+  try {
+    // only while popup is open/focused — ignore if input elements are focused
+    const activeTag = document.activeElement && document.activeElement.tagName && document.activeElement.tagName.toLowerCase();
+    if (activeTag === 'input' || activeTag === 'textarea' || document.activeElement?.isContentEditable) return;
+
+    if (e.altKey && !e.ctrlKey && !e.shiftKey && (e.key === 'r' || e.key === 'R')) {
+      e.preventDefault();
+      if (readBtn && !readBtn.disabled) readBtn.click();
+    }
+    if (e.altKey && !e.ctrlKey && !e.shiftKey && (e.key === 's' || e.key === 'S')) {
+      e.preventDefault();
+      if (stopBtn && !stopBtn.disabled) stopBtn.click();
+    }
+  } catch (err) { /* silent */ }
+});
+
+
+  // ---------- Init ----------
   safeLog('popup init: loadStats, initPerSiteUI, renderSavedList');
   loadStats();
   initPerSiteUI();

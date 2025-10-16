@@ -1,4 +1,4 @@
-<!doctype  html>
+<!doctype   html>
 <html>
 <head>
   <meta charset="utf-8" />
@@ -7,151 +7,213 @@
   <title>ClarityRead</title>
 </head>
 <body>
-  <div class="container">
-    <!-- LEFT: Controls -->
-    <section class="controls" aria-label="Controls">
-      <header class="header card header-card">
-        <div class="header-left">
-          <img src="assets/icons/icon128.png" alt="ClarityRead logo" class="logo">
-          <div class="title-wrap">
-            <h1 class="title">ClarityRead</h1>
-            <div id="readingStatus" class="readingStatus" aria-live="polite" title="Current status"></div>
+  <div class="app-container">
+    <header class="app-header">
+      <div class="brand">
+        <img src="/assets/icons/icon128.png" alt="ClarityRead" class="logo">
+        <div class="brand-text">
+          <h1 class="app-title">ClarityRead</h1>
+          <div id="readingStatus" class="status-indicator">Ready</div>
+        </div>
+      </div>
+      <button id="themeToggleBtn" class="theme-toggle" aria-label="Toggle theme">
+        <span class="theme-icon">🌙</span>
+      </button>
+    </header>
+
+    <main class="main-content">
+      <div class="content-grid">
+        <section class="controls-panel">
+          <div class="panel accessibility-panel">
+            <h2 class="panel-title">Accessibility</h2>
+            <div class="controls-grid">
+              <label class="toggle-control">
+                <input id="dyslexicToggle" type="checkbox">
+                <span class="toggle-slider"></span>
+                <span class="toggle-label">Dyslexia Font</span>
+              </label>
+              <label class="toggle-control">
+                <input id="reflowToggle" type="checkbox">
+                <span class="toggle-slider"></span>
+                <span class="toggle-label">Reading Mode</span>
+              </label>
+              <label class="toggle-control">
+                <input id="contrastToggle" type="checkbox">
+                <span class="toggle-slider"></span>
+                <span class="toggle-label">High Contrast</span>
+              </label>
+              <label class="toggle-control">
+                <input id="invertToggle" type="checkbox">
+                <span class="toggle-slider"></span>
+                <span class="toggle-label">Invert Colors</span>
+              </label>
+            </div>
+            
+            <div id="fontSizeControls" class="font-size-controls" hidden>
+              <label class="size-label">
+                Font Size: <span id="fontSizeValue" class="size-value">20px</span>
+              </label>
+              <input id="fontSizeSlider" class="size-slider" type="range" min="14" max="30" step="1" value="20">
+            </div>
           </div>
-        </div>
-        <div class="header-actions">
-          <button id="themeToggleBtn" class="ghost">Theme</button>
-        </div>
-      </header>
 
-      <div class="toggles card">
-        <div class="card-row">
-          <label class="switch"><input id="dyslexicToggle" type="checkbox"><span class="switch-slider"></span><span>Dyslexia font</span></label>
-          <label class="switch"><input id="reflowToggle" type="checkbox"><span class="switch-slider"></span><span>Reading mode</span></label>
-        </div>
+          <div class="panel profiles-panel">
+            <h2 class="panel-title">Profiles</h2>
+            <div class="profile-controls">
+              <select id="profileSelect" class="profile-select">
+                <option value="">Choose a profile...</option>
+              </select>
+              <button id="saveProfileBtn" class="btn btn-secondary">Save Current</button>
+            </div>
+          </div>
 
-        <div class="card-row">
-          <label class="switch"><input id="contrastToggle" type="checkbox"><span class="switch-slider"></span><span>High contrast</span></label>
-          <label class="switch"><input id="invertToggle" type="checkbox"><span class="switch-slider"></span><span>Invert</span></label>
-        </div>
+          <div class="panel read-aloud-panel">
+            <h2 class="panel-title">Text to Speech</h2>
+            
+            <div class="voice-controls">
+              <label class="control-label">
+                Voice
+                <select id="voiceSelect" class="voice-select"></select>
+              </label>
+              
+              <div class="audio-settings">
+                <label class="control-label">
+                  Speed
+                  <input type="number" id="rateInput" value="1" min="0.5" max="2" step="0.1" class="number-input">
+                </label>
+                <label class="control-label">
+                  Pitch
+                  <input type="number" id="pitchInput" value="1" min="0.5" max="2" step="0.1" class="number-input">
+                </label>
+              </div>
+            </div>
 
-        <div id="sizeOptions" class="sizeOptions" hidden>
-          <label class="sizeLabel">Font size:
-            <span id="fontSizeValue" class="fontSizeValue">20px</span>
-          </label>
-          <input id="fontSizeSlider" class="range" type="range" min="14" max="30" step="1" value="20" />
-        </div>
+            <label class="checkbox-control">
+              <input type="checkbox" id="highlightReading">
+              <span class="checkbox-mark"></span>
+              <span class="checkbox-label">Highlight while reading</span>
+            </label>
+
+            <div class="playback-controls">
+              <button id="readBtn" class="btn btn-primary playback-btn">
+                <span class="btn-icon">▶</span>
+                <span class="btn-text">Read</span>
+              </button>
+              <button id="pauseBtn" class="btn btn-secondary playback-btn">
+                <span class="btn-icon">⏸</span>
+                <span class="btn-text">Pause</span>
+              </button>
+              <button id="stopBtn" class="btn btn-secondary playback-btn">
+                <span class="btn-icon">⏹</span>
+                <span class="btn-text">Stop</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="panel speed-reading-panel">
+            <h2 class="panel-title">Speed Reading</h2>
+            <label class="toggle-control">
+              <input id="speedToggle" type="checkbox">
+              <span class="toggle-slider"></span>
+              <span class="toggle-label">Enable Speed Reading</span>
+            </label>
+            
+            <div class="speed-settings">
+              <label class="control-label">
+                Chunk Size
+                <input id="chunkSize" type="number" value="3" min="1" max="12" step="1" class="number-input">
+              </label>
+              <label class="control-label">
+                Rate
+                <input id="speedRate" type="number" value="1" min="0.5" max="3" step="0.1" class="number-input">
+              </label>
+            </div>
+          </div>
+
+          <div class="panel data-panel">
+            <h2 class="panel-title">Data Management</h2>
+            <div class="data-controls">
+              <button id="exportProfilesBtn" class="btn btn-secondary">Export Settings</button>
+              <input type="file" id="importProfilesInput" accept=".json" style="display:none;">
+              <button id="importProfilesBtn" class="btn btn-secondary">Import Settings</button>
+            </div>
+          </div>
+        </section>
+
+        <aside class="sidebar">
+          <div class="panel quick-actions-panel">
+            <h2 class="panel-title">Quick Actions</h2>
+            <div class="quick-actions">
+              <button id="summarizePageBtn" class="action-btn">
+                <span class="action-icon">📝</span>
+                <span class="action-text">Summarize Page</span>
+              </button>
+              <button id="focusModeBtn" class="action-btn">
+                <span class="action-icon">🎯</span>
+                <span class="action-text">Focus Mode</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="panel stats-panel">
+            <h2 class="panel-title">Reading Statistics</h2>
+            
+            <div class="chart-container">
+              <canvas id="statsChart" class="stats-chart"></canvas>
+            </div>
+
+            <div class="stats-grid">
+              <div class="stat-item">
+                <span class="stat-label">Pages Read</span>
+                <span id="pagesRead" class="stat-value">0</span>
+              </div>
+              <div class="stat-item">
+                <span class="stat-label">Total Time</span>
+                <span id="timeRead" class="stat-value">0m 0s</span>
+              </div>
+              <div class="stat-item">
+                <span class="stat-label">Average Session</span>
+                <span id="avgSession" class="stat-value">0m 0s</span>
+              </div>
+            </div>
+
+            <div id="badgesContainer" class="achievement-badges"></div>
+
+            <div class="stats-actions">
+              <button id="resetStatsBtn" class="btn btn-secondary">Reset Stats</button>
+              <button id="shareStatsBtn" class="btn btn-secondary">Share Progress</button>
+            </div>
+          </div>
+
+          <div class="panel saved-content-panel">
+            <h2 class="panel-title">Saved Content</h2>
+            <div class="saved-controls">
+              <button id="saveSelectionBtn" class="btn btn-primary">Save Selection</button>
+              <button id="openSavedManagerBtn" class="btn btn-secondary">Manage Saved</button>
+            </div>
+            <div id="savedList" class="saved-list"></div>
+          </div>
+
+          <div class="panel shortcuts-panel">
+            <h2 class="panel-title">Keyboard Shortcuts</h2>
+            <div class="shortcuts-list">
+              <div class="shortcut-item">
+                <span class="shortcut-action">Start Reading</span>
+                <kbd class="shortcut-key">Alt+R</kbd>
+              </div>
+              <div class="shortcut-item">
+                <span class="shortcut-action">Stop Reading</span>
+                <kbd class="shortcut-key">Alt+S</kbd>
+              </div>
+            </div>
+          </div>
+        </aside>
       </div>
+    </main>
 
-      <div class="profiles card">
-        <h3 class="section-title">Profiles</h3>
-        <div class="row">
-          <select id="profileSelect" class="fullwidth">
-            <option value="">Select a profile</option>
-          </select>
-          <button id="saveProfileBtn" class="btn">Save</button>
-        </div>
-      </div>
-
-      <div id="readAloudSettings" class="readArea card">
-        <h3 class="section-title">Read Aloud</h3>
-
-        <div class="form-row">
-          <label class="label">Voice
-            <select id="voiceSelect" class="wide"></select>
-          </label>
-        </div>
-
-        <div class="form-row smalls">
-          <label>Rate
-            <input type="number" id="rateInput" value="1" min="0.5" max="2" step="0.1">
-          </label>
-          <label>Pitch
-            <input type="number" id="pitchInput" value="1" min="0.5" max="2" step="0.1">
-          </label>
-        </div>
-
-        <label class="checkbox"><input type="checkbox" id="highlightReading"> <span class="checkmark"></span> Highlight while reading</label>
-
-        <div class="controls-row">
-          <button id="readBtn" class="btn primary">Read ▶</button>
-          <button id="pauseBtn" class="btn">Pause</button>
-          <button id="stopBtn" class="btn">Stop ◼</button>
-        </div>
-      </div>
-
-      <div id="speedReadingSettings" class="card">
-        <h3 class="section-title">Speed reading</h3>
-        <label class="switch"><input id="speedToggle" type="checkbox"><span class="switch-slider"></span><span>Enable speed-reading</span></label>
-
-        <div class="form-row smalls">
-          <label>Chunk size
-            <input id="chunkSize" type="number" value="3" min="1" max="12" step="1">
-          </label>
-          <label>Rate
-            <input id="speedRate" type="number" value="1" min="0.5" max="3" step="0.1">
-          </label>
-        </div>
-      </div>
-
-      <div class="exportImport card">
-        <button id="exportProfilesBtn" class="ghost">Export Profiles</button>
-        <input type="file" id="importProfilesInput" accept=".json" style="display:none;">
-        <button id="importProfilesBtn" class="ghost">Import</button>
-      </div>
-
-      <div class="savedReads card">
-        <h3 class="section-title">Saved reads</h3>
-        <div class="save-controls">
-          <button id="saveSelectionBtn" class="btn">Save Selection</button>
-          <button id="openSavedManagerBtn" class="ghost">Manage</button>
-        </div>
-        <div id="savedList" class="saved-list" aria-live="polite"></div>
-      </div>
-
-      <div class="shortcuts card">
-        <h3 class="section-title">Keyboard Shortcuts</h3>
-        <ul>
-          <li>Start: <kbd>Alt+R</kbd></li>
-          <li>Stop: <kbd>Alt+S</kbd></li>
-        </ul>
-      </div>
-
-      <footer class="footer">
-        <small>Tip: select text on the page to read only that selection.</small>
-      </footer>
-    </section>
-
-    <!-- RIGHT: Stats / Theme -->
-    <aside class="sidebar" aria-label="Reading stats">
-      <div class="sidebar-top card">
-        <div class="themeRow">
-          <button id="summarizePageBtn" class="ghost">Summarize</button>
-          <button id="focusModeBtn" class="ghost">Focus Mode</button>
-        </div>
-      </div>
-
-      <div id="stats" class="statsPanel card">
-        <h3 class="section-title">Reading Stats</h3>
-
-        <!-- Chart wrapper has fixed height to prevent smushing -->
-        <div class="chartWrapper" aria-hidden="false">
-          <canvas id="statsChart" role="img" aria-label="Pages read chart"></canvas>
-        </div>
-
-        <div id="statsPanel" class="statsRows">
-          <div><span>Pages read</span><strong id="pagesRead">0</strong></div>
-          <div><span>Total time</span><strong id="timeRead">0m 0s</strong></div>
-          <div><span>Average session</span><strong id="avgSession">0m 0s</strong></div>
-        </div>
-
-        <div id="badgesContainer" class="badges" aria-hidden="false"></div>
-
-        <div class="stats-actions">
-          <button id="resetStatsBtn" class="ghost">Reset</button>
-          <button id="shareStatsBtn" class="btn">Share</button>
-        </div>
-      </div>
-    </aside>
+    <footer class="app-footer">
+      <p class="footer-text">Select text on any webpage to read specific content</p>
+    </footer>
   </div>
 
   <script src="popup.js"></script>
