@@ -4,11 +4,12 @@
 
 document.addEventListener('DOMContentLoaded', () => {
   // ---------- CONFIG ----------
-  const DEBUG = true; // set true for development, false for production
+  const DEBUG = false; // set true for development, false for production
   const $ = id => document.getElementById(id) || null;
   const safeLog = (...a) => { try { if (DEBUG) console.log('[ClarityRead popup]', ...a); } catch(e){} };
   // wire summaryDetailSelect -> chrome.storage.local
-(function wireSummaryDetailSelect() {
+// wire summaryDetailSelect -> chrome.storage.local (call this inside DOMContentLoaded)
+function wireSummaryDetailSelect() {
   const sel = document.getElementById('summaryDetailSelect');
   if (!sel) return;
   // load pref
@@ -22,7 +23,7 @@ document.addEventListener('DOMContentLoaded', () => {
       chrome.storage.local.set({ summaryDetail: v }, () => { toast(`Summary detail: ${v}`, 'info', 1200); });
     } catch (e) { safeLog('saving summaryDetail failed', e); }
   });
-})();
+}
 
 
   // ensure popup can receive keyboard events immediately
@@ -1126,15 +1127,20 @@ function sentenceSimilarityLocal(a, b) {
 /** Helper: decide number of sentences based on content length + user preference.
  *  userPref: 'concise'|'normal'|'detailed' (default 'normal')
  */
+/** Helper: decide number of sentences based on content length + user preference.
+ *  userPref: 'concise'|'normal'|'detailed' (default 'normal')
+ */
 function getAdaptiveMaxSentences(text, userPref = 'normal') {
   const words = (text || '').trim().split(/\s+/).filter(Boolean).length;
-  // baseline: ~1 sentence per 100-180 words depending on preference
+  // baseline: roughly 1 sentence per 90-240 words depending on preference
   let ratio = 140; // normal
   if (userPref === 'concise') ratio = 240;
   else if (userPref === 'detailed') ratio = 90;
   // compute and clamp
   const est = Math.max(1, Math.round(words / ratio));
-  return Math.min(8, Math.max(1, est)); // cap at 8 sentences
+  // raise cap for very long documents
+  const cap = 20;
+  return Math.min(cap, Math.max(1, est));
 }
 
 /** Small content cleaner to drop nav/TOC junk, scripts, styles, and obvious boilerplate.
@@ -1146,11 +1152,11 @@ function scrubInputForSummarizer(raw) {
   // strip common wiki / nav markers and style/script blocks
   t = t.replace(/<style[\s\S]*?<\/style>/gi, ' ');
   t = t.replace(/<script[\s\S]*?<\/script>/gi, ' ');
-  t = t.replace(/\[[^\]]{1,50}\]/g, ' '); // bracketed refs like [1], [citation needed]
+  t = t.replace(/\[[^\]]{1,80}\]/g, ' '); // bracketed refs like [1], [citation needed]
   t = t.replace(/\{[\s\S]*?\}/g, ' '); // template-like curly blobs
   t = t.replace(/(References|External links|See also|Further reading|Navigation|Contents|Categories|vte)\b[\s\S]*/ig, ' ');
   // remove long runs of non-text (like CSS fragments that leaked)
-  t = t.replace(/\.mw-parser-output[\s\S]{0,5000}\}/gi, ' ');
+  t = t.replace(/\.mw-parser-output[\s\S]{0,8000}\}/gi, ' ');
   // remove any remaining HTML tags
   t = t.replace(/<\/?[^>]+>/g, ' ');
   // collapse whitespace
@@ -1167,7 +1173,7 @@ function tokenizeForScoring(sentence) {
 /** Improved sentence score:
  * - stronger IDF influence when IDF present
  * - title overlap more influential
- * - penalize TOC-like or punctuation heavy lines
+ * - penalize TOC-like or punctuation heavy lines (but not too aggressively)
  */
 function sentenceScoreLocal(sentence, tfGlobal, positionWeight = 1, titleTokens = new Set()) {
   const tokens = tokenizeForScoring(sentence);
@@ -1196,9 +1202,9 @@ function sentenceScoreLocal(sentence, tfGlobal, positionWeight = 1, titleTokens 
 
   // penalty: headings/TOC-like (short uppercase lines, lots of punctuation or many commas)
   const nonAlphaRatio = (sentence.replace(/[A-Za-z0-9]/g,'').length) / Math.max(1, sentence.length);
-  if (nonAlphaRatio > 0.20) score *= 0.5;
-  if (/^[A-Z0-9\W]{5,40}$/.test(sentence) && sentence === sentence.toUpperCase()) score *= 0.45;
-  if (sentence.length < 30) score *= 0.6;
+  if (nonAlphaRatio > 0.25) score *= 0.7;            // less aggressive than before
+  if (/^[A-Z0-9\W]{5,40}$/.test(sentence) && sentence === sentence.toUpperCase()) score *= 0.6;
+  if (sentence.length < 18) score *= 0.7;            // allow shorter sentences a little more
 
   score *= positionWeight;
   return score;
@@ -1212,7 +1218,7 @@ function mmrSelectLocal(candidates, scoresArr, k = 3, lambda = 0.62) {
   candArr.sort((a,b) => b.score - a.score);
 
   // adapt lambda slightly: if document is large prefer novelty more (smaller lambda)
-  const adaptLambda = (candidates.join(' ').length > 8000) ? Math.max(0.45, lambda - 0.12) : lambda;
+  const adaptLambda = (candidates.join(' ').length > 8000) ? Math.max(0.40, lambda - 0.18) : lambda;
 
   while (selected.length < k && candArr.length) {
     let bestIdx = -1, bestVal = -Infinity;
@@ -1232,7 +1238,10 @@ function mmrSelectLocal(candidates, scoresArr, k = 3, lambda = 0.62) {
   return selected;
 }
 
-/** Main summarizer: uses the above helpers and adaptive sentence count. */
+/** Main summarizer: uses the above helpers and adaptive sentence count.
+ *  maxSentencesArg: if number>0, will be used (but still clamped).
+ *  userPref: 'concise'|'normal'|'detailed' - affects adaptive decisions and post-filtering.
+ */
 function summarizeTextLocal(rawText, maxSentencesArg = null, userPref = 'normal') {
   if (!rawText || typeof rawText !== 'string') return '';
   // 1) scrub TONS of junk early
@@ -1240,7 +1249,9 @@ function summarizeTextLocal(rawText, maxSentencesArg = null, userPref = 'normal'
   if (!cleaned) return '';
 
   // adaptive max sentences if not explicitly provided
-  const adaptiveMax = (typeof maxSentencesArg === 'number' && maxSentencesArg > 0) ? Math.min(10, Math.max(1, Math.floor(maxSentencesArg))) : getAdaptiveMaxSentences(cleaned, userPref);
+  const adaptiveMax = (typeof maxSentencesArg === 'number' && maxSentencesArg > 0)
+    ? Math.min(20, Math.max(1, Math.floor(maxSentencesArg)))
+    : getAdaptiveMaxSentences(cleaned, userPref);
 
   // short text fast path
   if (cleaned.length < 220) {
@@ -1267,14 +1278,17 @@ function summarizeTextLocal(rawText, maxSentencesArg = null, userPref = 'normal'
     if (!sents.length) continue;
     const scored = sents.map((sen, idx) => ({ sentence: sen, score: sentenceScoreLocal(sen, globalTF, (idx === 0 ? 1.08 : (idx === sents.length - 1 ? 1.03 : 1)), titleTokens) }));
     scored.sort((a,b) => b.score - a.score);
-    // choose top 1 normally; for long paragraphs pick 2
-    const topCount = (p.length > 600 && scored.length > 1) ? Math.min(2, Math.ceil(scored.length * 0.25)) : 1;
+
+    // choose top N: for long paragraphs allow more candidates
+    const longPara = p.length > 800;
+    const topCount = longPara ? Math.min(3, Math.max(1, Math.ceil(scored.length * 0.33))) : Math.min(2, Math.max(1, Math.ceil(scored.length * 0.20)));
     for (let i = 0; i < Math.min(topCount, scored.length); i++) {
       const candidate = scored[i].sentence.trim();
-      if (candidate && candidate.length > 30) paraSummaries.push(candidate);
+      // relax small-sentence cutoff (allow shorter candidates)
+      if (candidate && candidate.length > 18) paraSummaries.push(candidate);
     }
     // limit candidate gathering to avoid exploding memory
-    if (paraSummaries.join(' ').length > Math.max(CHUNK_SIZE_CHARS, 2 * CHUNK_SIZE_CHARS)) break;
+    if (paraSummaries.join(' ').length > Math.max(CHUNK_SIZE_CHARS || 10000, 3 * (CHUNK_SIZE_CHARS || 10000))) break;
   }
 
   let allCandidates = [];
@@ -1285,21 +1299,24 @@ function summarizeTextLocal(rawText, maxSentencesArg = null, userPref = 'normal'
     if (!allCandidates.length) allCandidates = paraSummaries.slice();
   }
 
+  // score candidates globally
   const scoredCandidates = allCandidates.map((sen, idx) => ({ sentence: sen, score: sentenceScoreLocal(sen, globalTF, (idx === 0 || idx === allCandidates.length - 1) ? 1.05 : 1, titleTokens) }));
   scoredCandidates.sort((a,b) => b.score - a.score);
 
   const candidatesList = scoredCandidates.map(x => x.sentence);
   const scoresList = scoredCandidates.map(x => ({ sentence: x.sentence, score: x.score }));
-  // MMR with adaptive lambda
+
+  // MMR with adaptive lambda; k = adaptiveMax but clamp to available candidates
   const lambda = 0.62;
-  let selected = mmrSelectLocal(candidatesList, scoresList, Math.max(1, Math.min(adaptiveMax, 8)), lambda);
+  const k = Math.max(1, Math.min(adaptiveMax, Math.max(1, candidatesList.length)));
+  let selected = mmrSelectLocal(candidatesList, scoresList, k, lambda);
 
   // trim to adaptiveMax
   if (selected.length > adaptiveMax) selected = selected.slice(0, adaptiveMax);
 
   // fallback if selection fails or weird
   const joinedSel = selected.join(' ');
-  if (!joinedSel || (joinedSel.length / Math.max(1, cleaned.length) > 0.85) || selected.length === 0) {
+  if (!joinedSel || (joinedSel.length / Math.max(1, cleaned.length) > 0.95) || selected.length === 0) {
     const firstSents = splitIntoSentencesLocal(cleaned).slice(0, adaptiveMax);
     if (firstSents && firstSents.length) return firstSents.join(' ').trim();
   }
@@ -1313,10 +1330,12 @@ function summarizeTextLocal(rawText, maxSentencesArg = null, userPref = 'normal'
   try {
     const parts = final.split(/(?<=[.?!])\s+/).map(s => s.trim()).filter(Boolean);
     const filtered = parts.filter(s => {
-      if (s.length < 28) return false;
+      // allow shorter sentences when user asked for detailed output
+      const minLen = (userPref === 'detailed') ? 16 : 28;
+      if (s.length < minLen) return false;
       if (/^(Outline|History|See also|References|External links|Category|vte|Navigation)\b/i.test(s)) return false;
       const nonAlphaRatio = (s.replace(/[A-Za-z0-9]/g,'').length) / Math.max(1, s.length);
-      if (nonAlphaRatio > 0.20) return false;
+      if (nonAlphaRatio > 0.30) return false; // slightly relaxed
       if (/^[\u2000-\u206F\u2E00-\u2E7F\W]+$/.test(s)) return false;
       return true;
     });
@@ -1331,6 +1350,8 @@ function summarizeTextLocal(rawText, maxSentencesArg = null, userPref = 'normal'
     return final.slice(0, 800);
   }
 }
+
+
 
 
 // ---------------- Toast cleanup helper ----------------
@@ -1640,12 +1661,13 @@ async function summarizeCurrentPageOrSelection_AiAware() {
 
     // run summarizer with deterministic progress toast
     const pid = createProgressToast('Generating summary — please wait...', 60000);
-    let summary = '(no summary produced)';
-    try {
-      if (typeof summarizeTextLocal === 'function') summary = summarizeTextLocal(text, adaptiveMax) || summary;
-      else summary = '(summarizer not available)';
-    } catch (e) { safeLog('summarizer error', e); }
-    finally { clearProgressToast(); }
+let summary = '(no summary produced)';
+try {
+  if (typeof summarizeTextLocal === 'function') summary = summarizeTextLocal(text, null, pref) || summary;
+  else summary = '(summarizer not available)';
+} catch (e) { safeLog('summarizer error', e); }
+finally { clearProgressToast(); }
+
 
     // lightweight post-filter to remove TOC-like garbage
     try {
@@ -1661,9 +1683,12 @@ async function summarizeCurrentPageOrSelection_AiAware() {
     } catch (e) { safeLog('post-filter threw', e); }
 
     // present modal with adaptive header
-    const modeSubtitle = usedSelection ? 'Selection' : 'Full page';
-    const headerTitle = `Page Summary — ${adaptiveMax} sentence${adaptiveMax === 1 ? '' : 's'} (${modeSubtitle})`;
-    createSummaryModal(headerTitle, summary);
+   const modeSubtitle = usedSelection ? 'Selection' : 'Full page';
+// count sentences in produced summary (best-effort)
+const actualSentences = (summary || '').split(/(?<=[.?!])\s+/).map(s => s.trim()).filter(Boolean).length || 0;
+const headerTitle = `Page Summary — ${actualSentences} sentence${actualSentences === 1 ? '' : 's'} (${modeSubtitle})`;
+createSummaryModal(headerTitle, summary);
+
     toast('Summary ready', 'success', 3000);
 
   } catch (err) {
@@ -2082,6 +2107,7 @@ importSettingsInput.addEventListener('change', (ev) => {
   safeLog('popup init: loadStats, initPerSiteUI, renderSavedList');
   loadStats();
   initPerSiteUI();
+  wireSummaryDetailSelect();
   renderSavedList();
   setTimeout(() => { safeLog('delayed loadVoicesIntoSelect'); loadVoicesIntoSelect(); }, 300);
 });

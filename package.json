@@ -1,7 +1,0 @@
-{
-  "dependencies": {
-    "dotenv": "^17.2.3",
-    "natural": "^8.1.0",
-    "stripe": "^19.1.0"
-  }
-}
