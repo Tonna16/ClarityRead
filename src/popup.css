@@ -17,26 +17,12 @@
   --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
   --radius: 8px;
   --radius-lg: 12px;
-  --transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  --transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1);
   --font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Inter', sans-serif;
 }
 
 /* Dark theme variables */
-[data-theme="dark"] {
-  --background: #0f172a;
-  --surface: #1e293b;
-  --surface-elevated: #334155;
-  --text-primary: #f1f5f9;
-  --text-secondary: #cbd5e1;
-  --text-muted: #94a3b8;
-  --border: #334155;
-  --border-hover: #475569;
-  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.3);
-  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.3), 0 2px 4px -2px rgb(0 0 0 / 0.3);
-  --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.3), 0 4px 6px -4px rgb(0 0 0 / 0.3);
-}
-
-/* Dark theme functionality */
+[data-theme="dark"],
 body.dark-theme {
   --background: #0f172a;
   --surface: #1e293b;
@@ -49,10 +35,6 @@ body.dark-theme {
   --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.3);
   --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.3), 0 2px 4px -2px rgb(0 0 0 / 0.3);
   --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.3), 0 4px 6px -4px rgb(0 0 0 / 0.3);
-}
-
-body.dark-theme .theme-icon::before {
-  content: '☀️';
 }
 
 /* Reset */
@@ -79,6 +61,8 @@ html, body {
   flex-direction: column;
   background: var(--background);
   overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 /* Header */
@@ -103,6 +87,7 @@ html, body {
   height: 40px;
   border-radius: var(--radius);
   object-fit: cover;
+  flex-shrink: 0;
 }
 
 .brand-text {
@@ -124,6 +109,7 @@ html, body {
   margin-top: 2px;
 }
 
+/* Theme toggle */
 .theme-toggle {
   padding: 8px;
   border: 1px solid var(--border);
@@ -147,6 +133,10 @@ html, body {
 .theme-icon {
   font-size: 16px;
   transition: var(--transition);
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 /* Main Content */
@@ -229,6 +219,7 @@ html, body {
   padding: 8px;
   border-radius: var(--radius);
   transition: var(--transition);
+  user-select: none;
 }
 
 .toggle-control:hover {
@@ -274,6 +265,7 @@ html, body {
   font-size: 13px;
   color: var(--text-secondary);
   font-weight: 500;
+  white-space: nowrap;
 }
 
 /* Font Size Controls */
@@ -347,7 +339,7 @@ html, body {
 .profile-select:focus {
   outline: none;
   border-color: var(--primary-color);
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.08);
 }
 
 /* Voice Controls */
@@ -379,7 +371,7 @@ html, body {
 .voice-select:focus {
   outline: none;
   border-color: var(--primary-color);
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.08);
 }
 
 .audio-settings {
@@ -402,7 +394,7 @@ html, body {
 .number-input:focus {
   outline: none;
   border-color: var(--primary-color);
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.08);
 }
 
 /* Checkbox Control */
@@ -455,6 +447,7 @@ html, body {
   font-size: 13px;
   color: var(--text-secondary);
   font-weight: 500;
+  white-space: nowrap;
 }
 
 /* Playback Controls */
@@ -473,6 +466,7 @@ html, body {
   padding: 10px 8px;
   font-size: 12px;
   min-width: 0;
+  border-radius: var(--radius);
 }
 
 .btn-icon {
@@ -482,6 +476,7 @@ html, body {
 
 .btn-text {
   font-weight: 500;
+  white-space: nowrap; /* keeps label stable during JS changes */
 }
 
 /* Speed Settings */
@@ -503,17 +498,17 @@ html, body {
   font-size: 13px;
   font-weight: 500;
   transition: var(--transition);
-  display: flex;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: 8px;
   text-align: center;
   min-height: 40px;
 }
 
 .btn:focus {
   outline: none;
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.08);
 }
 
 .btn-primary {
@@ -589,6 +584,7 @@ html, body {
   justify-content: center;
 }
 
+/* Preserve emoji/icon and label space when JS updates text */
 .action-btn .action-text {
   font-size: 12px;
   font-weight: 500;
@@ -597,6 +593,8 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: center;
+  white-space: nowrap;
+  min-width: 84px; /* keeps width stable so emoji doesn't shift */
 }
 
 /* Chart Container */
@@ -683,6 +681,7 @@ html, body {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
+  padding: 8px;
 }
 
 /* Shortcuts */
@@ -737,16 +736,16 @@ html, body {
     max-width: 1400px;
     margin: 0 auto;
   }
-  
+
   .content-grid {
     grid-template-columns: 1fr 400px;
     gap: 32px;
   }
-  
+
   .main-content {
     padding: 32px;
   }
-  
+
   .panel {
     padding: 24px;
   }
@@ -776,7 +775,7 @@ html, body {
 
 /* Animation for panel transitions */
 .panel {
-  animation: fadeInUp 0.3s ease-out;
+  animation: fadeInUp 0.28s ease-out;
 }
 
 @keyframes fadeInUp {
@@ -790,22 +789,10 @@ html, body {
   }
 }
 
-/* Ensure proper spacing in dark mode */
-[data-theme="dark"] .playback-controls,
-body.dark-theme .playback-controls {
-  gap: 10px;
-}
-
-[data-theme="dark"] .playback-btn,
-body.dark-theme .playback-btn {
-  min-width: 0;
-  padding: 10px 12px;
-}
-
 /* Professional focus states */
 .toggle-control:focus-within,
 .checkbox-control:focus-within {
-  outline: 2px solid var(--primary-color);
+  outline: 2px solid rgba(37, 99, 235, 0.12);
   outline-offset: 2px;
   border-radius: var(--radius);
 }
@@ -821,4 +808,20 @@ body.dark-theme .playback-btn {
   transform: none !important;
   box-shadow: none !important;
 }
- 
+
+/* Ensure stable layout for small popup widths */
+@media (max-width: 640px) {
+  .app-container {
+    width: 360px;
+    height: auto;
+  }
+  .content-grid {
+    grid-template-columns: 1fr;
+  }
+  .sidebar {
+    order: 2;
+  }
+  .controls-panel {
+    order: 1;
+  }
+}

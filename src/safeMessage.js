@@ -8,7 +8,6 @@
       chrome.runtime.sendMessage(msg, (resp) => {
         // avoid console noise if lastError present
         if (chrome.runtime.lastError) {
-          // optional: only log in dev mode
           // console.warn('sendToBackground lastError', chrome.runtime.lastError.message);
           return cb(null, chrome.runtime.lastError);
         }

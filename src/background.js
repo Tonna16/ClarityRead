@@ -6,9 +6,11 @@
   const HANDSHAKE_KEY = '_handshakeSelection';
   const HANDSHAKE_TTL_MS = 30 * 1000; // 30s - popup should consume handshake quickly
 
-  const safeLog = (...args) => { try { console.log('[ClarityRead bg]', ...args); } catch (e) {} };
-  const safeWarn = (...args) => { try { console.warn('[ClarityRead bg]', ...args); } catch (e) {} };
-  const safeInfo = (...args) => { try { console.info('[ClarityRead bg]', ...args); } catch (e) {} };
+  const DEBUG = false; // set true locally when debugging, false for release
+  const safeLog = (...args) => { try { if (DEBUG) console.log('[ClarityRead bg]', ...args); } catch (e) {} };
+  const safeWarn = (...args) => { try { if (DEBUG) console.warn('[ClarityRead bg]', ...args); } catch (e) {} };
+  const safeInfo = (...args) => { try { if (DEBUG) console.info('[ClarityRead bg]', ...args); } catch (e) {} };
+
 
   // Utility: safe runtime.sendMessage (silently ignores "no receiver" errors)
   function safeRuntimeSendMessage(message) {
@@ -291,26 +293,17 @@
     }
   });
 
-  // keyboard commands
-  chrome.commands.onCommand.addListener(async (command) => {
-    try {
-      const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-      const tab = tabs && tabs[0];
-      if (!tab) return;
+  // improved commands handler: prefer web tab, but if popup/extension page is active,
+// route command to popup via runtime message so popup keyboard UI works when open.
+chrome.commands.onCommand.addListener(async (command) => {
+  try {
+    // try active tab first
+    const tabs = await new Promise(resolve => chrome.tabs.query({ active: true, lastFocusedWindow: true }, resolve));
+    let tab = tabs && tabs[0];
 
-      if (!isWebUrl(tab.url)) {
-        chrome.action.setBadgeText({ tabId: tab.id, text: "!" });
-        chrome.action.setTitle({ tabId: tab.id, title: "ClarityRead shortcuts not available here." });
-        safeLog('command invoked on non-web-url', tab.url);
-        return;
-      }
-      if (!tab || !isWebUrl(tab.url)) {
-  // open popup to let user select a web tab
-  chrome.windows.create({ url: chrome.runtime.getURL("src/popup.html"), type: "popup", width: 800, height: 600 });
-  return;
-}
-
-
+    // If active tab is a web page, target it
+    if (tab && isWebUrl(tab.url || '')) {
+      // send to web tab as before
       if (command === "read-aloud") {
         const result = await sendMessageToTabWithInjection(tab.id, { action: "readAloud" });
         if (!result.ok) safeWarn('Could not send readAloud:', result);
@@ -320,10 +313,75 @@
       } else {
         safeLog('unknown command', command);
       }
-    } catch (err) {
-      safeWarn('onCommand error:', err);
+      return;
     }
-  });
+
+    // If not a web tab, try to find a web tab using existing fallback logic
+    const allWins = await new Promise(resolve => chrome.windows.getAll({ populate: true }, resolve));
+    let foundWebTab = null;
+    if (Array.isArray(allWins)) {
+      const focusedNormalWin = allWins.find(w => w.focused && w.type === 'normal' && Array.isArray(w.tabs));
+      if (focusedNormalWin) {
+        foundWebTab = (focusedNormalWin.tabs || []).find(t => t && t.active && isWebUrl(t.url));
+      }
+      if (!foundWebTab) {
+        for (const w of allWins) {
+          if (w && w.type === 'normal' && Array.isArray(w.tabs)) {
+            const t = (w.tabs || []).find(tt => tt && tt.active && isWebUrl(tt.url));
+            if (t) { foundWebTab = t; break; }
+          }
+        }
+      }
+      if (!foundWebTab) {
+        for (const w of allWins) {
+          if (!Array.isArray(w.tabs)) continue;
+          for (const t of w.tabs) {
+            if (t && isWebUrl(t.url)) { foundWebTab = t; break; }
+          }
+          if (foundWebTab) break;
+        }
+      }
+    }
+
+    if (foundWebTab) {
+      // send to discovered web tab
+      if (command === "read-aloud") {
+        const result = await sendMessageToTabWithInjection(foundWebTab.id, { action: "readAloud" });
+        if (!result.ok) safeWarn('Could not send readAloud (foundWebTab):', result);
+      } else if (command === "stop-reading") {
+        const result = await sendMessageToTabWithInjection(foundWebTab.id, { action: "stopReading" });
+        if (!result.ok) safeWarn('Could not send stopReading (foundWebTab):', result);
+      } else {
+        safeLog('unknown command', command);
+      }
+      return;
+    }
+
+    // No web tab found — if the popup or extension is open, send a runtime message so extension pages (popup) can act
+    safeLog('no web tab found; routing command to extension runtime', command);
+
+    try {
+      chrome.runtime.sendMessage({ action: 'command', command }, () => {
+        // intentionally swallow lastError
+        if (chrome.runtime.lastError) {
+          // no receiver (popup not open) — show a hint badge on the active tab if present
+          if (tab && tab.id) {
+            chrome.action.setBadgeText({ tabId: tab.id, text: "!" });
+            chrome.action.setTitle({ tabId: tab.id, title: "ClarityRead shortcuts not available here." });
+          }
+          safeLog('runtime.sendMessage had no receiver for command', command);
+        } else {
+          safeLog('runtime.sendMessage delivered command to extension runtime', command);
+        }
+      });
+    } catch (e) {
+      safeWarn('runtime.sendMessage threw', e);
+    }
+  } catch (err) {
+    safeWarn('onCommand error:', err);
+  }
+});
+
 
   // centralized stats helpers
   function persistStatsUpdate(addPages = 0, addSeconds = 0) {

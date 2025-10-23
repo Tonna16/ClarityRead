@@ -1,4 +1,4 @@
-<!doctype   html>
+<!doctype html>
 <html>
 <head>
   <meta charset="utf-8" />
@@ -148,6 +148,16 @@
                 <span class="action-icon">📝</span>
                 <span class="action-text">Summarize Page</span>
               </button>
+              <!-- put this right after the Summarize Page button inside .quick-actions -->
+<label for="summaryDetailSelect" style="display:inline-flex;align-items:center;gap:6px;margin-left:8px;">
+  <span style="font-size:12px;">Detail:</span>
+  <select id="summaryDetailSelect" style="font-size:12px;padding:4px;border-radius:6px;min-width:96px;">
+    <option value="concise">Concise</option>
+    <option value="normal" selected>Normal</option>
+    <option value="detailed">Detailed</option>
+  </select>
+</label>
+
               <button id="focusModeBtn" class="action-btn">
                 <span class="action-icon">🎯</span>
                 <span class="action-text">Focus Mode</span>
@@ -219,4 +229,3 @@
   <script src="popup.js"></script>
 </body>
 </html>
- 

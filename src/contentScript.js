@@ -56,6 +56,45 @@
     } catch (e) { safeLog('sendState send failed', e); }
     safeLog('sendState sent', state);
   }
+  // src/contentScript.js (append or add)
+/* lightweight selection tracker to persist last selection so popup can read it
+   Only stores text > 20 chars to avoid tiny accidental selections.
+*/
+(function() {
+  try {
+    let lastStored = null;
+    function storeSelection(text) {
+      try {
+        if (!text || typeof text !== 'string') return;
+        const trimmed = text.trim();
+        if (!trimmed || trimmed.length < 20) return;
+        lastStored = { text: trimmed, ts: Date.now(), url: location.href, title: document.title || '' };
+        chrome.storage.local.set({ clarity_last_selection: lastStored }, () => {});
+      } catch (e) {}
+    }
+
+    // on mouseup and selectionchange capture selection
+    function capture() {
+      try {
+        const s = (window.getSelection && window.getSelection().toString && window.getSelection().toString()) || '';
+        if (s && s.trim().length >= 20) storeSelection(s);
+      } catch (e) {}
+    }
+
+    document.addEventListener('mouseup', () => setTimeout(capture, 10));
+    document.addEventListener('selectionchange', () => {
+      // store only if selection is non-empty and reasonably long
+      try {
+        const s = (window.getSelection && window.getSelection().toString && window.getSelection().toString()) || '';
+        if (s && s.trim().length >= 20) storeSelection(s);
+      } catch (e) {}
+    });
+
+    // also store selection on Ctrl/Cmd+C to be extra-reliable
+    document.addEventListener('copy', () => setTimeout(capture, 10));
+  } catch (e) {}
+})();
+
 
   // --- sanitize text for TTS
   function sanitizeForTTS(s) {

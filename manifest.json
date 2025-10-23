@@ -16,9 +16,13 @@
     "contextMenus"
   ],
   "host_permissions": [
-    "https://*/*",
-    "http://*/*"
-  ],
+  "https://api.ClarityRead.com/*",
+  "http://localhost:8787/*",
+  "https://*/*",
+  "http://*/*"
+],
+
+
   "optional_host_permissions": [
     "<all_urls>"
   ],

@@ -1,20 +1,50 @@
-// src/popup.js - production-ready edits (DEBUG flag, toast improvements, keyboard shortcuts, import fix, UI tweaks)
-// Based on original uploaded file. Improvements: quieter logs, toast dedupe/debounce, import reset, hide Manage button, preserve Focus label.
+// src/popup.js - production-ready edits
+// Merged & finalized from user's chunks. Features: DEBUG flag, toast improvements, keyboard shortcuts,
+// import/export dedupe+apply, focus label preserved, theme persistence, single-instance export/import buttons.
+
 document.addEventListener('DOMContentLoaded', () => {
   // ---------- CONFIG ----------
-  const DEBUG = false; // set true for development, false for production
+  const DEBUG = true; // set true for development, false for production
   const $ = id => document.getElementById(id) || null;
   const safeLog = (...a) => { try { if (DEBUG) console.log('[ClarityRead popup]', ...a); } catch(e){} };
+  // wire summaryDetailSelect -> chrome.storage.local
+(function wireSummaryDetailSelect() {
+  const sel = document.getElementById('summaryDetailSelect');
+  if (!sel) return;
+  // load pref
+  chrome.storage.local.get(['summaryDetail'], (res) => {
+    try { sel.value = (res && res.summaryDetail) || 'normal'; } catch(e) {}
+  });
+  // save on change
+  sel.addEventListener('change', () => {
+    try {
+      const v = sel.value || 'normal';
+      chrome.storage.local.set({ summaryDetail: v }, () => { toast(`Summary detail: ${v}`, 'info', 1200); });
+    } catch (e) { safeLog('saving summaryDetail failed', e); }
+  });
+})();
+
+
   // ensure popup can receive keyboard events immediately
-try {
-  const body = document.querySelector('body');
-  if (body && typeof body.focus === 'function') {
-    body.setAttribute('tabindex','0');
-    body.focus({ preventScroll: true });
-  }
-} catch (e) { /* noop */ }
+  try {
+    const body = document.querySelector('body');
+    if (body && typeof body.focus === 'function') {
+      body.setAttribute('tabindex','0');
+      body.focus({ preventScroll: true });
+    }
+  } catch (e) { /* noop */ }
 
   safeLog('DOMContentLoaded');
+const CHUNK_SIZE_CHARS = 4000;
+const MAX_INPUT_CHARS = 120000;
+
+ const IDF_FILENAME = 'idf.json'; // place idf.json in your extension's root/public so chrome.runtime.getURL finds it
+
+ let chart = null;
+
+  let chartResizeObserver = null;
+  // -------------------------------------------------------------------------------
+
 
   // ---------- Toast: deduped + queued, non-spammy ----------
   function createToastContainer() {
@@ -31,43 +61,148 @@ try {
     document.body.appendChild(c);
   }
 
-  // small in-memory dedupe for identical messages for a short period
-  const _toastRecent = new Map(); // msg -> timestamp
-  function toast(msg, type = 'info', ttl = 3500) {
+ // ---------- Toast manager: deterministic, clearable ----------
+// Replace older toast functions with this manager.
+// Keeps backward compatibility for calls like toast(msg, type, ttl)
+// and also provides progressToast = toasts.showProgress(...)
+
+const Toasts = (function() {
+  const containerId = 'clarityread-toast-container';
+  const recent = new Map(); // msg -> timestamp (dedupe)
+  const instances = new Map(); // id -> element
+  let nextId = 1;
+
+  function ensureContainer() {
+    let c = document.getElementById(containerId);
+    if (!c) {
+      c = document.createElement('div');
+      c.id = containerId;
+      c.style.position = 'fixed';
+      c.style.right = '12px';
+      c.style.bottom = '12px';
+      c.style.zIndex = 2147483647;
+      c.style.display = 'flex';
+      c.style.flexDirection = 'column';
+      c.style.gap = '8px';
+      document.body.appendChild(c);
+    }
+    return c;
+  }
+  // Promise wrapper around chrome.storage.local.get/set for small prefs
+function getFromStorage(keys) {
+  return new Promise((resolve) => {
+    try { chrome.storage.local.get(keys, (res) => resolve(res || {})); }
+    catch (e) { resolve({}); }
+  });
+}
+function setToStorage(obj) {
+  return new Promise((resolve) => {
+    try { chrome.storage.local.set(obj, () => resolve()); }
+    catch (e) { resolve(); }
+  });
+}
+
+  function makeEl(msg, type = 'info') {
+    const el = document.createElement('div');
+    el.className = 'clarityread-toast';
+    el.textContent = msg;
+    el.style.padding = '8px 12px';
+    el.style.borderRadius = '8px';
+    el.style.boxShadow = '0 6px 18px rgba(0,0,0,0.12)';
+    el.style.background = (type === 'error' ? '#ffeced' : (type === 'success' ? '#e8f5e9' : '#fff7e6'));
+    el.style.color = '#111';
+    el.style.fontSize = '13px';
+    el.style.maxWidth = '360px';
+    el.style.wordBreak = 'break-word';
+    el.style.transition = 'opacity 260ms ease, transform 260ms ease';
+    el.style.opacity = '1';
+    el.style.transform = 'translateY(0)';
+    return el;
+  }
+
+  // Promise wrapper around chrome.storage.local.get/set for small prefs
+function getFromStorage(keys) {
+  return new Promise((resolve) => {
+    try { chrome.storage.local.get(keys, (res) => resolve(res || {})); }
+    catch (e) { resolve({}); }
+  });
+}
+function setToStorage(obj) {
+  return new Promise((resolve) => {
+    try { chrome.storage.local.set(obj, () => resolve()); }
+    catch (e) { resolve(); }
+  });
+}
+
+
+  function show(msg, type = 'info', ttl = 3500) {
     try {
       // dedupe identical messages within 1500ms
       const now = Date.now();
-      const last = _toastRecent.get(msg) || 0;
-      if (now - last < 1500) { safeLog('toast deduped', msg); return; }
-      _toastRecent.set(msg, now);
-      // cleanup map entries older than 10s
-      for (const [k, ts] of _toastRecent) if (now - ts > 10000) _toastRecent.delete(k);
+      const last = recent.get(msg) || 0;
+      if (now - last < 1500) return null;
+      recent.set(msg, now);
+      // cleanup
+      for (const [k, ts] of recent) if (now - ts > 10000) recent.delete(k);
 
-      createToastContainer();
-      const cont = document.getElementById('clarityread-toast-container');
-      if (!cont) return;
-      const el = document.createElement('div');
-      el.className = 'clarityread-toast';
-      el.textContent = msg;
-      el.style.padding = '8px 12px';
-      el.style.borderRadius = '8px';
-      el.style.boxShadow = '0 6px 18px rgba(0,0,0,0.12)';
-      el.style.background = (type === 'error' ? '#ffeced' : (type === 'success' ? '#e8f5e9' : '#fff7e6'));
-      el.style.color = '#111';
-      el.style.fontSize = '13px';
-      el.style.maxWidth = '320px';
-      el.style.wordBreak = 'break-word';
-      el.style.transition = 'opacity 260ms ease, transform 260ms ease';
-      el.style.opacity = '1';
-      el.style.transform = 'translateY(0)';
-      cont.appendChild(el);
-      // hide animation
-      setTimeout(() => {
-        try { el.style.opacity = '0'; el.style.transform = 'translateY(6px)'; } catch(e){}
-      }, Math.max(200, ttl - 500));
-      setTimeout(() => { try { el.remove(); } catch(e){} }, ttl);
-    } catch (e) { safeLog('toast failed', e); }
+      const c = ensureContainer();
+      const el = makeEl(msg, type);
+      const id = `toast-${nextId++}`;
+      el.setAttribute('data-clarity-id', id);
+      c.appendChild(el);
+      instances.set(id, el);
+
+      if (ttl > 0) {
+        // fade then remove
+        setTimeout(() => {
+          try { el.style.opacity = '0'; el.style.transform = 'translateY(6px)'; } catch(e){}
+        }, Math.max(200, ttl - 500));
+        setTimeout(() => { try { el.remove(); instances.delete(id); } catch(e){} }, ttl);
+      }
+      return id;
+    } catch (e) {
+      if (DEBUG) console.warn('Toasts.show error', e);
+      return null;
+    }
   }
+
+  function clear(id) {
+    try {
+      if (!id) return;
+      const el = instances.get(id) || document.querySelector(`[data-clarity-id="${id}"]`);
+      if (el) {
+        try { el.remove(); } catch(e) {}
+        instances.delete(id);
+      }
+    } catch (e) { if (DEBUG) console.warn('Toasts.clear error', e); }
+  }
+
+  function clearAll() {
+    try {
+      for (const [id, el] of Array.from(instances)) {
+        try { el.remove(); } catch(e) {}
+        instances.delete(id);
+      }
+      const c = document.getElementById(containerId);
+      if (c) c.remove();
+    } catch (e) { if (DEBUG) console.warn('Toasts.clearAll error', e); }
+  }
+
+  // progress helper (returns id). Caller must call clear(id).
+  function showProgress(msg = 'Working...', timeoutMs = 60000) {
+    return show(msg, 'info', timeoutMs);
+  }
+
+  return { show, clear, clearAll, showProgress };
+})();
+
+// Back-compat shim so existing code `toast(msg,type,ttl)` keeps working
+function toast(msg, type = 'info', ttl = 3500) {
+  // If ttl === 0, create a non-autoclearing toast and return its id
+  if (ttl === 0) return Toasts.show(msg, type, ttl);
+  else Toasts.show(msg, type, ttl);
+}
+function clearToastsLocal() { Toasts.clearAll(); }
 
   // ---------- Ensure Chart.js loaded if popup opened as standalone window ----------
   function ensureChartReady(callback) {
@@ -111,9 +246,10 @@ try {
   const avgSessionEl = $('avgSession');
   const readingStatusEl = $('readingStatus');
   const resetStatsBtn = $('resetStatsBtn');
-  const sizeOptions = $('sizeOptions');
+  // Note: some HTML variants use fontSizeSlider/id fontSizeValue or fontSizeSlider id different. try both.
+  const sizeOptions = $('sizeOptions') || $('fontSizeControls');
   const fontSizeSlider = $('fontSizeSlider');
-  const fontSizeValue = $('fontSizeValue');
+  const fontSizeValue = $('fontSizeValue') || $('fontSizeValue') || (document.querySelector('.size-value') ? document.querySelector('.size-value') : null);
   const profileSelect = $('profileSelect');
   const saveProfileBtn = $('saveProfileBtn');
   const voiceSelect = $('voiceSelect');
@@ -126,7 +262,7 @@ try {
   const statsChartEl = $('statsChart');
   const badgesContainer = $('badgesContainer');
   const themeToggleBtn = $('themeToggleBtn');
-  const chartWrapper = document.querySelector('.chartWrapper');
+  const chartWrapper = document.querySelector('.chartWrapper') || document.querySelector('.chart-container');
 
   const speedToggle = $('speedToggle');
   const chunkSizeInput = $('chunkSize');
@@ -136,23 +272,43 @@ try {
   const openSavedManagerBtn = $('openSavedManagerBtn');
   const savedListEl = $('savedList');
   const shareStatsBtn = $('shareStatsBtn');
+// CONFIG
+
+// ---------------- Toast cleanup helper ---------------
+
 
   // dynamic focusMode + summarize presence
   let focusModeBtn = $('focusModeBtn');
   if (!focusModeBtn && document.querySelector('.themeRow')) {
+    // create button with the same internal structure as your HTML (action-icon + action-text)
     focusModeBtn = document.createElement('button');
     focusModeBtn.id = 'focusModeBtn';
-    focusModeBtn.textContent = '🔎 Focus Mode';
+    focusModeBtn.className = 'action-btn';
+    const ico = document.createElement('span'); ico.className = 'action-icon'; ico.textContent = '🎯';
+    const txt = document.createElement('span'); txt.className = 'action-text'; txt.textContent = 'Focus Mode';
+    focusModeBtn.appendChild(ico);
+    focusModeBtn.appendChild(txt);
     focusModeBtn.style.marginRight = '8px';
     document.querySelector('.themeRow').insertBefore(focusModeBtn, themeToggleBtn || null);
     safeLog('added dynamic focusModeBtn');
+  } else if (focusModeBtn) {
+    // ensure it has the inner text node we expect
+    if (!focusModeBtn.querySelector('.action-text')) {
+      const maybeText = document.createElement('span'); maybeText.className = 'action-text'; maybeText.textContent = focusModeBtn.textContent || 'Focus Mode';
+      focusModeBtn.innerHTML = ''; // clear and rebuild to standard structure
+      const ico = document.createElement('span'); ico.className = 'action-icon'; ico.textContent = '🎯';
+      focusModeBtn.appendChild(ico); focusModeBtn.appendChild(maybeText);
+    }
   }
 
   let summarizePageBtn = $('summarizePageBtn');
   if (!summarizePageBtn && document.querySelector('.themeRow')) {
     summarizePageBtn = document.createElement('button');
     summarizePageBtn.id = 'summarizePageBtn';
-    summarizePageBtn.textContent = '📝 Summarize';
+    summarizePageBtn.className = 'action-btn';
+    const ico = document.createElement('span'); ico.className = 'action-icon'; ico.textContent = '📝';
+    const txt = document.createElement('span'); txt.className = 'action-text'; txt.textContent = 'Summarize';
+    summarizePageBtn.appendChild(ico); summarizePageBtn.appendChild(txt);
     summarizePageBtn.style.marginRight = '8px';
     document.querySelector('.themeRow').insertBefore(summarizePageBtn, focusModeBtn || themeToggleBtn || null);
     safeLog('added dynamic summarizePageBtn');
@@ -163,8 +319,8 @@ try {
     try { openSavedManagerBtn.style.display = 'none'; safeLog('hidden openSavedManagerBtn (Manage)'); } catch(e) {}
   }
 
-  // preserve the original focus button label (emoji + text) so toggling doesn't clobber emoji
-  const _focusModeOriginalLabel = focusModeBtn ? focusModeBtn.textContent : '🔎 Focus Mode';
+  // preserve the original focus button text (only the action-text, not icon)
+  const _focusModeOriginalText = (focusModeBtn && focusModeBtn.querySelector('.action-text')) ? focusModeBtn.querySelector('.action-text').textContent : 'Focus Mode';
 
   const DEFAULTS = { dys: false, reflow: false, contrast: false, invert: false, fontSize: 20 };
   const safeOn = (el, ev, fn) => { if (el) el.addEventListener(ev, fn); };
@@ -172,8 +328,6 @@ try {
   let isReading = false;
   let isPaused = false;
   let currentHostname = '';
-  let chart = null;
-  let chartResizeObserver = null;
   let settingsDebounce = null;
   let opLock = false;            // prevent concurrent sends
   let lastStatus = null;         // dedupe repeated identical status updates
@@ -245,6 +399,78 @@ try {
       return r;
     } catch (e) { safeLog('normalizeBgResponse threw', e); return res; }
   }
+
+function normalizeSelectionResponse(raw) {
+  try {
+    if (!raw) return { text: '', title: '' };
+
+    // If the wrapper is { ok: true, response: X } or { ok: true, data: X } or { status, data }
+    let obj = raw;
+
+    // Unwrap repeatedly while there's a known wrapper key to avoid shallow unwrap issues
+    const unwrapOnce = (o) => {
+      if (!o || typeof o !== 'object') return o;
+      if (Array.isArray(o) && o.length) return o[0];              // array -> first element (likely injection result)
+      if ((o.ok === true || o.ok === false) && (o.response || o.data)) return (o.response || o.data);
+      if (o.response && (typeof o.response === 'object')) return o.response;
+      if (o.data && (typeof o.data === 'object')) return o.data;
+      if (o.result && (typeof o.result === 'object')) return o.result;
+      return o;
+    };
+
+    // Keep unwrapping until stable or up to N times
+    let prev = null;
+    for (let i = 0; i < 6; i++) {
+      const next = unwrapOnce(obj);
+      if (next === obj || next == null) break;
+      prev = obj;
+      obj = next;
+    }
+
+    // If it's still an array (executeScript typical shape), prefer first element's result/fields
+    if (Array.isArray(obj) && obj.length) {
+      const r0 = obj[0];
+      if (r0 && typeof r0 === 'object' && 'result' in r0) obj = r0.result;
+      else if (r0 && typeof r0 === 'object') obj = r0;
+    }
+
+    // Now try to locate text/title in common places
+    const maybe = (o, keys) => {
+      if (!o || typeof o !== 'object') return '';
+      for (const k of keys) {
+        if (k in o && o[k] != null) {
+          const v = o[k];
+          if (typeof v === 'string') return v;
+          try { return String(v); } catch(e) {}
+        }
+      }
+      return '';
+    };
+
+    const text = maybe(obj, ['text', 'innerText', 'content', 'body', 'resultText', 'pageText', 'selectionText']);
+    const title = maybe(obj, ['title', 'pageTitle', 'docTitle']);
+
+    // If we still don't have text, try stringifying the object (safe small fallback)
+    let finalText = (typeof text === 'string' ? text : '').trim();
+    if (!finalText) {
+      // Sometimes the object *is* a direct string (rare), or contains nested text fields
+      if (typeof obj === 'string' && obj.trim()) finalText = obj.trim();
+      else {
+        // inspect nested known fields inside a 'result' property if present
+        if (obj && typeof obj === 'object') {
+          if (obj.result && typeof obj.result === 'string') finalText = obj.result.trim();
+          else if (obj.response && typeof obj.response === 'string') finalText = obj.response.trim();
+        }
+      }
+    }
+
+    return { text: finalText, title: (typeof title === 'string' ? title.trim() : '') };
+  } catch (e) {
+    return { text: '', title: '' };
+  }
+}
+
+
 
   // Robust send helper - popup -> background forward wrapper
   async function sendMessageToActiveTabWithInject(message, _retry = 0) {
@@ -450,8 +676,33 @@ try {
     });
   }
 
-  // theme toggle (works)
-  safeOn(themeToggleBtn, 'click', () => { document.body.classList.toggle('dark-theme'); safeLog('theme toggled', document.body.classList.contains('dark-theme')); });
+  // ---------- Theme handling (single, persistent) ----------
+  function applyThemeFromStorage() {
+    chrome.storage.local.get(['darkTheme'], (res) => {
+      const isDark = !!(res && res.darkTheme);
+      if (isDark) document.body.classList.add('dark-theme');
+      else document.body.classList.remove('dark-theme');
+      // update icon if present
+      try {
+        if (themeToggleBtn) {
+          const ico = themeToggleBtn.querySelector('.theme-icon') || themeToggleBtn;
+          if (ico) ico.textContent = isDark ? '☀️' : '🌙';
+        }
+      } catch (e) {}
+    });
+  }
+  applyThemeFromStorage();
+
+  safeOn(themeToggleBtn, 'click', () => {
+    const isDark = !document.body.classList.contains('dark-theme');
+    if (isDark) document.body.classList.add('dark-theme'); else document.body.classList.remove('dark-theme');
+    // update icon
+    try {
+      const ico = themeToggleBtn.querySelector('.theme-icon') || themeToggleBtn;
+      if (ico) ico.textContent = isDark ? '☀️' : '🌙';
+    } catch (e) {}
+    chrome.storage.local.set({ darkTheme: isDark }, () => { toast(isDark ? 'Dark theme on' : 'Dark theme off', 'info'); });
+  });
 
   // ---------- Per-site UI init ----------
   function initPerSiteUI() {
@@ -504,7 +755,7 @@ try {
         safeLog('initPerSiteUI siteSettings', siteSettings);
         if (siteSettings) {
           setUI(siteSettings);
-          if (siteSettings.voice) setTimeout(() => { voiceSelect.value = siteSettings.voice; safeLog('applied site voice override', siteSettings.voice); }, 200);
+          if (siteSettings.voice) setTimeout(() => { if (voiceSelect) voiceSelect.value = siteSettings.voice; safeLog('applied site voice override', siteSettings.voice); }, 200);
         } else {
           chrome.storage.sync.get(['dys','reflow','contrast','invert','fontSize','voice','rate','pitch','highlight'], (syncRes) => {
             safeLog('initPerSiteUI no siteSettings, using sync', syncRes);
@@ -526,6 +777,7 @@ try {
     });
   }
 
+  // ---------- UI helpers ----------
   function setUI(settings) {
     safeLog('setUI', settings);
     if (dysToggle) dysToggle.checked = !!settings.dys;
@@ -562,20 +814,6 @@ try {
     safeLog('gatherSettingsObject', obj);
     return obj;
   }
-  // theme toggle: persist and restore
-function applyThemeFromStorage() {
-  chrome.storage.local.get(['darkTheme'], (res) => {
-    if (res && res.darkTheme) document.body.classList.add('dark-theme');
-    else document.body.classList.remove('dark-theme');
-  });
-}
-applyThemeFromStorage();
-
-safeOn(themeToggleBtn, 'click', () => {
-  const isDark = !document.body.classList.contains('dark-theme');
-  if (isDark) document.body.classList.add('dark-theme'); else document.body.classList.remove('dark-theme');
-  chrome.storage.local.set({ darkTheme: isDark }, () => { toast(isDark ? 'Dark theme on' : 'Dark theme off', 'info'); });
-});
 
   // send settings (single applySettings message)
   // Default behavior: do not show toast to avoid spamming during slider changes.
@@ -778,7 +1016,7 @@ safeOn(themeToggleBtn, 'click', () => {
     }
   });
 
-  // Focus mode toggle — preserve original label (emoji)
+  // Focus mode toggle — preserve original label (emoji) by only mutating .action-text
   safeOn(focusModeBtn, 'click', async () => {
     safeLog('focusModeBtn clicked');
     focusModeBtn.disabled = true;
@@ -786,64 +1024,331 @@ safeOn(themeToggleBtn, 'click', () => {
     focusModeBtn.disabled = false;
     safeLog('toggleFocusMode response', res);
     const r = normalizeBgResponse(res);
+    const textEl = focusModeBtn ? focusModeBtn.querySelector('.action-text') : null;
     if (!r || !r.ok) {
       if (r && r.error === 'no-host-permission') toast('Permission required to show focus mode for this site.', 'error', 6000);
       else if (r && r.error === 'tab-discarded') toast('The target tab is suspended. Reload the page and try again.', 'error', 5000);
       else toast('Failed to toggle focus mode.', 'error', 4500);
     } else {
-      // preserve emoji/text from original label
-      focusModeBtn.textContent = (r.overlayActive ? `Close ${_focusModeOriginalLabel}` : _focusModeOriginalLabel);
+      // only change the text portion so emoji/icon stays intact
+      if (textEl) {
+        textEl.textContent = (r.overlayActive ? `Close ${_focusModeOriginalText}` : _focusModeOriginalText);
+      } else {
+        // fallback: replace textContent of whole button but keep simple string
+        focusModeBtn.textContent = (r.overlayActive ? `Close ${_focusModeOriginalText}` : _focusModeOriginalText);
+      }
       toast(r.overlayActive ? 'Focus mode opened.' : 'Focus mode closed.', 'success', 1400);
       safeLog('focusModeBtn UI updated', focusModeBtn.textContent);
     }
   });
+// ------------------ Local-only summarizer integration (replace server / AI paths) ------------------
+// Drop-in replacement: removes all remote calls and uses an in-extension summarizer.
+// It will try to load an optional idf.json from the extension public folder to improve scoring.
 
-  // ---------- Local summarizer (unchanged, kept here) ----------
-  const STOPWORDS = new Set(['the','is','in','and','a','an','to','of','that','it','on','for','with','as','was','were','this','by','are','or','be','from','at','which','but','not','have','has','had','they','you','i']);
-  function splitIntoSentences(text) {
-    if (!text) return [];
-    const sentences = text.replace(/\n+/g, ' ').split(/(?<=[.?!])\s+(?=[A-Z0-9])/g).map(s => s.trim()).filter(Boolean);
-    if (sentences.length <= 1) return text.split(/(?<=\.)\s+/).map(s => s.trim()).filter(Boolean);
-    return sentences;
-  }
-  function scoreSentences(text) {
-    const sentences = splitIntoSentences(text);
-    if (!sentences.length) return [];
-    const wordFreq = {};
-    const words = text.toLowerCase().match(/\b[^\d\W]+\b/g) || [];
-    for (const w of words) {
-      if (STOPWORDS.has(w)) continue;
-      wordFreq[w] = (wordFreq[w] || 0) + 1;
+
+
+// IDF map (optional)
+let IDF_MAP = Object.create(null);
+
+// Try to load idf.json shipped with the extension (non-blocking)
+(async function loadIdfFromExtension() {
+  try {
+    // runtime.getURL will resolve extension relative path
+    const url = chrome && chrome.runtime ? chrome.runtime.getURL(IDF_FILENAME) : IDF_FILENAME;
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      console.info('No idf.json found in extension bundle (ok if intentional).');
+      IDF_MAP = Object.create(null);
+      return;
     }
-    const maxFreq = Math.max(1, ...Object.values(wordFreq));
-    const scores = sentences.map(s => {
-      const ws = (s.toLowerCase().match(/\b[^\d\W]+\b/g) || []).filter(w => !STOPWORDS.has(w));
-      let sc = 0;
-      for (const w of ws) sc += (wordFreq[w] || 0) / maxFreq;
-      sc *= Math.min(1, Math.max(0.2, ws.length / 10));
-      return { sentence: s, score: sc };
-    });
-    return scores;
+    const parsed = await resp.json();
+    const m = Object.create(null);
+    for (const k of Object.keys(parsed || {})) m[k.toLowerCase()] = Number(parsed[k]) || 0;
+    IDF_MAP = m;
+    safeLog('Loaded idf.json into popup', { entries: Object.keys(IDF_MAP).length });
+  } catch (e) {
+    safeLog('loadIdfFromExtension failed (continuing without idf)', e && (e.stack || e));
+    IDF_MAP = Object.create(null);
   }
-  function summarizeText(text, maxSentences = 3) {
-    if (!text || typeof text !== 'string') return '';
-    const cleaned = text.replace(/\s+/g, ' ').trim();
-    if (cleaned.length < 200) return cleaned;
-    const sentences = splitIntoSentences(cleaned);
-    if (sentences.length <= 1) return cleaned;
-    const scores = scoreSentences(cleaned).filter(s => s.score >= 0);
-    scores.sort((a,b) => b.score - a.score);
-    const limit = Math.max(1, Math.min(maxSentences, Math.ceil(sentences.length * 0.2)));
-    const chosen = scores.slice(0, limit).map(s => s.sentence);
-    const ordered = sentences.filter(s => chosen.includes(s));
-    const result = ordered.length ? ordered.join(' ') : chosen.join(' ');
-    safeLog('summarizeText produced', { chosenCount: chosen.length, limit });
-    return result;
+})();
+
+// Small utilities (kept minimal and robust)
+function cleanTextLocal(input) {
+  if (!input) return '';
+  let t = input.replace(/\[\d+\]/g, ' ')
+               .replace(/\(\d+\)/g, ' ')
+               .replace(/\s+/g, ' ')
+               .replace(/ {2,}/g, ' ')
+               .trim();
+  t = t.replace(/\b(References|External links|See also|Further reading)\b[\s\S]*$/i, '');
+  return t;
+}
+function splitIntoSentencesLocal(text) {
+  if (!text) return [];
+  const s = text.replace(/\n+/g, ' ');
+  const raw = s.split(/(?<=[.?!])\s+(?=[A-Z0-9"'“”‘’])/g).map(x => x.trim()).filter(Boolean);
+  if (raw.length <= 1) return s.split(/(?<=[.?!])/g).map(x => x.trim()).filter(Boolean);
+  return raw;
+}
+function splitIntoParagraphsLocal(text) {
+  if (!text) return [];
+  const parts = text.split(/\n{2,}/g).map(p => p.trim()).filter(Boolean);
+  return parts.length ? parts : [text.trim()];
+}
+const STOPWORDS_LOCAL = new Set(['the','is','in','and','a','an','to','of','that','it','on','for','with','as','was','were','this','by','are','or','be','from','at','which','but','not','have','has','had','they','you','i','their','its','we','our','us','will','can','may','also']);
+function tokenizeLocal(sentence) {
+  if (!sentence) return [];
+  return (sentence.toLowerCase().match(/\b[^\d\W]+\b/g) || []).filter(w => !STOPWORDS_LOCAL.has(w));
+}
+function buildTermFrequenciesLocal(text) {
+  const words = (text || '').toLowerCase().match(/\b[^\d\W]+\b/g) || [];
+  const tf = Object.create(null);
+  for (const w of words) {
+    if (STOPWORDS_LOCAL.has(w)) continue;
+    tf[w] = (tf[w] || 0) + 1;
+  }
+  return tf;
+}
+function sentenceSimilarityLocal(a, b) {
+  if (!a || !b) return 0;
+  const ta = new Set(tokenizeLocal(a));
+  const tb = new Set(tokenizeLocal(b));
+  if (!ta.size || !tb.size) return 0;
+  let inter = 0;
+  for (const w of ta) if (tb.has(w)) inter++;
+  const uni = new Set([...ta, ...tb]).size || 1;
+  return inter / uni;
+}
+
+// MMR selection helper (diverse + relevant)
+// ---------- Improved summarizer and helpers (drop-in replace) ----------
+
+/** Helper: decide number of sentences based on content length + user preference.
+ *  userPref: 'concise'|'normal'|'detailed' (default 'normal')
+ */
+function getAdaptiveMaxSentences(text, userPref = 'normal') {
+  const words = (text || '').trim().split(/\s+/).filter(Boolean).length;
+  // baseline: ~1 sentence per 100-180 words depending on preference
+  let ratio = 140; // normal
+  if (userPref === 'concise') ratio = 240;
+  else if (userPref === 'detailed') ratio = 90;
+  // compute and clamp
+  const est = Math.max(1, Math.round(words / ratio));
+  return Math.min(8, Math.max(1, est)); // cap at 8 sentences
+}
+
+/** Small content cleaner to drop nav/TOC junk, scripts, styles, and obvious boilerplate.
+ *  Called early to improve scoring.
+ */
+function scrubInputForSummarizer(raw) {
+  if (!raw || typeof raw !== 'string') return '';
+  let t = raw;
+  // strip common wiki / nav markers and style/script blocks
+  t = t.replace(/<style[\s\S]*?<\/style>/gi, ' ');
+  t = t.replace(/<script[\s\S]*?<\/script>/gi, ' ');
+  t = t.replace(/\[[^\]]{1,50}\]/g, ' '); // bracketed refs like [1], [citation needed]
+  t = t.replace(/\{[\s\S]*?\}/g, ' '); // template-like curly blobs
+  t = t.replace(/(References|External links|See also|Further reading|Navigation|Contents|Categories|vte)\b[\s\S]*/ig, ' ');
+  // remove long runs of non-text (like CSS fragments that leaked)
+  t = t.replace(/\.mw-parser-output[\s\S]{0,5000}\}/gi, ' ');
+  // remove any remaining HTML tags
+  t = t.replace(/<\/?[^>]+>/g, ' ');
+  // collapse whitespace
+  t = t.replace(/\s{2,}/g, ' ').trim();
+  return t;
+}
+
+// Slightly stricter tokenization that drops tokens with numbers-only, but keeps named entities
+function tokenizeForScoring(sentence) {
+  if (!sentence) return [];
+  return (sentence.toLowerCase().match(/\b[^\d\W]+\b/g) || []).filter(w => !STOPWORDS_LOCAL.has(w) && w.length > 1);
+}
+
+/** Improved sentence score:
+ * - stronger IDF influence when IDF present
+ * - title overlap more influential
+ * - penalize TOC-like or punctuation heavy lines
+ */
+function sentenceScoreLocal(sentence, tfGlobal, positionWeight = 1, titleTokens = new Set()) {
+  const tokens = tokenizeForScoring(sentence);
+  if (!tokens.length) return 0;
+  let score = 0;
+  for (const t of tokens) {
+    const tf = tfGlobal[t] || 0;
+    // prefer IDF if available; fallback to 1
+    const idf = (IDF_MAP && typeof IDF_MAP[t] !== 'undefined') ? IDF_MAP[t] : 1;
+    // amplify idf slightly to favor rarer terms
+    score += tf * (1 + 0.7 * idf);
   }
 
-  function createSummaryModal(title = 'Summary', content = '') {
+  // normalize by length
+  score = score / Math.sqrt(Math.max(1, tokens.length));
+
+  // title overlap (bump)
+  let titleOverlap = 0;
+  for (const t of tokens) if (titleTokens.has(t)) titleOverlap++;
+  score += titleOverlap * 1.2;
+
+  // heuristics
+  if (/\b(18|19|20)\d{2}\b/.test(sentence)) score *= 1.08;
+  if (/[€$\£¥¢%]/.test(sentence)) score *= 1.06;
+  if (/\b[A-Z][a-z]{2,}\s+[A-Z][a-z]{2,}\b/.test(sentence)) score *= 1.05; // named entity bump
+
+  // penalty: headings/TOC-like (short uppercase lines, lots of punctuation or many commas)
+  const nonAlphaRatio = (sentence.replace(/[A-Za-z0-9]/g,'').length) / Math.max(1, sentence.length);
+  if (nonAlphaRatio > 0.20) score *= 0.5;
+  if (/^[A-Z0-9\W]{5,40}$/.test(sentence) && sentence === sentence.toUpperCase()) score *= 0.45;
+  if (sentence.length < 30) score *= 0.6;
+
+  score *= positionWeight;
+  return score;
+}
+
+/** MMR: same algorithm but lambda can be slightly adaptive */
+function mmrSelectLocal(candidates, scoresArr, k = 3, lambda = 0.62) {
+  const selected = [];
+  const used = new Set();
+  const candArr = candidates.map((s, i) => ({ sentence: s, score: (scoresArr[i] && scoresArr[i].score) || 0 }));
+  candArr.sort((a,b) => b.score - a.score);
+
+  // adapt lambda slightly: if document is large prefer novelty more (smaller lambda)
+  const adaptLambda = (candidates.join(' ').length > 8000) ? Math.max(0.45, lambda - 0.12) : lambda;
+
+  while (selected.length < k && candArr.length) {
+    let bestIdx = -1, bestVal = -Infinity;
+    for (let i = 0; i < candArr.length; i++) {
+      const c = candArr[i];
+      if (used.has(c.sentence)) continue;
+      let novelty = 0;
+      for (const s of selected) novelty = Math.max(novelty, sentenceSimilarityLocal(c.sentence, s));
+      const mmr = (adaptLambda * c.score) - ((1 - adaptLambda) * novelty);
+      if (mmr > bestVal) { bestVal = mmr; bestIdx = i; }
+    }
+    if (bestIdx === -1) break;
+    selected.push(candArr[bestIdx].sentence);
+    used.add(candArr[bestIdx].sentence);
+    candArr.splice(bestIdx, 1);
+  }
+  return selected;
+}
+
+/** Main summarizer: uses the above helpers and adaptive sentence count. */
+function summarizeTextLocal(rawText, maxSentencesArg = null, userPref = 'normal') {
+  if (!rawText || typeof rawText !== 'string') return '';
+  // 1) scrub TONS of junk early
+  const cleaned = scrubInputForSummarizer(rawText);
+  if (!cleaned) return '';
+
+  // adaptive max sentences if not explicitly provided
+  const adaptiveMax = (typeof maxSentencesArg === 'number' && maxSentencesArg > 0) ? Math.min(10, Math.max(1, Math.floor(maxSentencesArg))) : getAdaptiveMaxSentences(cleaned, userPref);
+
+  // short text fast path
+  if (cleaned.length < 220) {
+    const sents = splitIntoSentencesLocal(cleaned);
+    if (sents.length <= adaptiveMax) return sents.join(' ');
+    const tf = buildTermFrequenciesLocal(cleaned);
+    const scored = sents.map((sen, idx) => ({ sentence: sen, score: sentenceScoreLocal(sen, tf, ((idx === 0 || idx === sents.length-1) ? 1.12 : 1)) }));
+    scored.sort((a,b) => b.score - a.score);
+    const chosen = scored.slice(0, adaptiveMax).map(x => x.sentence);
+    const ordered = sents.filter(s => chosen.includes(s));
+    return (ordered.length ? ordered.join(' ') : chosen.join(' ')).trim();
+  }
+
+  // paragraphs -> candidate extraction
+  const paragraphs = splitIntoParagraphsLocal(cleaned);
+  const globalTF = buildTermFrequenciesLocal(cleaned);
+  const firstLine = (cleaned.split('\n')[0] || '').trim();
+  const titleTokens = new Set(tokenizeForScoring(firstLine).slice(0, 12));
+
+  const paraSummaries = [];
+  for (const p of paragraphs) {
+    if (!p) continue;
+    const sents = splitIntoSentencesLocal(p);
+    if (!sents.length) continue;
+    const scored = sents.map((sen, idx) => ({ sentence: sen, score: sentenceScoreLocal(sen, globalTF, (idx === 0 ? 1.08 : (idx === sents.length - 1 ? 1.03 : 1)), titleTokens) }));
+    scored.sort((a,b) => b.score - a.score);
+    // choose top 1 normally; for long paragraphs pick 2
+    const topCount = (p.length > 600 && scored.length > 1) ? Math.min(2, Math.ceil(scored.length * 0.25)) : 1;
+    for (let i = 0; i < Math.min(topCount, scored.length); i++) {
+      const candidate = scored[i].sentence.trim();
+      if (candidate && candidate.length > 30) paraSummaries.push(candidate);
+    }
+    // limit candidate gathering to avoid exploding memory
+    if (paraSummaries.join(' ').length > Math.max(CHUNK_SIZE_CHARS, 2 * CHUNK_SIZE_CHARS)) break;
+  }
+
+  let allCandidates = [];
+  if (!paraSummaries.length) allCandidates = splitIntoSentencesLocal(cleaned);
+  else {
+    const combined = paraSummaries.join(' ');
+    allCandidates = splitIntoSentencesLocal(combined);
+    if (!allCandidates.length) allCandidates = paraSummaries.slice();
+  }
+
+  const scoredCandidates = allCandidates.map((sen, idx) => ({ sentence: sen, score: sentenceScoreLocal(sen, globalTF, (idx === 0 || idx === allCandidates.length - 1) ? 1.05 : 1, titleTokens) }));
+  scoredCandidates.sort((a,b) => b.score - a.score);
+
+  const candidatesList = scoredCandidates.map(x => x.sentence);
+  const scoresList = scoredCandidates.map(x => ({ sentence: x.sentence, score: x.score }));
+  // MMR with adaptive lambda
+  const lambda = 0.62;
+  let selected = mmrSelectLocal(candidatesList, scoresList, Math.max(1, Math.min(adaptiveMax, 8)), lambda);
+
+  // trim to adaptiveMax
+  if (selected.length > adaptiveMax) selected = selected.slice(0, adaptiveMax);
+
+  // fallback if selection fails or weird
+  const joinedSel = selected.join(' ');
+  if (!joinedSel || (joinedSel.length / Math.max(1, cleaned.length) > 0.85) || selected.length === 0) {
+    const firstSents = splitIntoSentencesLocal(cleaned).slice(0, adaptiveMax);
+    if (firstSents && firstSents.length) return firstSents.join(' ').trim();
+  }
+
+  // keep document order
+  const docSents = splitIntoSentencesLocal(cleaned);
+  const orderedSelected = docSents.filter(s => selected.includes(s));
+  let final = (orderedSelected.length ? orderedSelected.join(' ') : selected.join(' ')).trim();
+
+  // final post-filter to remove TOC-like fragments or repeated nav junk
+  try {
+    const parts = final.split(/(?<=[.?!])\s+/).map(s => s.trim()).filter(Boolean);
+    const filtered = parts.filter(s => {
+      if (s.length < 28) return false;
+      if (/^(Outline|History|See also|References|External links|Category|vte|Navigation)\b/i.test(s)) return false;
+      const nonAlphaRatio = (s.replace(/[A-Za-z0-9]/g,'').length) / Math.max(1, s.length);
+      if (nonAlphaRatio > 0.20) return false;
+      if (/^[\u2000-\u206F\u2E00-\u2E7F\W]+$/.test(s)) return false;
+      return true;
+    });
+    if (filtered.length) final = filtered.join(' ');
+  } catch (e) {}
+
+  try {
+    if (!final) return cleaned.slice(0, 800);
+    const finalSents = splitIntoSentencesLocal(final);
+    return finalSents.slice(0, Math.max(1, Math.min(adaptiveMax, finalSents.length))).join(' ').trim();
+  } catch (e) {
+    return final.slice(0, 800);
+  }
+}
+
+
+// ---------------- Toast cleanup helper ----------------
+function clearToastsLocal() {
+  try {
+    const selectors = ['.toast', '.toaster', '.cr-toast', '.notification', '[data-toast]'];
+    selectors.forEach(sel => document.querySelectorAll(sel).forEach(n => { try { n.remove(); } catch(e){} }));
+    ['#toast','#toaster','.popup-toast'].forEach(id => { const el = document.querySelector(id); if (el) el.remove(); });
+    safeLog('clearToastsLocal executed');
+  } catch (e) { safeLog('clearToastsLocal error', e); }
+}
+// Minimal createSummaryModal (used by summarizer). Put this above summarizeCurrentPageOrSelection_AiAware.
+function createSummaryModal(title = 'Summary', content = '') {
+  try {
+    // remove previous modal if present
     const old = document.getElementById('clarityread-summary-modal');
     if (old) old.remove();
+
     const modal = document.createElement('div');
     modal.id = 'clarityread-summary-modal';
     modal.style.position = 'fixed';
@@ -866,30 +1371,41 @@ safeOn(themeToggleBtn, 'click', () => {
     hdr.style.justifyContent = 'space-between';
     hdr.style.alignItems = 'center';
     hdr.style.marginBottom = '8px';
-    const h = document.createElement('strong'); h.textContent = title;
+    const h = document.createElement('strong');
+    h.textContent = title;
     hdr.appendChild(h);
-    const actions = document.createElement('div');
 
-    const copyBtn = document.createElement('button'); copyBtn.textContent = 'Copy';
+    const actions = document.createElement('div');
+    actions.style.display = 'flex';
+    actions.style.gap = '8px';
+
+    const copyBtn = document.createElement('button');
+    copyBtn.textContent = 'Copy';
     copyBtn.addEventListener('click', async () => {
       try {
         await navigator.clipboard.writeText(content);
         copyBtn.textContent = 'Copied';
-        setTimeout(() => copyBtn.textContent = 'Copy', 1200);
-        toast('Summary copied to clipboard.', 'success');
+        setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1200);
+        toast('Summary copied to clipboard.', 'success', 1400);
       } catch (e) { safeLog('summary copy failed', e); toast('Copy failed.', 'error'); }
     });
-    const closeBtn = document.createElement('button'); closeBtn.textContent = 'Close';
-    closeBtn.addEventListener('click', () => modal.remove());
 
-    const downloadBtn = document.createElement('button'); downloadBtn.textContent = 'Download';
+    const downloadBtn = document.createElement('button');
+    downloadBtn.textContent = 'Download';
     downloadBtn.addEventListener('click', () => {
       const blob = new Blob([content], { type: 'text/plain' });
       const url = URL.createObjectURL(blob);
-      const a = document.createElement('a'); a.href = url; a.download = 'summary.txt'; a.click();
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'summary.txt';
+      a.click();
       URL.revokeObjectURL(url);
       toast('Summary downloaded.', 'success', 1400);
     });
+
+    const closeBtn = document.createElement('button');
+    closeBtn.textContent = 'Close';
+    closeBtn.addEventListener('click', () => modal.remove());
 
     actions.appendChild(downloadBtn);
     actions.appendChild(copyBtn);
@@ -897,73 +1413,289 @@ safeOn(themeToggleBtn, 'click', () => {
     hdr.appendChild(actions);
     modal.appendChild(hdr);
 
-    const pre = document.createElement('div');
-    pre.id = 'clarityread-summary-content';
-    pre.style.whiteSpace = 'pre-wrap';
-    pre.style.lineHeight = '1.5';
-    pre.textContent = content || '(no summary)';
-    modal.appendChild(pre);
+    const contentDiv = document.createElement('div');
+    contentDiv.id = 'clarityread-summary-content';
+    contentDiv.style.whiteSpace = 'pre-wrap';
+    contentDiv.style.lineHeight = '1.5';
+    contentDiv.textContent = content || '(no summary)';
+    modal.appendChild(contentDiv);
 
     document.body.appendChild(modal);
-    safeLog('created summary modal', { title, length: (content||'').length });
     return modal;
+  } catch (e) {
+    safeLog('createSummaryModal error', e);
+    return null;
   }
+}
 
-  async function summarizeCurrentPageOrSelection() {
-    safeLog('summarizeCurrentPageOrSelection start');
+// ---------------- Replacement: summarizeCurrentPageOrSelection_AiAware (local-only) ----------------
+// ----------------- Summarizer helpers -----------------
+function stripCssLikeFragments(raw) {
+  try {
+    if (!raw || typeof raw !== 'string') return raw || '';
+    let t = raw;
+    t = t.replace(/<style[\s\S]*?>[\s\S]*?<\/style>/gi, ' ');
+    t = t.replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, ' ');
+    // remove big wiki css blobs and repeated brace junk
+    t = t.replace(/\.mw-parser-output[\s\S]*?\}/gi, ' ');
+    t = t.replace(/[\{\}<>\[\]]{3,}/g, ' ');
+    t = t.replace(/\s{2,}/g, ' ');
+    return t.trim();
+  } catch (e) { return raw || ''; }
+}
+
+// preference read
+async function readSummaryPref() {
+  try {
+    return await new Promise(resolve => chrome.storage.local.get(['summaryDetail'], r => resolve((r && r.summaryDetail) || 'normal')));
+  } catch (e) { return 'normal'; }
+}
+
+// adaptive sentence count (pref + length-based mild scaling)
+function computeAdaptiveMax(text = '', pref = 'normal') {
+  const len = (text || '').length;
+  let base = 3; // normal
+  if (pref === 'concise') base = 2;
+  if (pref === 'detailed') base = 5;
+  if (len > 2000) base += 1;
+  if (len > 8000) base += 2;
+  if (len > 20000) base += 2;
+  const cap = 12;
+  return Math.max(1, Math.min(cap, Math.round(base)));
+}
+
+// deterministic progress toast helpers (if you already have similar ones, this will be compatible)
+const _PROG_ID = 'clarityread-progress-toast-v1';
+function createProgressToast(msg = 'Generating summary — please wait...', ttl = 60000) {
+  try {
+    let cont = document.getElementById('clarityread-toast-container');
+    if (!cont) {
+      cont = document.createElement('div');
+      cont.id = 'clarityread-toast-container';
+      cont.style.position = 'fixed';
+      cont.style.right = '12px';
+      cont.style.bottom = '12px';
+      cont.style.zIndex = 2147483647;
+      cont.style.display = 'flex';
+      cont.style.flexDirection = 'column';
+      cont.style.gap = '8px';
+      document.body.appendChild(cont);
+    }
+    const old = document.getElementById(_PROG_ID);
+    if (old) old.remove();
+    const el = document.createElement('div');
+    el.id = _PROG_ID;
+    el.className = 'clarityread-toast';
+    el.textContent = msg;
+    el.style.padding = '10px 14px';
+    el.style.borderRadius = '8px';
+    el.style.boxShadow = '0 6px 18px rgba(0,0,0,0.12)';
+    el.style.background = '#fff7e6';
+    el.style.color = '#111';
+    el.style.fontSize = '13px';
+    el.style.maxWidth = '360px';
+    cont.appendChild(el);
+    el._auto = setTimeout(() => { try { el.remove(); } catch(e){} }, ttl);
+    return _PROG_ID;
+  } catch (e) { safeLog && safeLog('createProgressToast error', e); return null; }
+}
+function clearProgressToast() {
+  try {
+    const el = document.getElementById(_PROG_ID);
+    if (el) {
+      if (el._auto) { clearTimeout(el._auto); el._auto = null; }
+      el.remove();
+    }
+  } catch (e) { safeLog && safeLog('clearProgressToast error', e); }
+}
+
+// ----------------- Summarizer main function -----------------
+async function summarizeCurrentPageOrSelection_AiAware() {
+  safeLog('summarizeCurrentPageOrSelection_AiAware (local-only) start');
+  if (!summarizePageBtn) { safeLog('summarizePageBtn missing'); return; }
+  summarizePageBtn.disabled = true;
+
+  try {
+    let text = '';
+    let usedSelection = false;
+
+    // 1) pick best web tab
+    const tab = await findBestWebTab();
+    if (!tab || !tab.id || !tab.url || tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://')) {
+      toast('Cannot summarize internal or extension pages.', 'error');
+      summarizePageBtn.disabled = false;
+      return;
+    }
+
+    // 2) try stored selection (content script may have saved it recently)
     try {
-      const res = await sendMessageToActiveTabWithInject({ action: 'getSelection' });
-      safeLog('getSelection response', res);
-      let text = '';
-      const selectionObj = extractSelection(res);
-      if (selectionObj && selectionObj.text && selectionObj.text.trim()) {
-        const wantSelection = confirm('Summarize selected text? Click "OK" to summarize the selection, or "Cancel" to summarize the full page.');
-        if (wantSelection) {
-          text = selectionObj.text;
-        } else {
-          text = '';
-        }
+      const stored = await new Promise(resolve => chrome.storage.local.get(['clarity_last_selection'], r => resolve(r && r.clarity_last_selection)));
+      if (stored && stored.text && stored.ts && ((Date.now() - stored.ts) < 20000) && stored.url && stored.url.split('#')[0] === (tab.url || '').split('#')[0]) {
+        const wantSelection = confirm('Summarize selected text? Click OK to summarize selection, Cancel to summarize full page.');
+        if (wantSelection) { text = stored.text; usedSelection = true; }
       }
-      if (!text) {
-        const tab = await findBestWebTab();
-        safeLog('summarize fallback tab', tab && { id: tab.id, url: tab.url });
-        if (!tab || !tab.id || !tab.url || tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://')) {
-          toast('Cannot summarize internal or extension pages.', 'error');
-          safeLog('summarize aborted: no suitable web tab');
-          return;
-        }
-        try {
-          const exec = await new Promise((resolve) => {
-            chrome.scripting.executeScript({
-              target: { tabId: tab.id },
-              func: () => {
-                function getMainNodeText() {
-                  try {
-                    const prefer = ['article', 'main', '[role="main"]', '#content', '#primary', '.post', '.article', '#mw-content-text'];
-                    for (const s of prefer) {
-                      const el = document.querySelector(s);
-                      if (el && el.innerText && el.innerText.length > 200) return el.innerText;
-                    }
-                    if (document.body && document.body.innerText && document.body.innerText.length > 200) return document.body.innerText;
-                  } catch (e) {}
-                  return document.documentElement && document.documentElement.innerText ? document.documentElement.innerText : '';
-                }
-                return { text: getMainNodeText(), title: document.title || '' };
-              }
-            }, (results) => resolve(results && results[0] && results[0].result));
-          });
-          safeLog('summarize exec result', !!exec, exec && (exec.text || '').length);
-          if (exec && exec.text) text = exec.text;
-        } catch (e) { safeLog('summarize fallback exec failed', e); }
-      }
-      if (!text || !text.trim()) { toast('No text to summarize — select text on the page or ensure the page has readable content.', 'info'); safeLog('summarize no text'); return; }
-      const summary = summarizeText(text, 3);
-      createSummaryModal('Page Summary', summary);
-      safeLog('summarize created summary len', summary.length);
-    } catch (e) { safeLog('summarize exception', e); toast('Failed to summarize (see console).', 'error'); }
-  }
+    } catch (e) { safeLog('reading stored selection failed', e); }
 
-  safeOn(summarizePageBtn, 'click', summarizeCurrentPageOrSelection);
+    // 3) try window.getSelection directly if no stored selection
+    if (!text) {
+      try {
+        const pageSelResult = await new Promise(resolve => {
+          chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            func: () => {
+              try {
+                const s = (window.getSelection && window.getSelection().toString && window.getSelection().toString()) || '';
+                if ((!s || !s.trim()) && document.activeElement) {
+                  const ae = document.activeElement;
+                  if ((ae.tagName === 'TEXTAREA' || (ae.tagName === 'INPUT' && ae.type === 'text')) && typeof ae.selectionStart === 'number') {
+                    const start = ae.selectionStart, end = ae.selectionEnd;
+                    if (end > start) return ae.value.slice(start, end);
+                  }
+                }
+                return s || '';
+              } catch (e) { return ''; }
+            }
+          }, (res) => resolve(res));
+        });
+
+        let selText = '';
+        if (Array.isArray(pageSelResult) && pageSelResult.length && pageSelResult[0]) {
+          const r0 = pageSelResult[0];
+          if (typeof r0.result === 'string') selText = r0.result;
+          else if (r0 && r0.result && typeof r0.result.text === 'string') selText = r0.result.text;
+        } else if (typeof pageSelResult === 'string') selText = pageSelResult;
+        else if (pageSelResult && typeof pageSelResult.result === 'string') selText = pageSelResult.result;
+
+        if (selText && selText.trim()) {
+          const wantSelection = confirm('Summarize selected text? Click OK to summarize selection, Cancel to summarize full page.');
+          if (wantSelection) { text = selText.trim(); usedSelection = true; }
+        }
+      } catch (e) { safeLog('page selection execScript failed', e); }
+    }
+
+    // 4) if still nothing, extract main page content
+    if (!text) {
+      try {
+        const execResult = await new Promise(resolve => {
+          chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            func: () => {
+              function removeNodes(selectors = []) {
+                try { selectors.forEach(s => document.querySelectorAll(s).forEach(n => { try { n.remove(); } catch(e){} })); } catch(e) {}
+              }
+              try {
+                removeNodes(['header','footer','nav','aside','.navbox','.vertical-navbox','.toc','#toc','.infobox','.sidebar','.mw-jump-link','.mw-references-wrap','.reference','.references','.reflist','.mw-editsection','.hatnote']);
+                const prefer = ['article','main','[role="main"]','#content','#primary','.post','.article','#mw-content-text','.mw-parser-output'];
+                for (const sel of prefer) {
+                  const el = document.querySelector(sel);
+                  if (el && el.innerText && el.innerText.length > 200) {
+                    const clone = el.cloneNode(true);
+                    clone.querySelectorAll('img, svg, picture, table, .toc, .infobox, aside, nav, footer, header, style, script').forEach(n => n.remove());
+                    return { text: clone.innerText || '', title: document.title || '' };
+                  }
+                }
+                if (document.body && document.body.innerText && document.body.innerText.length > 200) {
+                  const b = document.body.cloneNode(true);
+                  b.querySelectorAll('script, style, img, svg, picture, table, aside, nav, header, footer').forEach(n => n.remove());
+                  return { text: b.innerText || '', title: document.title || '' };
+                }
+                return { text: '', title: document.title || '' };
+              } catch (e) { return { text: '', title: document.title || '' }; }
+            }
+          }, (res) => resolve(res));
+        });
+
+        let pageText = '';
+        if (Array.isArray(execResult) && execResult.length && execResult[0]) {
+          const r0 = execResult[0];
+          if (r0 && r0.result && typeof r0.result.text === 'string') pageText = r0.result.text;
+          else if (r0 && typeof r0.result === 'string') pageText = r0.result;
+        } else if (execResult && execResult.result && execResult.result.text) {
+          pageText = execResult.result.text;
+        } else if (execResult && typeof execResult.text === 'string') {
+          pageText = execResult.text;
+        } else if (typeof execResult === 'string') {
+          pageText = execResult;
+        }
+
+        text = stripCssLikeFragments(String(pageText || '')).trim();
+      } catch (e) {
+        safeLog('full page exec failed', e);
+        toast('Unable to access page content. Give ClarityRead permission for this site and try again.', 'error');
+        summarizePageBtn.disabled = false;
+        return;
+      }
+    }
+
+    // guard
+    if (!text || !text.trim()) {
+      toast('No text to summarize — select text on the page or ensure the page has readable content.', 'info');
+      summarizePageBtn.disabled = false;
+      return;
+    }
+
+    // read preference + compute sentences
+    const pref = await readSummaryPref();
+    const adaptiveMax = computeAdaptiveMax(text, pref);
+
+    // run summarizer with deterministic progress toast
+    const pid = createProgressToast('Generating summary — please wait...', 60000);
+    let summary = '(no summary produced)';
+    try {
+      if (typeof summarizeTextLocal === 'function') summary = summarizeTextLocal(text, adaptiveMax) || summary;
+      else summary = '(summarizer not available)';
+    } catch (e) { safeLog('summarizer error', e); }
+    finally { clearProgressToast(); }
+
+    // lightweight post-filter to remove TOC-like garbage
+    try {
+      const parts = summary.split(/(?<=[.?!])\s+/).map(s => s.trim()).filter(Boolean);
+      const filtered = parts.filter(s => {
+        if (s.length < 30) return false;
+        if (/^(Outline|History|See also|References|External links|Category|vte)\b/i.test(s)) return false;
+        const nonAlphaRatio = (s.replace(/[A-Za-z0-9]/g,'').length) / Math.max(1, s.length);
+        if (nonAlphaRatio > 0.20) return false;
+        return true;
+      });
+      if (filtered.length) summary = filtered.join(' ');
+    } catch (e) { safeLog('post-filter threw', e); }
+
+    // present modal with adaptive header
+    const modeSubtitle = usedSelection ? 'Selection' : 'Full page';
+    const headerTitle = `Page Summary — ${adaptiveMax} sentence${adaptiveMax === 1 ? '' : 's'} (${modeSubtitle})`;
+    createSummaryModal(headerTitle, summary);
+    toast('Summary ready', 'success', 3000);
+
+  } catch (err) {
+    safeLog('summarize error', err && (err.stack || err));
+    clearProgressToast();
+    clearToastsLocal();
+    toast('Failed to summarize (see console).', 'error', 6000);
+    try {
+      const fallback = summarizeTextLocal(window.__clarity_last_text || '', 3);
+      createSummaryModal('Page Summary (Local fallback)', fallback);
+    } catch (e) { safeLog('fallback also failed', e); }
+  } finally {
+    summarizePageBtn.disabled = false;
+  }
+}
+
+
+
+
+// Hook up summary button: replace old handler with the local-only summarizer
+try {
+  let btn = $('summarizePageBtn');
+  if (btn) {
+    btn.replaceWith(btn.cloneNode(true));
+    const newBtn = $('summarizePageBtn');
+    if (newBtn) safeOn(newBtn, 'click', summarizeCurrentPageOrSelection_AiAware);
+  }
+} catch (e) { safeLog('hook summarize button failed', e); }
+
+
+
+
 
   // ---------- Profiles and saved reads ----------
   function updateProfileDropdown(profiles = {}, selectedName = '') { if (!profileSelect) return; profileSelect.innerHTML = '<option value="">Select profile</option>'; for (const name in profiles) { const opt=document.createElement('option'); opt.value=name; opt.textContent=name; profileSelect.appendChild(opt);} if (selectedName) profileSelect.value = selectedName; }
@@ -975,11 +1707,31 @@ safeOn(themeToggleBtn, 'click', () => {
   safeOn(saveProfileBtn, 'click', () => { const name = prompt('Enter profile name:'); if (!name) return; const profile = gatherSettingsObject(); saveProfile(name, profile); });
 
   safeOn(exportProfilesBtn, 'click', () => { chrome.storage.local.get(['profiles'], (res) => { const dataStr = JSON.stringify(res.profiles || {}); const blob = new Blob([dataStr], { type: "application/json" }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'ClarityReadProfiles.json'; a.click(); URL.revokeObjectURL(url); toast('Profiles exported.', 'success'); safeLog('exported profiles'); }); });
-  // ===== Settings export / import (apply on import) =====
-// Export current settings to a JSON file
-const exportSettingsBtn = document.createElement('button');
-exportSettingsBtn.className = 'ghost';
-exportSettingsBtn.textContent = 'Export Settings';
+
+// Try to find/reuse existing "Export Settings" button in DOM (avoid duplicate buttons)
+let exportSettingsBtn = document.getElementById('exportSettingsBtn') || null;
+
+// prefer to reuse it but keep its id consistent for future checks
+if (!exportSettingsBtn) {
+  const candidate = document.getElementById('exportProfilesBtn');
+  if (candidate && /export\s*settings/i.test((candidate.textContent||'').trim())) {
+    exportSettingsBtn = candidate;
+    exportSettingsBtn.id = exportSettingsBtn.id || 'exportSettingsBtn';
+  }
+}
+
+// create only if not present
+if (!exportSettingsBtn) {
+  exportSettingsBtn = document.createElement('button');
+  exportSettingsBtn.id = 'exportSettingsBtn';
+  exportSettingsBtn.className = 'ghost';
+  exportSettingsBtn.textContent = 'Export Settings';
+  // attach to UI near profiles export if possible
+  if (exportProfilesBtn && exportProfilesBtn.parentNode) exportProfilesBtn.parentNode.insertBefore(exportSettingsBtn, exportProfilesBtn.nextSibling);
+  else document.body.appendChild(exportSettingsBtn);
+}
+
+// export handler (settings)
 exportSettingsBtn.addEventListener('click', () => {
   const settings = gatherSettingsObject();
   const dataStr = JSON.stringify(settings, null, 2);
@@ -992,26 +1744,40 @@ exportSettingsBtn.addEventListener('click', () => {
   URL.revokeObjectURL(url);
   toast('Settings exported.', 'success');
 });
- // attach to UI (place near exportProfilesBtn)
-if (exportProfilesBtn && exportProfilesBtn.parentNode) {
-  exportProfilesBtn.parentNode.insertBefore(exportSettingsBtn, exportProfilesBtn.nextSibling);
+
+// Import settings - reuse existing input/button if present, else create
+let importSettingsInput = document.getElementById('importSettingsInput') || null;
+let importSettingsBtn = document.getElementById('importSettingsBtn') || null;
+
+if (!importSettingsInput) {
+  importSettingsInput = document.createElement('input');
+  importSettingsInput.id = 'importSettingsInput';
+  importSettingsInput.type = 'file';
+  importSettingsInput.accept = '.json,application/json';
+  importSettingsInput.style.display = 'none';
+  document.body.appendChild(importSettingsInput);
 }
 
-// Import settings element (hidden file input)
-const importSettingsInput = document.createElement('input');
-importSettingsInput.type = 'file';
-importSettingsInput.accept = '.json,application/json';
-importSettingsInput.style.display = 'none';
-document.body.appendChild(importSettingsInput);
+if (!importSettingsBtn) {
+  // try to reuse importProfilesBtn if it looks like a general Import button
+  const candidateImport = document.getElementById('importProfilesBtn');
+  if (candidateImport && /import/i.test((candidateImport.textContent||'').trim()) && !document.getElementById('importSettingsBtn')) {
+    importSettingsBtn = candidateImport;
+    importSettingsBtn.id = importSettingsBtn.id || 'importSettingsBtn';
+  } else {
+    importSettingsBtn = document.createElement('button');
+    importSettingsBtn.id = 'importSettingsBtn';
+    importSettingsBtn.className = 'ghost';
+    importSettingsBtn.textContent = 'Import Settings';
+    if (exportSettingsBtn && exportSettingsBtn.parentNode) exportSettingsBtn.parentNode.insertBefore(importSettingsBtn, exportSettingsBtn.nextSibling);
+    else document.body.appendChild(importSettingsBtn);
+  }
+}
 
-const importSettingsBtn = document.createElement('button');
-importSettingsBtn.className = 'ghost';
-importSettingsBtn.textContent = 'Import Settings';
+// wire import button to hidden input
 importSettingsBtn.addEventListener('click', () => importSettingsInput.click());
-if (exportSettingsBtn && exportSettingsBtn.parentNode) {
-  exportSettingsBtn.parentNode.insertBefore(importSettingsBtn, exportSettingsBtn.nextSibling);
-}
 
+// import input handler (apply imported settings gracefully)
 importSettingsInput.addEventListener('change', (ev) => {
   const file = ev.target.files && ev.target.files[0];
   if (!file) { importSettingsInput.value = ''; return; }
@@ -1019,51 +1785,36 @@ importSettingsInput.addEventListener('change', (ev) => {
   r.onload = (e) => {
     try {
       const imported = JSON.parse(e.target.result);
-      // Validate shape:
       const keys = ['dys','reflow','contrast','invert','fontSize','voice','rate','pitch','highlight'];
       const valid = keys.some(k => k in imported);
       if (!valid) { toast('Invalid settings file.', 'error'); importSettingsInput.value = ''; return; }
 
-      // Apply to UI and storage
-      setUI(imported);
-      // persist globally
-      chrome.storage.sync.set(imported, () => {
-        toast('Settings imported to extension.', 'success', 1200);
-        // apply to active tab (and fall back via background injection)
-        gatherAndSendSettings({ showToast: true });
+      // Build an object with only the known keys (graceful apply)
+      const toApply = {};
+      keys.forEach(k => { if (k in imported) toApply[k] = imported[k]; });
+
+      // Apply to UI
+      const merged = Object.assign({}, gatherSettingsObject(), toApply);
+      setUI(merged);
+
+      // Persist globally: merge into existing sync keys (don't wipe unrelated keys)
+      chrome.storage.sync.get(null, (cur) => {
+        const newSync = Object.assign({}, cur, toApply);
+        chrome.storage.sync.set(newSync, () => {
+          toast('Settings imported to extension.', 'success', 1200);
+          // Apply to active tab
+          gatherAndSendSettings({ showToast: true });
+        });
       });
     } catch (err) {
       toast('Failed to import settings: invalid JSON.', 'error');
-      console.warn('importSettings error', err);
+      safeLog('importSettings error', err);
     }
     importSettingsInput.value = '';
   };
   r.readAsText(file);
 });
 
-  // import profiles: reset input after import so same file can be re-imported later
-  safeOn(importProfilesBtn, 'click', () => importProfilesInput?.click());
-  if (importProfilesInput) {
-    importProfilesInput.addEventListener('change', (e) => {
-      const file = e.target.files?.[0];
-      if (!file) { importProfilesInput.value = ''; return; }
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        try {
-          const importedProfiles = JSON.parse(event.target.result);
-          chrome.storage.local.get(['profiles'], (res) => {
-            const profiles = { ...(res.profiles || {}), ...importedProfiles };
-            chrome.storage.local.set({ profiles }, () => {
-              chrome.storage.sync.set({ profiles }, () => { toast('Profiles imported.', 'success'); updateProfileDropdown(profiles); safeLog('imported profiles', Object.keys(importedProfiles||{})); });
-            });
-          });
-        } catch (err) { safeLog('importProfiles parse failed', err); toast('Failed to import profiles: invalid JSON.', 'error'); }
-        // allow re-importing same file by clearing input
-        importProfilesInput.value = '';
-      };
-      reader.readAsText(file);
-    });
-  }
 
   safeOn(resetStatsBtn, 'click', () => { if (!confirm('Reset all reading stats?')) return; chrome.runtime.sendMessage({ action: 'resetStats' }, () => { safeLog('resetStats requested'); loadStats(); setReadingStatus('Not Reading'); toast('Stats reset.', 'success'); }); });
 
@@ -1240,9 +1991,6 @@ importSettingsInput.addEventListener('change', (ev) => {
     }
   });
 
-  // removed "Manage" button user-flow; renderSavedList exposed for any UI actions
-  // safeOn(openSavedManagerBtn, 'click', () => { renderSavedList(); });
-
   // ---------- Sharing stats image ----------
   async function generateStatsImageAndDownload() {
     safeLog('generateStatsImageAndDownload start');
@@ -1281,34 +2029,54 @@ importSettingsInput.addEventListener('change', (ev) => {
 
   // ---------- Messages from background/content ----------
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-    safeLog('chrome.runtime.onMessage received', msg, sender && sender.tab && { tabId: sender.tab.id, url: sender.tab.url });
-    if (!msg?.action) { sendResponse({ ok: false }); return true; }
-    if (msg.action === 'statsUpdated') { safeLog('msg statsUpdated -> loadStats'); loadStats(); }
-    else if (msg.action === 'readingStopped') { safeLog('msg readingStopped'); setReadingStatus('Not Reading'); toast('Reading stopped.', 'info'); }
-    else if (msg.action === 'readingPaused') { safeLog('msg readingPaused'); setReadingStatus('Paused'); toast('Reading paused.', 'info'); }
-    else if (msg.action === 'readingResumed') { safeLog('msg readingResumed'); setReadingStatus('Reading...'); toast('Reading started.', 'info'); }
-    sendResponse({ ok: true });
-    return true;
-  });
+  safeLog('chrome.runtime.onMessage received', msg, sender && sender.tab && { tabId: sender.tab.id, url: sender.tab.url });
+
+  // handle command routed from background when no web tab is available
+  if (msg && msg.action === 'command' && msg.command) {
+    try {
+      safeLog('popup received command', msg.command);
+      if (msg.command === 'read-aloud') {
+        if (readBtn && !readBtn.disabled) { readBtn.click(); sendResponse({ ok: true }); return true; }
+        sendResponse({ ok: false, error: 'read-btn-unavailable' }); return true;
+      } else if (msg.command === 'stop-reading') {
+        if (stopBtn && !stopBtn.disabled) { stopBtn.click(); sendResponse({ ok: true }); return true; }
+        sendResponse({ ok: false, error: 'stop-btn-unavailable' }); return true;
+      }
+    } catch (e) {
+      safeLog('popup command handler threw', e);
+      sendResponse({ ok: false, error: String(e) });
+      return true;
+    }
+  }
+
+  // existing handling (statsUpdated, readingStopped, readingPaused, readingResumed)
+  if (!msg?.action) { sendResponse({ ok: false }); return true; }
+  if (msg.action === 'statsUpdated') { safeLog('msg statsUpdated -> loadStats'); loadStats(); }
+  else if (msg.action === 'readingStopped') { safeLog('msg readingStopped'); setReadingStatus('Not Reading'); toast('Reading stopped.', 'info'); }
+  else if (msg.action === 'readingPaused') { safeLog('msg readingPaused'); setReadingStatus('Paused'); toast('Reading paused.', 'info'); }
+  else if (msg.action === 'readingResumed') { safeLog('msg readingResumed'); setReadingStatus('Reading...'); toast('Reading started.', 'info'); }
+  sendResponse({ ok: true });
+  return true;
+});
+
 
   // ---------- Popup keyboard shortcuts (active while popup open) ----------
   window.addEventListener('keydown', (e) => {
-  try {
-    // only while popup is open/focused — ignore if input elements are focused
-    const activeTag = document.activeElement && document.activeElement.tagName && document.activeElement.tagName.toLowerCase();
-    if (activeTag === 'input' || activeTag === 'textarea' || document.activeElement?.isContentEditable) return;
+    try {
+      // only while popup is open/focused — ignore if input elements are focused
+      const activeTag = document.activeElement && document.activeElement.tagName && document.activeElement.tagName.toLowerCase();
+      if (activeTag === 'input' || activeTag === 'textarea' || document.activeElement?.isContentEditable) return;
 
-    if (e.altKey && !e.ctrlKey && !e.shiftKey && (e.key === 'r' || e.key === 'R')) {
-      e.preventDefault();
-      if (readBtn && !readBtn.disabled) readBtn.click();
-    }
-    if (e.altKey && !e.ctrlKey && !e.shiftKey && (e.key === 's' || e.key === 'S')) {
-      e.preventDefault();
-      if (stopBtn && !stopBtn.disabled) stopBtn.click();
-    }
-  } catch (err) { /* silent */ }
-});
-
+      if (e.altKey && !e.ctrlKey && !e.shiftKey && (e.key === 'r' || e.key === 'R')) {
+        e.preventDefault();
+        if (readBtn && !readBtn.disabled) readBtn.click();
+      }
+      if (e.altKey && !e.ctrlKey && !e.shiftKey && (e.key === 's' || e.key === 'S')) {
+        e.preventDefault();
+        if (stopBtn && !stopBtn.disabled) stopBtn.click();
+      }
+    } catch (err) { /* silent */ }
+  });
 
   // ---------- Init ----------
   safeLog('popup init: loadStats, initPerSiteUI, renderSavedList');
