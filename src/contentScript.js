@@ -7,6 +7,132 @@
     return;
   }
   window.__clarityread_contentScriptLoaded = true;
+  // ---------- ClarityRead reflow helper (paste near top of contentScript.js) ----------
+(function() {
+  // don't re-install
+  if (window.__clarity_reflow_installed) return;
+  window.__clarity_reflow_installed = true;
+
+  const REFLOW_STYLE_ID = 'clarityreflow-style';
+
+  function ensureReflowStyle() {
+    try {
+      if (document.getElementById(REFLOW_STYLE_ID)) return;
+      const st = document.createElement('style');
+      st.id = REFLOW_STYLE_ID;
+      st.type = 'text/css';
+      st.textContent = `
+:root { --clarity-font-size: 20px; --clarity-line-height: 1.5; }
+
+/* scope activation via html.clarityreflow-active */
+html.clarityreflow-active,
+html.clarityreflow-active body {
+  font-size: var(--clarity-font-size) !important;
+  line-height: var(--clarity-line-height) !important;
+}
+
+/* apply to many common article containers */
+html.clarityreflow-active body,
+html.clarityreflow-active article,
+html.clarityreflow-active main,
+html.clarityreflow-active .article,
+html.clarityreflow-active .post,
+html.clarityreflow-active .entry-content,
+html.clarityreflow-active .mw-parser-output,
+html.clarityreflow-active #content,
+html.clarityreflow-active #primary,
+html.clarityreflow-active .page-content,
+html.clarityreflow-active .content {
+  font-size: var(--clarity-font-size) !important;
+  line-height: var(--clarity-line-height) !important;
+}
+
+/* Ensure paragraphs and lists inherit */
+html.clarityreflow-active p,
+html.clarityreflow-active li,
+html.clarityreflow-active dd,
+html.clarityreflow-active dt,
+html.clarityreflow-active blockquote {
+  font-size: inherit !important;
+  line-height: inherit !important;
+}
+
+/* headings scale up */
+html.clarityreflow-active h1,
+html.clarityreflow-active h2,
+html.clarityreflow-active h3,
+html.clarityreflow-active h4,
+html.clarityreflow-active h5,
+html.clarityreflow-active h6 {
+  font-size: calc(var(--clarity-font-size) * 1.2) !important;
+  line-height: 1.2 !important;
+}
+
+/* avoid breaking layout by not forcing widths etc. */
+`;
+      try { (document.head || document.documentElement).appendChild(st); } catch(e) { document.documentElement.appendChild(st); }
+    } catch (e) { /* ignore */ }
+  }
+
+  function applyClarityFontSize(px) {
+    try {
+      ensureReflowStyle();
+      let v = Number(px) || 20;
+      v = Math.max(10, Math.min(48, Math.round(v))); // clamp
+      document.documentElement.style.setProperty('--clarity-font-size', v + 'px');
+      // set supportive line height
+      const lh = (1.25 + Math.min(0.6, (v - 14) / 80)).toFixed(2);
+      document.documentElement.style.setProperty('--clarity-line-height', lh);
+      document.documentElement.classList.add('clarityreflow-active');
+      // try also setting body inline for sites reading that directly
+      try { document.body.style.fontSize = v + 'px'; } catch(e) {}
+      return { ok: true, size: v };
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
+  }
+
+  function removeClarityReflow() {
+    try {
+      document.documentElement.classList.remove('clarityreflow-active');
+      document.documentElement.style.removeProperty('--clarity-font-size');
+      document.documentElement.style.removeProperty('--clarity-line-height');
+      try { document.body.style.removeProperty('font-size'); } catch(e) {}
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
+  }
+
+  // expose for debug/manual
+  window.ClarityRead = window.ClarityRead || {};
+  window.ClarityRead.applyClarityFontSize = applyClarityFontSize;
+  window.ClarityRead.removeClarityReflow = removeClarityReflow;
+
+  // message listener - keep single point of messaging (coexists with your existing onMessage)
+  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    try {
+      if (!msg || !msg.action) return;
+      if (msg.action === 'clarity_apply_font_size') {
+        const res = applyClarityFontSize(msg.size);
+        sendResponse(res);
+        return true;
+      }
+      if (msg.action === 'clarity_remove_reflow') {
+        const r = removeClarityReflow();
+        sendResponse(r);
+        return true;
+      }
+    } catch (e) {
+      try { sendResponse({ ok: false, error: String(e) }); } catch(e2) {}
+    }
+    // let other listeners handle other messages
+    return false;
+  });
+
+  // ensure style exists early
+  ensureReflowStyle();
+})();
 
   // --- State
   let currentUtterance = null;

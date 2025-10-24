@@ -1364,11 +1364,23 @@ function clearToastsLocal() {
   } catch (e) { safeLog('clearToastsLocal error', e); }
 }
 // Minimal createSummaryModal (used by summarizer). Put this above summarizeCurrentPageOrSelection_AiAware.
+// Minimal createSummaryModal (used by summarizer) - theme-aware
 function createSummaryModal(title = 'Summary', content = '') {
   try {
-    // remove previous modal if present
     const old = document.getElementById('clarityread-summary-modal');
     if (old) old.remove();
+
+    // compute theme colors from page so modal text is readable in dark mode
+    let bg = '#fff', fg = '#111', border = '#e6e6e6';
+    try {
+      const cs = window.getComputedStyle(document.body || document.documentElement);
+      const bodyBg = cs && cs.backgroundColor ? cs.backgroundColor : '';
+      const bodyColor = cs && cs.color ? cs.color : '';
+      if (bodyBg) bg = bodyBg;
+      if (bodyColor) fg = bodyColor;
+      // pick border with some transparency of fg
+      border = (typeof fg === 'string') ? fg : border;
+    } catch (e) { /* ignore */ }
 
     const modal = document.createElement('div');
     modal.id = 'clarityread-summary-modal';
@@ -1378,23 +1390,29 @@ function createSummaryModal(title = 'Summary', content = '') {
     modal.style.right = '8px';
     modal.style.top = '8px';
     modal.style.bottom = '8px';
-    modal.style.background = 'var(--card-bg, #fff)';
-    modal.style.border = '1px solid var(--card-border, #e6e6e6)';
+    modal.style.background = bg;
+    modal.style.border = `1px solid ${border}`;
     modal.style.borderRadius = '8px';
     modal.style.padding = '12px';
     modal.style.overflow = 'auto';
     modal.style.boxShadow = '0 8px 30px rgba(0,0,0,0.35)';
     modal.style.fontSize = '13px';
-    modal.style.color = 'inherit';
+    modal.style.color = fg;
+    modal.style.backdropFilter = 'blur(4px)';
 
     const hdr = document.createElement('div');
     hdr.style.display = 'flex';
     hdr.style.justifyContent = 'space-between';
     hdr.style.alignItems = 'center';
     hdr.style.marginBottom = '8px';
+
+    const hLeft = document.createElement('div');
     const h = document.createElement('strong');
     h.textContent = title;
-    hdr.appendChild(h);
+    hLeft.appendChild(h);
+
+    // show sentence count / small subtitle if available in title already
+    hdr.appendChild(hLeft);
 
     const actions = document.createElement('div');
     actions.style.display = 'flex';
@@ -1431,6 +1449,7 @@ function createSummaryModal(title = 'Summary', content = '') {
     actions.appendChild(downloadBtn);
     actions.appendChild(copyBtn);
     actions.appendChild(closeBtn);
+
     hdr.appendChild(actions);
     modal.appendChild(hdr);
 
@@ -1438,16 +1457,23 @@ function createSummaryModal(title = 'Summary', content = '') {
     contentDiv.id = 'clarityread-summary-content';
     contentDiv.style.whiteSpace = 'pre-wrap';
     contentDiv.style.lineHeight = '1.5';
+    contentDiv.style.color = fg;
+    contentDiv.style.fontSize = '13px';
     contentDiv.textContent = content || '(no summary)';
     modal.appendChild(contentDiv);
 
     document.body.appendChild(modal);
+    // focus for easy keyboard close
+    modal.tabIndex = -1;
+    modal.focus();
+
     return modal;
   } catch (e) {
     safeLog('createSummaryModal error', e);
     return null;
   }
 }
+
 
 // ---------------- Replacement: summarizeCurrentPageOrSelection_AiAware (local-only) ----------------
 // ----------------- Summarizer helpers -----------------
@@ -1843,83 +1869,212 @@ importSettingsInput.addEventListener('change', (ev) => {
 
   safeOn(resetStatsBtn, 'click', () => { if (!confirm('Reset all reading stats?')) return; chrome.runtime.sendMessage({ action: 'resetStats' }, () => { safeLog('resetStats requested'); loadStats(); setReadingStatus('Not Reading'); toast('Stats reset.', 'success'); }); });
 
-  // ---------- Saved reads rendering ----------
-  function renderSavedList() {
-    safeLog('renderSavedList start');
-    chrome.storage.local.get(['savedReads'], (res) => {
-      const list = (res.savedReads || []).slice().reverse();
-      safeLog('savedReads count', list.length);
-      if (!savedListEl) { safeLog('savedListEl missing'); return; }
-      savedListEl.innerHTML = '';
+  // ---------------- Saved reads UI + summarization helpers ----------------
 
-      if (list.length) {
-        const topWrap = document.createElement('div');
-        topWrap.style.display = 'flex';
-        topWrap.style.justifyContent = 'flex-end';
-        topWrap.style.marginBottom = '8px';
-        const summarizeAllBtn = document.createElement('button');
-        summarizeAllBtn.textContent = 'Summarize All Saved';
-        summarizeAllBtn.addEventListener('click', () => {
-          const combined = list.map(it => it.title + '\n' + it.text).join('\n\n');
-          const summary = summarizeText(combined, 6);
-          createSummaryModal('Summary — All Saved Items', summary);
-        });
-        topWrap.appendChild(summarizeAllBtn);
-        savedListEl.appendChild(topWrap);
+// Render saved reads list into #savedList
+async function renderSavedList() {
+  try {
+    const container = document.getElementById('savedList');
+    if (!container) return;
+    container.innerHTML = '';
+
+    // header actions
+    const header = document.createElement('div');
+    header.style.display = 'flex';
+    header.style.justifyContent = 'space-between';
+    header.style.alignItems = 'center';
+    header.style.marginBottom = '8px';
+
+    const htitle = document.createElement('strong');
+    htitle.textContent = 'Saved Selections';
+    header.appendChild(htitle);
+
+    const actionWrap = document.createElement('div');
+    actionWrap.style.display = 'flex';
+    actionWrap.style.gap = '6px';
+
+    const summarizeAllBtn = document.createElement('button');
+    summarizeAllBtn.className = 'btn btn-secondary';
+    summarizeAllBtn.textContent = 'Summarize All Saved';
+    summarizeAllBtn.addEventListener('click', summarizeAllSaved);
+    actionWrap.appendChild(summarizeAllBtn);
+
+    const clearAllBtn = document.createElement('button');
+    clearAllBtn.className = 'btn btn-secondary';
+    clearAllBtn.textContent = 'Clear Saved';
+    clearAllBtn.addEventListener('click', async () => {
+      if (!confirm('Delete all saved selections? This cannot be undone.')) return;
+      chrome.storage.local.set({ savedReads: [] }, () => {
+        toast('Saved selections cleared.', 'info', 1200);
+        renderSavedList();
+      });
+    });
+    actionWrap.appendChild(clearAllBtn);
+
+    header.appendChild(actionWrap);
+    container.appendChild(header);
+
+    // load saved reads
+    chrome.storage.local.get(['savedReads'], (res) => {
+      const arr = Array.isArray(res && res.savedReads) ? res.savedReads.slice().reverse() : [];
+      if (!arr.length) {
+        const msg = document.createElement('div');
+        msg.style.opacity = '0.85';
+        msg.style.fontSize = '13px';
+        msg.textContent = 'No saved selections yet — select text on a page and click "Save Selection".';
+        container.appendChild(msg);
+        return;
       }
 
-      if (!list.length) { savedListEl.textContent = 'No saved items yet.'; return; }
+      const list = document.createElement('div');
+      list.style.display = 'flex';
+      list.style.flexDirection = 'column';
+      list.style.gap = '8px';
 
-      list.forEach(item => {
+      for (const item of arr) {
         const row = document.createElement('div');
-        row.style.display='flex'; row.style.justifyContent='space-between'; row.style.alignItems='center'; row.style.marginBottom='6px';
-        const left = document.createElement('div'); left.style.flex='1'; left.style.marginRight='8px';
-        const title = document.createElement('div'); title.textContent = item.title || (item.text||'').slice(0,60) || 'Saved item'; title.style.fontSize='13px'; title.style.fontWeight='600'; left.appendChild(title);
-        const sub = document.createElement('div'); try { sub.textContent = item.url ? (new URL(item.url)).hostname : ''; } catch(e){ sub.textContent = ''; } sub.style.fontSize='11px'; sub.style.opacity='0.7'; left.appendChild(sub);
+        row.className = 'saved-item';
+        row.style.display = 'flex';
+        row.style.justifyContent = 'space-between';
+        row.style.alignItems = 'flex-start';
+        row.style.padding = '8px';
+        row.style.borderRadius = '6px';
+        row.style.border = '1px solid rgba(0,0,0,0.06)';
+        row.style.background = 'var(--surface, rgba(0,0,0,0.02))';
 
-        const actions = document.createElement('div');
-        actions.style.display = 'flex';
-        actions.style.gap = '6px';
-        actions.style.alignItems = 'center';
+        const left = document.createElement('div');
+        left.style.flex = '1';
+        left.style.marginRight = '12px';
 
-        const openBtn = document.createElement('button'); openBtn.textContent='Read';
-        openBtn.addEventListener('click', () => {
-          chrome.storage.sync.set({ voice: voiceSelect?.value||'', rate: Number(rateInput?.value||1), pitch: Number(pitchInput?.value||1) }, async () => {
-            safeLog('saved read open clicked', item.id);
-            const res = await sendMessageToActiveTabWithInject({ action:'readAloud', highlight:false, _savedText: item.text });
-            if (normalizeBgResponse(res)?.ok) { setReadingStatus('Reading...'); toast('Started reading saved item.', 'success'); }
-            else { safeLog('readAloud _savedText failed', res); toast('Failed to play saved item.', 'error'); }
+        const title = document.createElement('div');
+        title.style.fontWeight = '600';
+        title.style.marginBottom = '6px';
+        title.textContent = item.title || (item.text || '').slice(0, 80);
+
+        const meta = document.createElement('div');
+        meta.style.fontSize = '12px';
+        meta.style.opacity = '0.8';
+        const date = new Date(item.ts || Date.now());
+        meta.textContent = `${item.url ? (new URL(item.url)).hostname : 'Unknown site'} • ${date.toLocaleString()}`;
+
+        const preview = document.createElement('div');
+        preview.style.fontSize = '13px';
+        preview.style.marginTop = '6px';
+        preview.style.whiteSpace = 'nowrap';
+        preview.style.overflow = 'hidden';
+        preview.style.textOverflow = 'ellipsis';
+        preview.title = (item.text || '').trim();
+        preview.textContent = (item.text || '').trim().slice(0, 300);
+
+        left.appendChild(title);
+        left.appendChild(meta);
+        left.appendChild(preview);
+
+        const right = document.createElement('div');
+        right.style.display = 'flex';
+        right.style.flexDirection = 'column';
+        right.style.gap = '6px';
+        right.style.alignItems = 'flex-end';
+
+        const sumBtn = document.createElement('button');
+        sumBtn.className = 'btn btn-primary';
+        sumBtn.textContent = 'Summarize';
+        sumBtn.addEventListener('click', () => summarizeSavedItem(item));
+
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'btn btn-secondary';
+        deleteBtn.textContent = 'Delete';
+        deleteBtn.addEventListener('click', () => {
+          if (!confirm('Delete saved selection?')) return;
+          chrome.storage.local.get(['savedReads'], (r) => {
+            const cur = Array.isArray(r && r.savedReads) ? r.savedReads : [];
+            const keep = cur.filter(x => x.id !== item.id);
+            chrome.storage.local.set({ savedReads: keep }, () => {
+              toast('Saved selection deleted.', 'info', 1000);
+              renderSavedList();
+            });
           });
         });
 
-        const openSpeed = document.createElement('button'); openSpeed.textContent='Speed';
-        openSpeed.addEventListener('click', async () => {
-          const chunk = Number(chunkSizeInput?.value || 3);
-          const r = Number(speedRateInput?.value || 1);
-          safeLog('saved read openSpeed clicked', item.id, { chunk, r });
-          const res = await sendMessageToActiveTabWithInject({ action:'speedRead', text:item.text, chunkSize:chunk, rate:r });
-          if (normalizeBgResponse(res)?.ok) { setReadingStatus('Reading...'); toast('Started speed-read of saved item.', 'success'); }
-          else { safeLog('speedRead _savedText failed', res); toast('Failed to start speed-read.', 'error'); }
-        });
+        right.appendChild(sumBtn);
+        right.appendChild(deleteBtn);
 
-        const summarizeBtn = document.createElement('button'); summarizeBtn.textContent = 'Summarize';
-        summarizeBtn.addEventListener('click', () => {
-          const summary = summarizeText(item.text || '', 3);
-          createSummaryModal(item.title || 'Saved Item Summary', summary);
-        });
+        row.appendChild(left);
+        row.appendChild(right);
+        list.appendChild(row);
+      }
 
-        const delBtn = document.createElement('button'); delBtn.textContent='Delete';
-        delBtn.addEventListener('click', () => { if (!confirm('Delete saved item?')) return; chrome.storage.local.get(['savedReads'], (r2)=>{ const arr = r2.savedReads || []; const filtered = arr.filter(x=>x.id!==item.id); chrome.storage.local.set({ savedReads: filtered }, () => { safeLog('deleted saved item', item.id); renderSavedList(); toast('Saved item deleted.', 'info'); }); }); });
-
-        actions.appendChild(openBtn);
-        actions.appendChild(openSpeed);
-        actions.appendChild(summarizeBtn);
-        actions.appendChild(delBtn);
-
-        row.appendChild(left); row.appendChild(actions); savedListEl.appendChild(row);
-      });
+      container.appendChild(list);
     });
+  } catch (e) {
+    safeLog('renderSavedList error', e);
   }
+}
+
+// Summarize a single saved item (shows modal)
+async function summarizeSavedItem(item) {
+  try {
+    if (!item || !item.text) return toast('Nothing to summarize.', 'info');
+    const pref = await readSummaryPref();
+    const adaptiveMax = computeAdaptiveMax(item.text, pref);
+
+    const pid = createProgressToast('Generating summary — please wait...', 60000);
+    let summary = '(no summary produced)';
+    try {
+      summary = summarizeTextLocal(item.text, adaptiveMax, pref) || summary;
+    } catch (e) {
+      safeLog('summarizer error (saved item)', e);
+    } finally {
+      clearProgressToast();
+    }
+
+    // post-filter and header
+    const actualSentences = (summary || '').split(/(?<=[.?!])\s+/).map(s => s.trim()).filter(Boolean).length || 0;
+    const headerTitle = `Saved Selection — ${actualSentences} sentence${actualSentences === 1 ? '' : 's'}`;
+    createSummaryModal(headerTitle, summary);
+  } catch (e) {
+    safeLog('summarizeSavedItem error', e);
+    toast('Failed to summarize saved selection.', 'error');
+  }
+}
+
+// Summarize all saved selections (concatenate & summarize)
+async function summarizeAllSaved() {
+  try {
+    chrome.storage.local.get(['savedReads'], async (r) => {
+      const arr = Array.isArray(r && r.savedReads) ? r.savedReads : [];
+      if (!arr.length) { toast('No saved selections to summarize.', 'info'); return; }
+
+      // join saved texts with paragraph breaks; if combined text is huge, consider truncation
+      const combined = arr.map(x => (x.text || '').trim()).filter(Boolean).join('\n\n');
+      if (!combined) { toast('No textual content found in saved selections.', 'info'); return; }
+
+      const pref = await readSummaryPref();
+      const adaptiveMax = computeAdaptiveMax(combined, pref);
+
+      const pid = createProgressToast('Generating combined summary — please wait...', 60000);
+      let summary = '(no summary produced)';
+      try {
+        summary = summarizeTextLocal(combined, adaptiveMax, pref) || summary;
+      } catch (e) {
+        safeLog('summarizer error (all saved)', e);
+      } finally {
+        clearProgressToast();
+      }
+
+      const actualSentences = (summary || '').split(/(?<=[.?!])\s+/).map(s => s.trim()).filter(Boolean).length || 0;
+      const headerTitle = `Saved Selections — ${actualSentences} sentence${actualSentences === 1 ? '' : 's'}`;
+      createSummaryModal(headerTitle, summary);
+    });
+  } catch (e) {
+    safeLog('summarizeAllSaved error', e);
+    toast('Failed to summarize saved selections.', 'error');
+  }
+}
+
+// Ensure saved list is rendered at startup
+try { renderSavedList(); } catch (e) { safeLog('initial renderSavedList failed', e); }
+
 
   // Save selection -> use background/content messaging helper which handles injecting + permission flow
   safeOn(saveSelectionBtn, 'click', async () => {
