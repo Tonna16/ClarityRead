@@ -93,9 +93,9 @@
         chrome.tabs.sendMessage(tabId, message, (response) => {
           if (!chrome.runtime.lastError) {
             safeLog('sendMessage direct succeeded', { tabId, action: message && message.action, response });
-            // unwrap nested response if present
+            // unwrap nested response if present; return consistent shape
             const unwrapped = unwrapResponseMaybe(response);
-            return finish({ ok: true, response: unwrapped });
+            return finish({ ok: true, response: unwrapped, cssError: null });
           }
 
           // runtime.lastError -> attempt injection path
@@ -134,6 +134,7 @@
                     // If contains threw, log and proceed with injection attempt (older browsers / edge cases)
                     safeWarn('chrome.permissions.contains error', chrome.runtime.lastError);
                   } else if (!has) {
+                    // IMPORTANT: return early with permissionPattern so caller (popup) can request exact host permission
                     safeInfo('missing host permission for origin', permissionPattern);
                     return finish({ ok: false, error: 'no-host-permission', detail: 'host-permission-missing', permissionPattern });
                   }
@@ -148,6 +149,7 @@
 
                         // host permission required (double-check)
                         if (lower.includes('must request permission') || lower.includes('cannot access contents of the page') || lower.includes('has no access to')) {
+                          // surface permission pattern so UI can request permission
                           return finish({ ok: false, error: 'no-host-permission', detail: chrome.runtime.lastError.message, permissionPattern });
                         }
 
@@ -241,9 +243,14 @@
       }
 
       // safety timeout in case sendMessage never invokes callback (should not happen)
-      setTimeout(() => {
-        finish({ ok: false, error: 'send-timeout' });
-      }, 8000);
+      // longer timeout to be slightly more resilient
+      const SAFETY_MS = 10000;
+      const to = setTimeout(() => {
+        try { finish({ ok: false, error: 'send-timeout' }); } catch(e) {}
+      }, SAFETY_MS);
+      // ensure we don't leave stray timeout after resolve
+      const origFinish = finish;
+      finish = (r) => { try { clearTimeout(to); } catch(e) {} ; origFinish(r); };
     });
   }
 
@@ -598,7 +605,8 @@ chrome.commands.onCommand.addListener(async (command) => {
         case 'speedRead':
         case 'detectLanguage':
         case 'getSelection':
-          case 'clarity_extract_main':
+        case 'clarity_extract_main':
+        // (fallthrough to the general forward handler below)
 
         // allow popup to query overlay state directly on tab (forwarded to content script)
         case 'clarity_query_overlay': {

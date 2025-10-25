@@ -3,10 +3,15 @@
 // import/export dedupe+apply, focus label preserved, theme persistence, single-instance export/import buttons.
 
 document.addEventListener('DOMContentLoaded', () => {
-  // ---------- CONFIG ----------
-  const DEBUG = true; // set true for development, false for production
-  const $ = id => document.getElementById(id) || null;
-  const safeLog = (...a) => { try { if (DEBUG) console.log('[ClarityRead popup]', ...a); } catch(e){} };
+const DEBUG = true; // set true for development, false for production
+const $ = id => document.getElementById(id) || null;
+const safeLog = (...args) => { try { if (DEBUG) console.log('[ClarityRead popup]', ...args); } catch (e) {} };
+const safeWarn = (...args) => { try { if (DEBUG) console.warn('[ClarityRead popup]', ...args); } catch (e) {} };
+const safeInfo = (...args) => { try { if (DEBUG) console.info('[ClarityRead popup]', ...args); } catch (e) {} };
+
+// operation lock to prevent concurrent cross-tab operations (ensure declared before use)
+let opLock = false;
+
   // wire summaryDetailSelect -> chrome.storage.local
 // wire summaryDetailSelect -> chrome.storage.local (call this inside DOMContentLoaded)
 function wireSummaryDetailSelect() {
@@ -648,88 +653,92 @@ function normalizeSelectionResponse(raw) {
 
 
   // Robust send helper - popup -> background forward wrapper
-  async function sendMessageToActiveTabWithInject(message, _retry = 0) {
-    if (opLock) {
-      safeLog('sendMessageToActiveTabWithInject blocked: opLock active');
-      return { ok: false, error: 'in-flight' };
-    }
-    opLock = true;
-    try {
-      return await new Promise((resolve) => {
-        chrome.tabs.query({ active: true, lastFocusedWindow: true }, async (tabs) => {
+  // robust forwarder: popup -> background -> content (with retry / permission prompt)
+async function sendMessageToActiveTabWithInject(message, _retry = 0) {
+  if (opLock) {
+    safeLog('sendMessageToActiveTabWithInject blocked: opLock active');
+    return { ok: false, error: 'in-flight' };
+  }
+  opLock = true;
+  try {
+    return await new Promise(resolve => {
+      chrome.tabs.query({ active: true, lastFocusedWindow: true }, async (tabs) => {
+        try {
           const tab = tabs && tabs[0];
+          // If popup is active extension page, attempt to pick a web tab for the action
           if (tab && tab.url && tab.url.startsWith('chrome-extension://')) {
-            safeLog('Popup helper: active tab is extension page — looking for best web tab');
-            try {
-              const webTab = await findBestWebTab();
-              if (webTab) {
-                message._targetTabId = webTab.id;
-                message._targetTabUrl = webTab.url;
-                safeLog('Popup helper: selected best web tab', webTab.id, webTab.url);
-              } else {
-                delete message._targetTabId;
-                delete message._targetTabUrl;
-              }
-            } catch (e) { safeLog('Popup helper: findBestWebTab error', e); delete message._targetTabId; delete message._targetTabUrl; }
+            const webTab = await findBestWebTab().catch(() => null);
+            if (webTab) {
+              message._targetTabId = webTab.id;
+              message._targetTabUrl = webTab.url;
+              safeLog('Popup helper: selected best web tab', webTab.id, webTab.url);
+            } else {
+              delete message._targetTabId;
+              delete message._targetTabUrl;
+            }
           } else if (tab && tab.id && tab.url && isWebUrl(tab.url)) {
             message._targetTabId = tab.id;
             message._targetTabUrl = tab.url;
           } else if (tab && tab.id && tab.url && !isWebUrl(tab.url)) {
-            safeLog('Popup helper: active tab is internal page, trying to find best web tab');
-            try {
-              const webTab = await findBestWebTab();
-              if (webTab) {
-                message._targetTabId = webTab.id;
-                message._targetTabUrl = webTab.url;
-                safeLog('Popup helper: selected best web tab', webTab.id, webTab.url);
-              } else {
-                delete message._targetTabId;
-                delete message._targetTabUrl;
-              }
-            } catch (e) { delete message._targetTabId; delete message._targetTabUrl; }
+            const webTab = await findBestWebTab().catch(() => null);
+            if (webTab) {
+              message._targetTabId = webTab.id;
+              message._targetTabUrl = webTab.url;
+              safeLog('Popup helper: selected best web tab', webTab.id, webTab.url);
+            } else {
+              delete message._targetTabId;
+              delete message._targetTabUrl;
+            }
           }
 
-          try {
-            chrome.runtime.sendMessage(message, async (resRaw) => {
-              if (chrome.runtime.lastError) {
-                safeLog('popup > background send error:', chrome.runtime.lastError && chrome.runtime.lastError.message);
-                opLock = false;
-                return resolve({ ok: false, error: chrome.runtime.lastError && chrome.runtime.lastError.message });
-              }
-              if (!resRaw) { opLock = false; return resolve({ ok: false, error: 'no-response' }); }
-
-              const res = normalizeBgResponse(resRaw);
-
-              // background requests host permission -> prompt user once
-              if (res && res.ok === false && res.error === 'no-host-permission' && _retry < 1) {
-                const pattern = res.permissionPattern || (message._targetTabUrl ? buildOriginPermissionPattern(message._targetTabUrl) : null);
-                const friendlyHost = pattern ? (pattern.replace('/*','')) : (message._targetTabUrl || 'this site');
-                try {
-                  const want = confirm(`ClarityRead needs permission to access ${friendlyHost} to operate on that page. Grant access for this site?`);
-                  if (!want) { opLock = false; return resolve(res); }
-                  chrome.permissions.request({ origins: [pattern] }, (granted) => {
-                    if (chrome.runtime.lastError) {
-                      safeLog('permissions.request error', chrome.runtime.lastError);
-                      opLock = false;
-                      return resolve({ ok: false, error: 'permission-request-failed', detail: chrome.runtime.lastError.message });
-                    }
-                    if (!granted) { opLock = false; return resolve({ ok: false, error: 'permission-denied' }); }
-                    setTimeout(() => {
-                      sendMessageToActiveTabWithInject(message, _retry + 1).then(r => { opLock = false; resolve(r); }).catch((e) => { opLock = false; resolve({ ok: false, error: String(e) }); });
-                    }, 250);
-                  });
-                } catch (e) { safeLog('permission flow threw', e); opLock = false; return resolve({ ok: false, error: 'permission-flow-exception', detail: String(e) }); }
-                return;
-              }
-
+          chrome.runtime.sendMessage(message, async (resRaw) => {
+            if (chrome.runtime.lastError) {
               opLock = false;
-              return resolve(res);
-            });
-          } catch (ex) { safeLog('popup send wrapper threw', ex); opLock = false; return resolve({ ok: false, error: String(ex) }); }
-        });
+              safeLog('popup > background send error:', chrome.runtime.lastError && chrome.runtime.lastError.message);
+              return resolve({ ok: false, error: chrome.runtime.lastError && chrome.runtime.lastError.message });
+            }
+            if (!resRaw) { opLock = false; return resolve({ ok: false, error: 'no-response' }); }
+
+            const res = normalizeBgResponse(resRaw);
+
+            // if background requests host permission, prompt once and retry
+            if (res && res.ok === false && res.error === 'no-host-permission' && _retry < 1) {
+              const pattern = res.permissionPattern || (message._targetTabUrl ? buildOriginPermissionPattern(message._targetTabUrl) : null);
+              const friendlyHost = pattern ? (pattern.replace('/*', '')) : (message._targetTabUrl || 'this site');
+              try {
+                const want = confirm(`ClarityRead needs permission to access ${friendlyHost} to operate on that page. Grant access for this site?`);
+                if (!want) { opLock = false; return resolve(res); }
+                chrome.permissions.request({ origins: [pattern] }, (granted) => {
+                  if (chrome.runtime.lastError) {
+                    opLock = false;
+                    safeLog('permissions.request error', chrome.runtime.lastError);
+                    return resolve({ ok: false, error: 'permission-request-failed', detail: chrome.runtime.lastError.message });
+                  }
+                  if (!granted) { opLock = false; return resolve({ ok: false, error: 'permission-denied' }); }
+                  // small delay to allow permission to settle, then retry once
+                  setTimeout(() => {
+                    sendMessageToActiveTabWithInject(message, _retry + 1).then(r => { opLock = false; resolve(r); }).catch(e => { opLock = false; resolve({ ok: false, error: String(e) }); });
+                  }, 250);
+                });
+              } catch (e) { opLock = false; safeLog('permission flow threw', e); return resolve({ ok: false, error: 'permission-flow-exception', detail: String(e) }); }
+              return;
+            }
+
+            opLock = false;
+            return resolve(res);
+          });
+        } catch (outer) {
+          opLock = false;
+          safeLog('sendMessageToActiveTabWithInject outer error', outer);
+          return resolve({ ok: false, error: String(outer) });
+        }
       });
-    } finally { opLock = false; }
+    });
+  } finally {
+    opLock = false; // ensure lock cleared as a last-resort guard
   }
+}
+
 
   // ---------- Stats / chart ----------
   function build7DaySeries(daily = []) {
