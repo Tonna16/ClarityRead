@@ -1,4 +1,3 @@
-// safeMessage.js - small wrapper to avoid "Receiving end does not exist" noise
 (function(global){
   if (global.__clarityread_safeMessage) return;
   global.__clarityread_safeMessage = true;
@@ -6,9 +5,7 @@
   function sendToBackground(msg, cb = ()=>{}) {
     try {
       chrome.runtime.sendMessage(msg, (resp) => {
-        // avoid console noise if lastError present
         if (chrome.runtime.lastError) {
-          // console.warn('sendToBackground lastError', chrome.runtime.lastError.message);
           return cb(null, chrome.runtime.lastError);
         }
         cb(resp, null);
@@ -24,7 +21,6 @@
       if (!tabId) return cb(null, new Error('no-tab-id'));
       chrome.tabs.sendMessage(tabId, msg, (resp) => {
         if (chrome.runtime.lastError) {
-          // no listener in tab — caller can decide what to do
           return cb(null, chrome.runtime.lastError);
         }
         cb(resp, null);

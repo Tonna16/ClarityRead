@@ -1,4 +1,3 @@
-// toast.js - lightweight toasts usable in content scripts and popup
 (function(global){
   if (global.__clarityread_toast) return;
   global.__clarityread_toast = true;

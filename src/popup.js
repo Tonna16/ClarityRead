@@ -1,19 +1,14 @@
-// src/popup.js - production-ready edits
-// Merged & finalized from user's chunks. Features: DEBUG flag, toast improvements, keyboard shortcuts,
-// import/export dedupe+apply, focus label preserved, theme persistence, single-instance export/import buttons.
-
 document.addEventListener('DOMContentLoaded', () => {
-const DEBUG = true; // set true for development, false for production
-const $ = id => document.getElementById(id) || null;
-const safeLog = (...args) => { try { if (DEBUG) console.log('[ClarityRead popup]', ...args); } catch (e) {} };
-const safeWarn = (...args) => { try { if (DEBUG) console.warn('[ClarityRead popup]', ...args); } catch (e) {} };
-const safeInfo = (...args) => { try { if (DEBUG) console.info('[ClarityRead popup]', ...args); } catch (e) {} };
+  const DEBUG = true; // set true for development, false for production
+  const $ = id => document.getElementById(id) || null;
+  const safeLog = (...a) => { try { if (DEBUG) console.log('[ClarityRead popup]', ...a); } catch (e) {} };
+  const safeWarn = (...a) => { try { if (DEBUG) console.warn('[ClarityRead popup]', ...a); } catch (e) {} };
+  const safeInfo = (...a) => { try { if (DEBUG) console.info('[ClarityRead popup]', ...a); } catch (e) {} };
 
-// operation lock to prevent concurrent cross-tab operations (ensure declared before use)
-let opLock = false;
+  let opLock = false;
 
-  // wire summaryDetailSelect -> chrome.storage.local
-// wire summaryDetailSelect -> chrome.storage.local (call this inside DOMContentLoaded)
+
+
 function wireSummaryDetailSelect() {
   const sel = document.getElementById('summaryDetailSelect');
   if (!sel) return;
@@ -25,7 +20,6 @@ function wireSummaryDetailSelect() {
       sel.value = allowed.has(v) ? v : 'normal';
     } catch(e) { safeLog('loading summaryDetail failed', e); sel.value = 'normal'; }
   });
-  // save on change
   sel.addEventListener('change', () => {
     try {
       const v = (sel.value || 'normal').toLowerCase();
@@ -49,11 +43,9 @@ async function queryOverlayStateOnActiveTab() {
   } catch (e) { safeLog('queryOverlayStateOnActiveTab failed', e); }
 }
 
-// Call this once during init
 try { queryOverlayStateOnActiveTab(); } catch(e) {}
 
 
-  // ensure popup can receive keyboard events immediately
   try {
     const body = document.querySelector('body');
     if (body && typeof body.focus === 'function') {
@@ -71,10 +63,8 @@ const MAX_INPUT_CHARS = 120000;
  let chart = null;
 
   let chartResizeObserver = null;
-  // -------------------------------------------------------------------------------
 
 
-  // ---------- Toast: deduped + queued, non-spammy ----------
   function createToastContainer() {
     if (document.getElementById('clarityread-toast-container')) return;
     const c = document.createElement('div');
@@ -89,10 +79,6 @@ const MAX_INPUT_CHARS = 120000;
     document.body.appendChild(c);
   }
 
- // ---------- Toast manager: deterministic, clearable ----------
-// Replace older toast functions with this manager.
-// Keeps backward compatibility for calls like toast(msg, type, ttl)
-// and also provides progressToast = toasts.showProgress(...)
 
 const Toasts = (function() {
   const containerId = 'clarityread-toast-container';
@@ -116,7 +102,6 @@ const Toasts = (function() {
     }
     return c;
   }
-  // Promise wrapper around chrome.storage.local.get/set for small prefs
 function getFromStorage(keys) {
   return new Promise((resolve) => {
     try { chrome.storage.local.get(keys, (res) => resolve(res || {})); }
@@ -509,7 +494,6 @@ try {
   let isPaused = false;
   let currentHostname = '';
   let settingsDebounce = null;
-  let opLock = false;            // prevent concurrent sends
   let lastStatus = null;         // dedupe repeated identical status updates
 
   function formatTime(sec) {
@@ -1750,6 +1734,7 @@ function clearProgressToast() {
 
 // ----------------- Summarizer main function -----------------
 // ---------- Helper to fetch cleaned page text (tries background -> contentScript, falls back to executeScript) ----------
+// ---------- Helper to fetch cleaned page text (tries background -> contentScript, falls back to executeScript) ----------
 async function fetchCleanPageText(tabId, tabUrl) {
   // Try background-forwarded extraction first (non-blocking failover)
   function tryBackgroundExtract() {
@@ -1806,7 +1791,9 @@ async function fetchCleanPageText(tabId, tabUrl) {
               const clone = main.cloneNode(true);
               // lightweight removal
               const rm = ['script','style','iframe','picture','svg','video','form','input','button','aside','nav','footer','header','table'];
-              rm.forEach(s => clone.querySelectorAll(s).forEach(n => { try { n.remove(); } catch(e){} }));
+              rm.forEach(s => {
+                try { clone.querySelectorAll(s).forEach(n => { try { n.remove(); } catch(e){} }); } catch(e) {}
+              });
               // remove noisy selectors
               const noisy = ['.related','.related-articles','.advert','.ads','.share','.social','.newsletter','.subscribe','.promo'];
               noisy.forEach(s => { try { clone.querySelectorAll(s).forEach(n => { try { n.remove(); } catch(e){} }); } catch(e){} });
@@ -1874,6 +1861,7 @@ async function fetchCleanPageText(tabId, tabUrl) {
 
   return { ok: false, reason: 'all-failed', detail: { bg: bgRes, exec: execRes } };
 }
+
 
 
 // ----------------- Summarizer main function (replacement) -----------------

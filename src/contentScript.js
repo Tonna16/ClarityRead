@@ -10,22 +10,21 @@
   window.__clarityread_contentScriptLoaded = true;
 
   // ---------- Reflow / dys / overlay helpers ----------
-  // ---------- Reflow / dys / overlay helpers ----------
-(function() {
-  // don't re-install
-  if (window.__clarity_reflow_installed) return;
-  window.__clarity_reflow_installed = true;
+  (function() {
+    // don't re-install
+    if (window.__clarity_reflow_installed) return;
+    window.__clarity_reflow_installed = true;
 
-  const REFLOW_STYLE_ID = 'clarityreflow-style';
+    const REFLOW_STYLE_ID = 'clarityreflow-style';
 
-  function ensureReflowStyle() {
-    try {
-      if (document.getElementById(REFLOW_STYLE_ID)) return;
-      const st = document.createElement('style');
-      st.id = REFLOW_STYLE_ID;
-      st.type = 'text/css';
-      // Accept both historical names so popup/background and helper are compatible
-      st.textContent = `
+    function ensureReflowStyle() {
+      try {
+        if (document.getElementById(REFLOW_STYLE_ID)) return;
+        const st = document.createElement('style');
+        st.id = REFLOW_STYLE_ID;
+        st.type = 'text/css';
+        // Accept both historical names so popup/background and helper are compatible
+        st.textContent = `
 :root { --clarity-font-size: 20px; --clarity-line-height: 1.5; --readeasy-font-size: 20px; }
 
 /* scope activation via html.clarityreflow-active OR html.readeasy-reflow */
@@ -94,87 +93,56 @@ html.readeasy-reflow h6 {
   line-height: 1.2 !important;
 }
 `;
-      try { (document.head || document.documentElement).appendChild(st); } catch(e) { document.documentElement.appendChild(st); }
-    } catch (e) { /* ignore */ }
-  }
+        try { (document.head || document.documentElement).appendChild(st); } catch(e) { document.documentElement.appendChild(st); }
+      } catch (e) { /* ignore */ }
+    }
 
-  function applyClarityFontSize(px) {
-    try {
-      ensureReflowStyle();
-      let v = Number(px) || 20;
-      v = Math.max(10, Math.min(48, Math.round(v))); // clamp
-      // set both variable names to remain backwards compatible
-      document.documentElement.style.setProperty('--clarity-font-size', v + 'px');
-      document.documentElement.style.setProperty('--readeasy-font-size', v + 'px');
-      // set supportive line height
-      const lh = (1.25 + Math.min(0.6, (v - 14) / 80)).toFixed(2);
-      document.documentElement.style.setProperty('--clarity-line-height', lh);
-      // set both helper classes so either toggle name works
-      document.documentElement.classList.add('clarityreflow-active');
-      document.documentElement.classList.add('readeasy-reflow');
-      // try also setting body inline for sites reading that directly
-      try { document.body.style.fontSize = v + 'px'; } catch(e) {}
-      // if overlay present, update overlay font size to match
+    function applyClarityFontSize(px) {
       try {
-        const overlay = document.getElementById('readeasy-reader-overlay');
-        if (overlay) overlay.style.fontSize = v + 'px';
-      } catch(e){}
-      return { ok: true, size: v };
-    } catch (e) {
-      return { ok: false, error: String(e) };
+        ensureReflowStyle();
+        let v = Number(px) || 20;
+        v = Math.max(10, Math.min(48, Math.round(v))); // clamp
+        // set both variable names to remain backwards compatible
+        document.documentElement.style.setProperty('--clarity-font-size', v + 'px');
+        document.documentElement.style.setProperty('--readeasy-font-size', v + 'px');
+        // set supportive line height
+        const lh = (1.25 + Math.min(0.6, (v - 14) / 80)).toFixed(2);
+        document.documentElement.style.setProperty('--clarity-line-height', lh);
+        // set both helper classes so either toggle name works
+        document.documentElement.classList.add('clarityreflow-active');
+        document.documentElement.classList.add('readeasy-reflow');
+        // try also setting body inline for sites reading that directly
+        try { document.body.style.fontSize = v + 'px'; } catch(e) {}
+        // if overlay present, update overlay font size to match
+        try {
+          const overlay = document.getElementById('readeasy-reader-overlay');
+          if (overlay) overlay.style.fontSize = v + 'px';
+        } catch(e){}
+        return { ok: true, size: v };
+      } catch (e) {
+        return { ok: false, error: String(e) };
+      }
     }
-  }
 
-  function removeClarityReflow() {
-    try {
-      // remove both helper classes and variables
-      document.documentElement.classList.remove('clarityreflow-active');
-      document.documentElement.classList.remove('readeasy-reflow');
-      document.documentElement.style.removeProperty('--clarity-font-size');
-      document.documentElement.style.removeProperty('--readeasy-font-size');
-      document.documentElement.style.removeProperty('--clarity-line-height');
-      try { document.body.style.removeProperty('font-size'); } catch(e) {}
-      // overlay revert
+    function removeClarityReflow() {
       try {
-        const overlay = document.getElementById('readeasy-reader-overlay');
-        if (overlay) overlay.style.fontSize = '';
-      } catch(e){}
-      return { ok: true };
-    } catch (e) {
-      return { ok: false, error: String(e) };
-    }
-  }
-
-  // expose for debug/manual
-  window.ClarityRead = window.ClarityRead || {};
-  window.ClarityRead.applyClarityFontSize = applyClarityFontSize;
-  window.ClarityRead.removeClarityReflow = removeClarityReflow;
-
-  // message listener for reflow control (keeps handler local)
-  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-    try {
-      if (!msg || !msg.action) return;
-      if (msg.action === 'clarity_apply_font_size') {
-        const res = applyClarityFontSize(msg.size);
-        sendResponse(res);
-        return true;
+        // remove both helper classes and variables
+        document.documentElement.classList.remove('clarityreflow-active');
+        document.documentElement.classList.remove('readeasy-reflow');
+        document.documentElement.style.removeProperty('--clarity-font-size');
+        document.documentElement.style.removeProperty('--readeasy-font-size');
+        document.documentElement.style.removeProperty('--clarity-line-height');
+        try { document.body.style.removeProperty('font-size'); } catch(e) {}
+        // overlay revert
+        try {
+          const overlay = document.getElementById('readeasy-reader-overlay');
+          if (overlay) overlay.style.fontSize = '';
+        } catch(e){}
+        return { ok: true };
+      } catch (e) {
+        return { ok: false, error: String(e) };
       }
-      if (msg.action === 'clarity_remove_reflow') {
-        const r = removeClarityReflow();
-        sendResponse(r);
-        return true;
-      }
-    } catch (e) {
-      try { sendResponse({ ok: false, error: String(e) }); } catch(e2) {}
     }
-    // let other listeners handle other messages
-    return false;
-  });
-
-  // ensure style exists early
-  ensureReflowStyle();
-})();
-
 
     // expose for debug/manual
     window.ClarityRead = window.ClarityRead || {};
@@ -1207,40 +1175,38 @@ html.readeasy-reflow h6 {
       switch (msg.action) {
         case 'applySettings':
           try {
-           if (typeof msg.dys !== 'undefined') {
-  if (msg.dys) {
-    try { ensureDysFontInjected(); } catch(e){ safeLog('ensureDysFontInjected threw', e); }
-    try { document.documentElement.classList.add('readeasy-dyslexic'); } catch(e){}
-  } else {
-    try { document.documentElement.classList.remove('readeasy-dyslexic'); } catch(e){}
-    try { removeDysFontInjected(); } catch(e){}
-  }
-}
-
+            if (typeof msg.dys !== 'undefined') {
+              if (msg.dys) {
+                try { ensureDysFontInjected(); } catch(e){ safeLog('ensureDysFontInjected threw', e); }
+                try { document.documentElement.classList.add('readeasy-dyslexic'); } catch(e){}
+              } else {
+                try { document.documentElement.classList.remove('readeasy-dyslexic'); } catch(e){}
+                try { removeDysFontInjected(); } catch(e){}
+              }
+            }
 
             if (msg.reflow) document.documentElement.classList.add('readeasy-reflow'); else document.documentElement.classList.remove('readeasy-reflow');
             if (msg.contrast) document.documentElement.classList.add('readeasy-contrast'); else document.documentElement.classList.remove('readeasy-contrast');
             if (msg.invert) document.documentElement.classList.add('readeasy-invert'); else document.documentElement.classList.remove('readeasy-invert');
 
             // centralize reflow/font-size handling using helper so both overlay + page are consistent
-if (typeof msg.fontSize !== 'undefined') {
-  try {
-    // If reflow requested, apply both the "clarity" and "readeasy" variables via helper
-    if (msg.reflow) {
-      const sizeNum = (typeof msg.fontSize === 'number') ? msg.fontSize : Number(String(msg.fontSize).replace('px','')) || 20;
-      try { window.ClarityRead.applyClarityFontSize(sizeNum); } catch(e) { safeLog('applyClarityFontSize failed', e); }
-    } else {
-      // no reflow requested, just set overlay font and the readeasy variable for compatibility
-      const fs = (typeof msg.fontSize === 'number') ? `${msg.fontSize}px` : String(msg.fontSize);
-      document.documentElement.style.setProperty('--readeasy-font-size', fs);
-      try {
-        const overlay = document.getElementById('readeasy-reader-overlay');
-        if (overlay) overlay.style.fontSize = (typeof msg.fontSize === 'number') ? `${msg.fontSize}px` : String(msg.fontSize);
-      } catch(e){ safeLog('overlay font set failed', e); }
-    }
-  } catch (e) { safeLog('fontSize apply branch failed', e); }
-}
-
+            if (typeof msg.fontSize !== 'undefined') {
+              try {
+                // If reflow requested, apply both the "clarity" and "readeasy" variables via helper
+                if (msg.reflow) {
+                  const sizeNum = (typeof msg.fontSize === 'number') ? msg.fontSize : Number(String(msg.fontSize).replace('px','')) || 20;
+                  try { window.ClarityRead.applyClarityFontSize(sizeNum); } catch(e) { safeLog('applyClarityFontSize failed', e); }
+                } else {
+                  // no reflow requested, just set overlay font and the readeasy variable for compatibility
+                  const fs = (typeof msg.fontSize === 'number') ? `${msg.fontSize}px` : String(msg.fontSize);
+                  document.documentElement.style.setProperty('--readeasy-font-size', fs);
+                  try {
+                    const overlay = document.getElementById('readeasy-reader-overlay');
+                    if (overlay) overlay.style.fontSize = (typeof msg.fontSize === 'number') ? `${msg.fontSize}px` : String(msg.fontSize);
+                  } catch(e){ safeLog('overlay font set failed', e); }
+                }
+              } catch (e) { safeLog('fontSize apply branch failed', e); }
+            }
 
             // Update overlay styling immediately so popup toggles reflect on-overlay changes:
             try {
