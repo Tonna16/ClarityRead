@@ -276,8 +276,58 @@ function clearToastsLocal() { Toasts.clearAll(); }
 // CONFIG
 
 // ---------------- Toast cleanup helper ---------------
+// keep focusModeBtn in sync with overlay state messages from content script
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  try {
+    if (msg && msg.action === 'clarity_overlay_state') {
+      const btn = document.getElementById('focusModeBtn');
+      if (!btn) return;
+      if (msg.overlayActive) {
+        btn.classList.add('active'); // your code likely toggles class; update whichever you use
+        btn.querySelector('.action-text').textContent = 'Close Focus Mode';
+      } else {
+        btn.classList.remove('active');
+        btn.querySelector('.action-text').textContent = 'Focus Mode';
+      }
+    }
+  } catch(e){}
+});
+ 
+// Call this on slider input/change
+async function applyFontSizeToActiveTab(sizePx) {
+  try {
+    chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
+      const t = tabs && tabs[0];
+      if (!t || !t.id) { toast('No active tab', 'error'); return; }
+      // send targeted message to content script
+      chrome.tabs.sendMessage(t.id, { action: 'clarity_apply_font_size', size: Number(sizePx) }, (resp) => {
+        if (chrome.runtime.lastError) {
+          safeLog('applyFontSize sendMessage failed', chrome.runtime.lastError);
+          // Consider asking background to request host permission for this tab if needed
+          toast('Unable to apply font on this page. Allow ClarityRead to access the site.', 'error', 6000);
+          return;
+        }
+        safeLog('applyFontSize response', resp);
+        toast(`Font set to ${sizePx}px`, 'success', 900);
+      });
+    });
+  } catch (e) { safeLog('applyFontSizeToActiveTab error', e); }
+}
 
+// wire slider element (example)
+const fontSlider = document.getElementById('fontSizeSlider'); // change to your element id
+if (fontSlider) {
+  fontSlider.addEventListener('input', (ev) => {
+    const v = ev.target.value;
+    applyFontSizeToActiveTab(v);
+  });
+  fontSlider.addEventListener('change', (ev) => {
+    const v = ev.target.value;
+    applyFontSizeToActiveTab(v);
+  });
+}
 
+ 
   // dynamic focusMode + summarize presence
   let focusModeBtn = $('focusModeBtn');
   if (!focusModeBtn && document.querySelector('.themeRow')) {
@@ -676,7 +726,7 @@ function normalizeSelectionResponse(raw) {
       chrome.storage.local.set(toSet, () => safeLog('persistVoiceOverrideForCurrentSite saved', currentHostname, voiceName));
     });
   }
-
+  
   // ---------- Theme handling (single, persistent) ----------
   function applyThemeFromStorage() {
     chrome.storage.local.get(['darkTheme'], (res) => {
@@ -1500,16 +1550,16 @@ async function readSummaryPref() {
 
 // adaptive sentence count (pref + length-based mild scaling)
 function computeAdaptiveMax(text = '', pref = 'normal') {
-  const len = (text || '').length;
-  let base = 3; // normal
-  if (pref === 'concise') base = 2;
-  if (pref === 'detailed') base = 5;
-  if (len > 2000) base += 1;
-  if (len > 8000) base += 2;
-  if (len > 20000) base += 2;
-  const cap = 12;
+  const words = (text || '').trim().split(/\s+/).filter(Boolean).length || 0;
+  // base by pref
+  let base = (pref === 'concise') ? 2 : (pref === 'detailed') ? 6 : 4;
+  // scale by words: +1 per ~1200 words
+  if (words > 1200) base += Math.floor((words - 1200) / 1200) + 1;
+  // clamp to a sensible maximum (allow longer docs more room)
+  const cap = Math.min(20, Math.max(6, Math.round(base)));
   return Math.max(1, Math.min(cap, Math.round(base)));
 }
+
 
 // deterministic progress toast helpers (if you already have similar ones, this will be compatible)
 const _PROG_ID = 'clarityread-progress-toast-v1';
@@ -1681,18 +1731,33 @@ async function summarizeCurrentPageOrSelection_AiAware() {
       return;
     }
 
-    // read preference + compute sentences
+        // read preference + compute sentences
     const pref = await readSummaryPref();
     const adaptiveMax = computeAdaptiveMax(text, pref);
 
     // run summarizer with deterministic progress toast
     const pid = createProgressToast('Generating summary — please wait...', 60000);
-let summary = '(no summary produced)';
-try {
-  if (typeof summarizeTextLocal === 'function') summary = summarizeTextLocal(text, null, pref) || summary;
-  else summary = '(summarizer not available)';
-} catch (e) { safeLog('summarizer error', e); }
-finally { clearProgressToast(); }
+    let summary = '(no summary produced)';
+    try {
+      // additional pre-scrub to drop author lines / bylines that confuse scoring
+      try {
+        text = text.replace(/^\s*(By|Author:)\s+[A-Z][^\n]{0,120}$/gim, ' ');
+        text = text.replace(/\b(last edited|last updated|published on|©)\b[^\n]*/gi, ' ');
+        text = text.replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, ' ');
+      } catch (e) { safeLog('prescrub threw', e); }
+
+      if (typeof summarizeTextLocal === 'function') {
+        // pass both adaptiveMax and user pref so summarizer scales & respects length preference
+        summary = summarizeTextLocal(text, adaptiveMax, pref) || summary;
+      } else {
+        summary = '(summarizer not available)';
+      }
+    } catch (e) {
+      safeLog('summarizer error', e);
+    } finally {
+      clearProgressToast();
+    }
+
 
 
     // lightweight post-filter to remove TOC-like garbage
@@ -1872,144 +1937,98 @@ importSettingsInput.addEventListener('change', (ev) => {
   // ---------------- Saved reads UI + summarization helpers ----------------
 
 // Render saved reads list into #savedList
-async function renderSavedList() {
+function renderSavedList() {
   try {
     const container = document.getElementById('savedList');
     if (!container) return;
-    container.innerHTML = '';
+    container.innerHTML = ''; // clear
 
-    // header actions
-    const header = document.createElement('div');
-    header.style.display = 'flex';
-    header.style.justifyContent = 'space-between';
-    header.style.alignItems = 'center';
-    header.style.marginBottom = '8px';
-
-    const htitle = document.createElement('strong');
-    htitle.textContent = 'Saved Selections';
-    header.appendChild(htitle);
-
-    const actionWrap = document.createElement('div');
-    actionWrap.style.display = 'flex';
-    actionWrap.style.gap = '6px';
-
-    const summarizeAllBtn = document.createElement('button');
-    summarizeAllBtn.className = 'btn btn-secondary';
-    summarizeAllBtn.textContent = 'Summarize All Saved';
-    summarizeAllBtn.addEventListener('click', summarizeAllSaved);
-    actionWrap.appendChild(summarizeAllBtn);
-
-    const clearAllBtn = document.createElement('button');
-    clearAllBtn.className = 'btn btn-secondary';
-    clearAllBtn.textContent = 'Clear Saved';
-    clearAllBtn.addEventListener('click', async () => {
-      if (!confirm('Delete all saved selections? This cannot be undone.')) return;
-      chrome.storage.local.set({ savedReads: [] }, () => {
-        toast('Saved selections cleared.', 'info', 1200);
-        renderSavedList();
-      });
-    });
-    actionWrap.appendChild(clearAllBtn);
-
-    header.appendChild(actionWrap);
-    container.appendChild(header);
-
-    // load saved reads
     chrome.storage.local.get(['savedReads'], (res) => {
-      const arr = Array.isArray(res && res.savedReads) ? res.savedReads.slice().reverse() : [];
+      const arr = (res && Array.isArray(res.savedReads)) ? res.savedReads : [];
       if (!arr.length) {
-        const msg = document.createElement('div');
-        msg.style.opacity = '0.85';
-        msg.style.fontSize = '13px';
-        msg.textContent = 'No saved selections yet — select text on a page and click "Save Selection".';
-        container.appendChild(msg);
+        container.innerHTML = '<div class="saved-empty">No saved selections</div>';
         return;
       }
 
-      const list = document.createElement('div');
-      list.style.display = 'flex';
-      list.style.flexDirection = 'column';
-      list.style.gap = '8px';
-
-      for (const item of arr) {
+   // each saved item
+      for (const it of arr.slice().reverse()) {
         const row = document.createElement('div');
         row.className = 'saved-item';
+        row.style.borderBottom = '1px solid rgba(0,0,0,0.06)';
+        row.style.padding = '8px';
         row.style.display = 'flex';
         row.style.justifyContent = 'space-between';
         row.style.alignItems = 'flex-start';
-        row.style.padding = '8px';
-        row.style.borderRadius = '6px';
-        row.style.border = '1px solid rgba(0,0,0,0.06)';
-        row.style.background = 'var(--surface, rgba(0,0,0,0.02))';
 
         const left = document.createElement('div');
         left.style.flex = '1';
-        left.style.marginRight = '12px';
-
         const title = document.createElement('div');
+        title.textContent = it.title || (it.text || '').slice(0, 80);
         title.style.fontWeight = '600';
-        title.style.marginBottom = '6px';
-        title.textContent = item.title || (item.text || '').slice(0, 80);
-
-        const meta = document.createElement('div');
-        meta.style.fontSize = '12px';
-        meta.style.opacity = '0.8';
-        const date = new Date(item.ts || Date.now());
-        meta.textContent = `${item.url ? (new URL(item.url)).hostname : 'Unknown site'} • ${date.toLocaleString()}`;
-
         const preview = document.createElement('div');
-        preview.style.fontSize = '13px';
+        preview.textContent = (it.text || '').slice(0, 220);
+        preview.style.fontSize = '12px';
         preview.style.marginTop = '6px';
-        preview.style.whiteSpace = 'nowrap';
-        preview.style.overflow = 'hidden';
-        preview.style.textOverflow = 'ellipsis';
-        preview.title = (item.text || '').trim();
-        preview.textContent = (item.text || '').trim().slice(0, 300);
-
         left.appendChild(title);
-        left.appendChild(meta);
         left.appendChild(preview);
 
-        const right = document.createElement('div');
-        right.style.display = 'flex';
-        right.style.flexDirection = 'column';
-        right.style.gap = '6px';
-        right.style.alignItems = 'flex-end';
+        const actions = document.createElement('div');
+        actions.style.display = 'flex';
+        actions.style.flexDirection = 'column';
+        actions.style.gap = '6px';
 
         const sumBtn = document.createElement('button');
-        sumBtn.className = 'btn btn-primary';
         sumBtn.textContent = 'Summarize';
-        sumBtn.addEventListener('click', () => summarizeSavedItem(item));
+        sumBtn.className = 'btn btn-secondary';
+        sumBtn.addEventListener('click', async () => {
+          sumBtn.disabled = true;
+          try {
+            const pref = await readSummaryPref();
+            const adaptiveMax = computeAdaptiveMax(it.text || '', pref);
+            const prog = createProgressToast('Generating summary — please wait...', 60000);
+            let out = '(no summary)';
+            try { out = summarizeTextLocal(it.text || '', adaptiveMax, pref) || out; } finally { clearProgressToast(); }
+            createSummaryModal(`Saved Summary — ${((out||'').split(/(?<=[.?!])\s+/).filter(Boolean)||[]).length} sentences`, out);
+          } catch (e) { safeLog('saved item summarize failed', e); toast('Failed to summarize', 'error'); }
+          sumBtn.disabled = false;
+        });
 
-        const deleteBtn = document.createElement('button');
-        deleteBtn.className = 'btn btn-secondary';
-        deleteBtn.textContent = 'Delete';
-        deleteBtn.addEventListener('click', () => {
-          if (!confirm('Delete saved selection?')) return;
-          chrome.storage.local.get(['savedReads'], (r) => {
-            const cur = Array.isArray(r && r.savedReads) ? r.savedReads : [];
-            const keep = cur.filter(x => x.id !== item.id);
-            chrome.storage.local.set({ savedReads: keep }, () => {
-              toast('Saved selection deleted.', 'info', 1000);
-              renderSavedList();
+        const playBtn = document.createElement('button');
+        playBtn.textContent = 'Read';
+        playBtn.className = 'btn btn-secondary';
+        playBtn.addEventListener('click', () => {
+          try {
+            // send readAloud with saved text payload so content script uses it directly
+            const tab = null; // background forward will pick best tab
+            chrome.runtime.sendMessage({ action: 'readAloud', _savedText: it.text }, (resp) => {
+              if (chrome.runtime.lastError) safeLog('readAloud message lastError', chrome.runtime.lastError);
             });
+          } catch (e) { safeLog('play saved read failed', e); }
+        });
+
+        const delBtn = document.createElement('button');
+        delBtn.textContent = 'Delete';
+        delBtn.className = 'btn btn-link';
+        delBtn.addEventListener('click', () => {
+          chrome.storage.local.get(['savedReads'], (r) => {
+            let arr2 = r.savedReads || [];
+            arr2 = arr2.filter(x => x.id !== it.id);
+            chrome.storage.local.set({ savedReads: arr2 }, () => { toast('Saved item deleted', 'info'); renderSavedList(); });
           });
         });
 
-        right.appendChild(sumBtn);
-        right.appendChild(deleteBtn);
+        actions.appendChild(sumBtn);
+        actions.appendChild(playBtn);
+        actions.appendChild(delBtn);
 
         row.appendChild(left);
-        row.appendChild(right);
-        list.appendChild(row);
+        row.appendChild(actions);
+        container.appendChild(row);
       }
-
-      container.appendChild(list);
     });
-  } catch (e) {
-    safeLog('renderSavedList error', e);
-  }
+  } catch (e) { safeLog('renderSavedList error', e); }
 }
+
 
 // Summarize a single saved item (shows modal)
 async function summarizeSavedItem(item) {
