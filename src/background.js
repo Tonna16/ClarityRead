@@ -125,56 +125,113 @@
             const cssFile = 'src/inject.css';
             let cssErrorMsg = null;
 
-            // Attempt to inject the content script (manifest declared)
+            // Pre-check host permission: if we don't have it, return no-host-permission early
+            const permissionPattern = buildOriginPermissionPattern(tab.url);
             try {
-              safeLog('attempting scripting.executeScript', { tabId, jsFile });
-              chrome.scripting.executeScript({ target: { tabId }, files: [jsFile] }, (injectionResults) => {
-                if (chrome.runtime.lastError) {
-                  const lower = (chrome.runtime.lastError.message || '').toLowerCase();
-                  safeWarn('scripting.executeScript failed', chrome.runtime.lastError.message);
-
-                  // host permission required
-                  if (lower.includes('must request permission') || lower.includes('cannot access contents of the page') || lower.includes('has no access to')) {
-                    const permissionPattern = buildOriginPermissionPattern(tab.url);
-                    return finish({ ok: false, error: 'no-host-permission', detail: chrome.runtime.lastError.message, permissionPattern });
-                  }
-
-                  return finish({ ok: false, error: 'injection-failed', detail: chrome.runtime.lastError.message });
-                }
-
-                safeLog('executeScript injectionResults', Array.isArray(injectionResults) ? injectionResults.length : typeof injectionResults);
-
-                // best-effort CSS insertion (non-fatal) — capture error message to surface alongside success
-                chrome.scripting.insertCSS({ target: { tabId }, files: [cssFile] }, (cssRes) => {
+              chrome.permissions.contains({ origins: [permissionPattern] }, (has) => {
+                try {
                   if (chrome.runtime.lastError) {
-                    cssErrorMsg = String(chrome.runtime.lastError.message || chrome.runtime.lastError);
-                    safeWarn('insertCSS failed', cssErrorMsg);
-                  } else {
-                    safeLog('insertCSS succeeded');
+                    // If contains threw, log and proceed with injection attempt (older browsers / edge cases)
+                    safeWarn('chrome.permissions.contains error', chrome.runtime.lastError);
+                  } else if (!has) {
+                    safeInfo('missing host permission for origin', permissionPattern);
+                    return finish({ ok: false, error: 'no-host-permission', detail: 'host-permission-missing', permissionPattern });
                   }
 
-                  // Now attempt to message again (content script should be present now)
-                  safeLog('attempting sendMessage after injection', { tabId, action: message && message.action });
-                  chrome.tabs.sendMessage(tabId, message, (resp2) => {
-                    if (chrome.runtime.lastError) {
-                      const msg2 = (chrome.runtime.lastError.message || '').toLowerCase();
-                      safeWarn('sendMessage after inject failed', chrome.runtime.lastError.message);
-                      if (msg2.includes('must request permission') || msg2.includes('cannot access contents of the page') || msg2.includes('has no access to')) {
-                        const permissionPattern = buildOriginPermissionPattern(tab.url);
-                        return finish({ ok: false, error: 'no-host-permission', detail: chrome.runtime.lastError.message, permissionPattern });
+                  // Attempt to inject the content script (manifest declared)
+                  try {
+                    safeLog('attempting scripting.executeScript', { tabId, jsFile });
+                    chrome.scripting.executeScript({ target: { tabId }, files: [jsFile] }, (injectionResults) => {
+                      if (chrome.runtime.lastError) {
+                        const lower = (chrome.runtime.lastError.message || '').toLowerCase();
+                        safeWarn('scripting.executeScript failed', chrome.runtime.lastError.message);
+
+                        // host permission required (double-check)
+                        if (lower.includes('must request permission') || lower.includes('cannot access contents of the page') || lower.includes('has no access to')) {
+                          return finish({ ok: false, error: 'no-host-permission', detail: chrome.runtime.lastError.message, permissionPattern });
+                        }
+
+                        return finish({ ok: false, error: 'injection-failed', detail: chrome.runtime.lastError.message });
                       }
-                      return finish({ ok: false, error: 'no-receiver-after-inject', detail: chrome.runtime.lastError.message });
+
+                      safeLog('executeScript injectionResults', Array.isArray(injectionResults) ? injectionResults.length : typeof injectionResults);
+
+                      // best-effort CSS insertion (non-fatal) — capture error message to surface alongside success
+                      chrome.scripting.insertCSS({ target: { tabId }, files: [cssFile] }, (cssRes) => {
+                        if (chrome.runtime.lastError) {
+                          cssErrorMsg = String(chrome.runtime.lastError.message || chrome.runtime.lastError);
+                          safeWarn('insertCSS failed', cssErrorMsg);
+                        } else {
+                          safeLog('insertCSS succeeded');
+                        }
+
+                        // Now attempt to message again (content script should be present now)
+                        safeLog('attempting sendMessage after injection', { tabId, action: message && message.action });
+                        chrome.tabs.sendMessage(tabId, message, (resp2) => {
+                          if (chrome.runtime.lastError) {
+                            const msg2 = (chrome.runtime.lastError.message || '').toLowerCase();
+                            safeWarn('sendMessage after inject failed', chrome.runtime.lastError.message);
+                            if (msg2.includes('must request permission') || msg2.includes('cannot access contents of the page') || msg2.includes('has no access to')) {
+                              return finish({ ok: false, error: 'no-host-permission', detail: chrome.runtime.lastError.message, permissionPattern });
+                            }
+                            return finish({ ok: false, error: 'no-receiver-after-inject', detail: chrome.runtime.lastError.message });
+                          }
+                          safeLog('sendMessage after inject succeeded', { tabId, action: message && message.action, resp2, cssError: !!cssErrorMsg });
+                          // unwrap nested response if present and include cssError metadata
+                          const unwrapped2 = unwrapResponseMaybe(resp2);
+                          return finish({ ok: true, response: unwrapped2, cssError: cssErrorMsg || null });
+                        });
+                      });
+                    });
+                  } catch (ex) {
+                    safeWarn('scripting.executeScript threw', ex);
+                    return finish({ ok: false, error: 'executeScript-exception', detail: String(ex) });
+                  }
+                } catch (outerExecCheckErr) {
+                  safeWarn('permission.contains callback outer error', outerExecCheckErr);
+                  return finish({ ok: false, error: 'permission-check-error', detail: String(outerExecCheckErr) });
+                }
+              });
+            } catch (pcEx) {
+              safeWarn('permission.contains threw', pcEx);
+              // proceed to attempt injection (best-effort) if contains itself threw
+              try {
+                safeLog('attempting scripting.executeScript (permission.contains threw)', { tabId, jsFile });
+                chrome.scripting.executeScript({ target: { tabId }, files: [jsFile] }, (injectionResults) => {
+                  if (chrome.runtime.lastError) {
+                    safeWarn('scripting.executeScript failed (after permission.contains threw)', chrome.runtime.lastError.message);
+                    const lower = (chrome.runtime.lastError.message || '').toLowerCase();
+                    if (lower.includes('must request permission') || lower.includes('cannot access contents of the page') || lower.includes('has no access to')) {
+                      return finish({ ok: false, error: 'no-host-permission', detail: chrome.runtime.lastError.message, permissionPattern });
                     }
-                    safeLog('sendMessage after inject succeeded', { tabId, action: message && message.action, resp2, cssError: !!cssErrorMsg });
-                    // unwrap nested response if present and include cssError metadata
-                    const unwrapped2 = unwrapResponseMaybe(resp2);
-                    return finish({ ok: true, response: unwrapped2, cssError: cssErrorMsg || null });
+                    return finish({ ok: false, error: 'injection-failed', detail: chrome.runtime.lastError.message });
+                  }
+                  // try insert css and message back as above
+                  chrome.scripting.insertCSS({ target: { tabId }, files: [cssFile] }, (cssRes) => {
+                    if (chrome.runtime.lastError) {
+                      cssErrorMsg = String(chrome.runtime.lastError.message || chrome.runtime.lastError);
+                      safeWarn('insertCSS failed', cssErrorMsg);
+                    } else {
+                      safeLog('insertCSS succeeded');
+                    }
+                    chrome.tabs.sendMessage(tabId, message, (resp2) => {
+                      if (chrome.runtime.lastError) {
+                        const msg2 = (chrome.runtime.lastError.message || '').toLowerCase();
+                        safeWarn('sendMessage after inject failed', chrome.runtime.lastError.message);
+                        if (msg2.includes('must request permission') || msg2.includes('cannot access contents of the page') || msg2.includes('has no access to')) {
+                          return finish({ ok: false, error: 'no-host-permission', detail: chrome.runtime.lastError.message, permissionPattern });
+                        }
+                        return finish({ ok: false, error: 'no-receiver-after-inject', detail: chrome.runtime.lastError.message });
+                      }
+                      const unwrapped2 = unwrapResponseMaybe(resp2);
+                      return finish({ ok: true, response: unwrapped2, cssError: cssErrorMsg || null });
+                    });
                   });
                 });
-              });
-            } catch (ex) {
-              safeWarn('scripting.executeScript threw', ex);
-              return finish({ ok: false, error: 'executeScript-exception', detail: String(ex) });
+              } catch (finalEx) {
+                safeWarn('executeScript second attempt threw', finalEx);
+                return finish({ ok: false, error: 'executeScript-exception', detail: String(finalEx) });
+              }
             }
           });
         });
@@ -422,6 +479,30 @@ chrome.commands.onCommand.addListener(async (command) => {
     });
   }
 
+  // small helper to persist overlay state (so popup can query if it opens after overlay was created)
+  function persistOverlayStateForTab(tabId, url, overlayActive) {
+    try {
+      const key = `_overlay_state_${tabId}`;
+      const val = { overlayActive: !!overlayActive, ts: Date.now(), url: url || '' };
+      const obj = {}; obj[key] = val;
+      chrome.storage.local.set(obj, () => {
+        safeLog('persisted overlay state for tab', tabId, val);
+      });
+    } catch (e) { safeWarn('persistOverlayStateForTab failed', e); }
+  }
+
+  function readOverlayStateForTab(tabId) {
+    return new Promise((resolve) => {
+      try {
+        const key = `_overlay_state_${tabId}`;
+        chrome.storage.local.get([key], (res) => {
+          if (chrome.runtime.lastError) return resolve(null);
+          resolve(res && res[key] ? res[key] : null);
+        });
+      } catch (e) { resolve(null); }
+    });
+  }
+
   // single message handler: forwards UI actions to a sensible web tab and handles internal requests
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // Always return true so we can send async responses.
@@ -436,6 +517,25 @@ chrome.commands.onCommand.addListener(async (command) => {
       // internal-only request for host permission helper
       if (msg && msg.__internal === 'requestHostPermission' && msg.url) {
         requestHostPermissionForUrl(msg.url).then((r) => respondOnce(r)).catch((e) => respondOnce({ ok: false, error: String(e) }));
+        return true;
+      }
+
+      // receive overlay state notifications from content scripts and persist + broadcast
+      if (msg && msg.action === 'clarity_overlay_state') {
+        try {
+          const overlayActive = !!msg.overlayActive;
+          safeLog('received clarity_overlay_state', { overlayActive, fromTab: sender && sender.tab && sender.tab.id });
+          // broadcast to runtime pages (popup) so any open popup receives the update
+          safeRuntimeSendMessage({ action: 'clarity_overlay_state', overlayActive, tabId: (sender && sender.tab && sender.tab.id) || null });
+          // persist per-tab so popup can query if it opens after this event
+          if (sender && sender.tab && sender.tab.id) {
+            persistOverlayStateForTab(sender.tab.id, sender.tab.url, overlayActive);
+          }
+          respondOnce({ ok: true });
+        } catch (e) {
+          safeWarn('clarity_overlay_state handling failed', e);
+          respondOnce({ ok: false, error: String(e) });
+        }
         return true;
       }
 
@@ -475,6 +575,19 @@ chrome.commands.onCommand.addListener(async (command) => {
           respondOnce({ ok: true });
           return true;
 
+        // allow popup to ask background for persisted overlay state for a given tab
+        case 'getOverlayState': {
+          (async () => {
+            try {
+              const tid = msg.tabId || (sender && sender.tab && sender.tab.id);
+              if (!tid) { respondOnce({ ok: false, error: 'no-tab-id' }); return; }
+              const state = await readOverlayStateForTab(tid);
+              respondOnce({ ok: true, overlayState: state });
+            } catch (e) { respondOnce({ ok: false, error: String(e) }); }
+          })();
+          return true;
+        }
+
         // Forwarded UI actions handled by picking a tab to target and using sendMessageToTabWithInjection
         case 'readAloud':
         case 'toggleFocusMode':
@@ -484,7 +597,11 @@ chrome.commands.onCommand.addListener(async (command) => {
         case 'applySettings':
         case 'speedRead':
         case 'detectLanguage':
-        case 'getSelection': {
+        case 'getSelection':
+          case 'clarity_extract_main':
+
+        // allow popup to query overlay state directly on tab (forwarded to content script)
+        case 'clarity_query_overlay': {
           (async () => {
             try {
               safeLog('forwarding action', msg.action, { hintedTarget: msg._targetTabId, senderTab: sender && sender.tab && sender.tab.id });

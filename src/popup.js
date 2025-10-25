@@ -12,18 +12,24 @@ document.addEventListener('DOMContentLoaded', () => {
 function wireSummaryDetailSelect() {
   const sel = document.getElementById('summaryDetailSelect');
   if (!sel) return;
+  const allowed = new Set(['concise', 'normal', 'detailed']);
   // load pref
   chrome.storage.local.get(['summaryDetail'], (res) => {
-    try { sel.value = (res && res.summaryDetail) || 'normal'; } catch(e) {}
+    try {
+      const v = (res && res.summaryDetail) || 'normal';
+      sel.value = allowed.has(v) ? v : 'normal';
+    } catch(e) { safeLog('loading summaryDetail failed', e); sel.value = 'normal'; }
   });
   // save on change
   sel.addEventListener('change', () => {
     try {
-      const v = sel.value || 'normal';
-      chrome.storage.local.set({ summaryDetail: v }, () => { toast(`Summary detail: ${v}`, 'info', 1200); });
+      const v = (sel.value || 'normal').toLowerCase();
+      const final = allowed.has(v) ? v : 'normal';
+      chrome.storage.local.set({ summaryDetail: final }, () => { toast(`Summary detail: ${final}`, 'info', 1200); });
     } catch (e) { safeLog('saving summaryDetail failed', e); }
   });
 }
+
 
 async function queryOverlayStateOnActiveTab() {
   try {
@@ -456,18 +462,32 @@ if (fontSlider) {
     }
   }
 
-  let summarizePageBtn = $('summarizePageBtn');
-  if (!summarizePageBtn && document.querySelector('.themeRow')) {
-    summarizePageBtn = document.createElement('button');
-    summarizePageBtn.id = 'summarizePageBtn';
-    summarizePageBtn.className = 'action-btn';
-    const ico = document.createElement('span'); ico.className = 'action-icon'; ico.textContent = '📝';
-    const txt = document.createElement('span'); txt.className = 'action-text'; txt.textContent = 'Summarize';
-    summarizePageBtn.appendChild(ico); summarizePageBtn.appendChild(txt);
-    summarizePageBtn.style.marginRight = '8px';
-    document.querySelector('.themeRow').insertBefore(summarizePageBtn, focusModeBtn || themeToggleBtn || null);
-    safeLog('added dynamic summarizePageBtn');
+ let summarizePageBtn = $('summarizePageBtn');
+try {
+  if (!summarizePageBtn) {
+    const container = document.querySelector('.themeRow') || document.querySelector('.toolbar') || document.body;
+    if (container) {
+      summarizePageBtn = document.createElement('button');
+      summarizePageBtn.id = 'summarizePageBtn';
+      summarizePageBtn.className = 'action-btn';
+      const ico = document.createElement('span'); ico.className = 'action-icon'; ico.textContent = '📝';
+      const txt = document.createElement('span'); txt.className = 'action-text'; txt.textContent = 'Summarize';
+      summarizePageBtn.appendChild(ico); summarizePageBtn.appendChild(txt);
+      summarizePageBtn.style.marginRight = '8px';
+      // try insert before known buttons, otherwise append
+      const ref = document.querySelector('.themeRow > *') || document.querySelector('.themeRow');
+      if (document.querySelector('.themeRow')) {
+        document.querySelector('.themeRow').insertBefore(summarizePageBtn, (focusModeBtn || themeToggleBtn || ref || null));
+      } else {
+        container.appendChild(summarizePageBtn);
+      }
+      safeLog('added dynamic summarizePageBtn');
+    } else {
+      safeLog('no container to add summarizePageBtn');
+    }
   }
+} catch (e) { safeLog('creating summarizePageBtn failed', e); }
+
 
   // hide redundant "Manage" saved button to reduce UI clutter (you can remove it from HTML later)
   if (openSavedManagerBtn) {
@@ -1720,6 +1740,134 @@ function clearProgressToast() {
 }
 
 // ----------------- Summarizer main function -----------------
+// ---------- Helper to fetch cleaned page text (tries background -> contentScript, falls back to executeScript) ----------
+async function fetchCleanPageText(tabId, tabUrl) {
+  // Try background-forwarded extraction first (non-blocking failover)
+  function tryBackgroundExtract() {
+    return new Promise((resolve) => {
+      try {
+        chrome.runtime.sendMessage({ action: 'clarity_extract_main', _targetTabId: tabId }, (resp) => {
+          if (chrome.runtime.lastError) {
+            safeLog('background extract lastError', chrome.runtime.lastError && chrome.runtime.lastError.message);
+            return resolve({ ok: false, reason: 'runtime-lastError', detail: chrome.runtime.lastError && chrome.runtime.lastError.message });
+          }
+          if (resp && resp.ok && (resp.text || resp.html)) {
+            return resolve({ ok: true, text: (resp.text || '').toString(), html: resp.html || '', title: resp.title || '' });
+          }
+          // not available / unknown-action / forwarded but failed
+          resolve({ ok: false, reason: 'bg-no-data', detail: resp || null });
+        });
+      } catch (e) {
+        safeLog('tryBackgroundExtract threw', e);
+        resolve({ ok: false, reason: 'bg-exception', detail: String(e) });
+      }
+    });
+  }
+
+  // Execute in-page script fallback if bg path fails
+  function tryExecuteScriptExtract() {
+    return new Promise((resolve) => {
+      try {
+        chrome.scripting.executeScript({
+          target: { tabId: tabId },
+          func: () => {
+            // in-page extractor (safe, removes noisy selectors)
+            function getMainNodeLocal() {
+              try {
+                const prefer = ['article', 'main', '[role="main"]', '#content', '#primary', '.post', '.article', '#mw-content-text', '.mw-parser-output'];
+                for (const s of prefer) {
+                  const el = document.querySelector(s);
+                  if (el && el.innerText && el.innerText.length > 200) return el;
+                }
+                const candidates = Array.from(document.querySelectorAll('article, main, section, div, p'))
+                  .filter(el => el && el.innerText && el.innerText.trim().length > 200)
+                  .map(el => ({ el, len: (el.innerText||'').trim().length }));
+                if (candidates.length) {
+                  candidates.sort((a,b) => b.len - a.len);
+                  return candidates[0].el;
+                }
+                if (document.body && document.body.innerText && document.body.innerText.length > 200) return document.body;
+              } catch (e) {}
+              return document.documentElement || document.body;
+            }
+
+            try {
+              const main = getMainNodeLocal();
+              if (!main) return { text: '', title: document.title || '' };
+              const clone = main.cloneNode(true);
+              // lightweight removal
+              const rm = ['script','style','iframe','picture','svg','video','form','input','button','aside','nav','footer','header','table'];
+              rm.forEach(s => clone.querySelectorAll(s).forEach(n => { try { n.remove(); } catch(e){} }));
+              // remove noisy selectors
+              const noisy = ['.related','.related-articles','.advert','.ads','.share','.social','.newsletter','.subscribe','.promo'];
+              noisy.forEach(s => { try { clone.querySelectorAll(s).forEach(n => { try { n.remove(); } catch(e){} }); } catch(e){} });
+              let text = clone.innerText || '';
+              text = text.replace(/\[\d+\]/g, ' ').replace(/\s{2,}/g, ' ').trim();
+              return { text: text, title: document.title || '' };
+            } catch (ex) {
+              return { text: '', title: document.title || '' };
+            }
+          }
+        }, (res) => {
+          if (chrome.runtime.lastError) {
+            return resolve({ ok: false, reason: 'exec-failed', detail: chrome.runtime.lastError.message });
+          }
+          try {
+            if (Array.isArray(res) && res.length && res[0] && res[0].result) {
+              const r = res[0].result;
+              return resolve({ ok: true, text: String(r.text || r || '').trim(), title: r.title || '' });
+            }
+            return resolve({ ok: false, reason: 'exec-no-result', detail: res });
+          } catch (e) {
+            return resolve({ ok: false, reason: 'exec-exception', detail: String(e) });
+          }
+        });
+      } catch (e) {
+        safeLog('tryExecuteScriptExtract threw', e);
+        resolve({ ok: false, reason: 'exec-throw', detail: String(e) });
+      }
+    });
+  }
+
+  // If we have a tabUrl and it is a web url, attempt bg extract first.
+  const bgRes = await tryBackgroundExtract();
+  if (bgRes.ok) return bgRes;
+
+  // Background either doesn't support it or failed — fall back to executeScript
+  const execRes = await tryExecuteScriptExtract();
+  if (execRes.ok) return execRes;
+
+  // If executeScript failed and indicates host permission required -> request via background internal helper
+  const maybeNeedPermissionErrors = ['must request permission', 'cannot access contents of the page', 'has no access to', 'exec-failed', 'exec-throw'];
+  const low = String(execRes.detail || '').toLowerCase();
+  if (tabUrl && maybeNeedPermissionErrors.some(s => low.includes(s))) {
+    try {
+      // ask background to prompt for permission
+      const permRes = await new Promise(resolve => {
+        try {
+          chrome.runtime.sendMessage({ __internal: 'requestHostPermission', url: tabUrl }, (r) => {
+            if (chrome.runtime.lastError) return resolve({ ok: false, error: 'perm-lastError', detail: chrome.runtime.lastError && chrome.runtime.lastError.message });
+            resolve(r || { ok: false });
+          });
+        } catch (e) { resolve({ ok: false, error: 'perm-exception', detail: String(e) }); }
+      });
+      // if permission granted, retry executeScript once
+      if (permRes && permRes.ok) {
+        const retry = await tryExecuteScriptExtract();
+        if (retry.ok) return retry;
+      }
+      return { ok: false, reason: 'permission-not-granted', detail: permRes || execRes };
+    } catch (e) {
+      safeLog('permission request path failed', e);
+      return { ok: false, reason: 'permission-exception', detail: String(e) };
+    }
+  }
+
+  return { ok: false, reason: 'all-failed', detail: { bg: bgRes, exec: execRes } };
+}
+
+
+// ----------------- Summarizer main function (replacement) -----------------
 async function summarizeCurrentPageOrSelection_AiAware() {
   safeLog('summarizeCurrentPageOrSelection_AiAware (local-only) start');
   if (!summarizePageBtn) { safeLog('summarizePageBtn missing'); return; }
@@ -1783,55 +1931,18 @@ async function summarizeCurrentPageOrSelection_AiAware() {
       } catch (e) { safeLog('page selection execScript failed', e); }
     }
 
-    // 4) if still nothing, extract main page content
+    // 4) if still nothing, extract main page content via fetchCleanPageText helper
     if (!text) {
-      try {
-        const execResult = await new Promise(resolve => {
-          chrome.scripting.executeScript({
-            target: { tabId: tab.id },
-            func: () => {
-              function removeNodes(selectors = []) {
-                try { selectors.forEach(s => document.querySelectorAll(s).forEach(n => { try { n.remove(); } catch(e){} })); } catch(e) {}
-              }
-              try {
-                removeNodes(['header','footer','nav','aside','.navbox','.vertical-navbox','.toc','#toc','.infobox','.sidebar','.mw-jump-link','.mw-references-wrap','.reference','.references','.reflist','.mw-editsection','.hatnote']);
-                const prefer = ['article','main','[role="main"]','#content','#primary','.post','.article','#mw-content-text','.mw-parser-output'];
-                for (const sel of prefer) {
-                  const el = document.querySelector(sel);
-                  if (el && el.innerText && el.innerText.length > 200) {
-                    const clone = el.cloneNode(true);
-                    clone.querySelectorAll('img, svg, picture, table, .toc, .infobox, aside, nav, footer, header, style, script').forEach(n => n.remove());
-                    return { text: clone.innerText || '', title: document.title || '' };
-                  }
-                }
-                if (document.body && document.body.innerText && document.body.innerText.length > 200) {
-                  const b = document.body.cloneNode(true);
-                  b.querySelectorAll('script, style, img, svg, picture, table, aside, nav, header, footer').forEach(n => n.remove());
-                  return { text: b.innerText || '', title: document.title || '' };
-                }
-                return { text: '', title: document.title || '' };
-              } catch (e) { return { text: '', title: document.title || '' }; }
-            }
-          }, (res) => resolve(res));
-        });
-
-        let pageText = '';
-        if (Array.isArray(execResult) && execResult.length && execResult[0]) {
-          const r0 = execResult[0];
-          if (r0 && r0.result && typeof r0.result.text === 'string') pageText = r0.result.text;
-          else if (r0 && typeof r0.result === 'string') pageText = r0.result;
-        } else if (execResult && execResult.result && execResult.result.text) {
-          pageText = execResult.result.text;
-        } else if (execResult && typeof execResult.text === 'string') {
-          pageText = execResult.text;
-        } else if (typeof execResult === 'string') {
-          pageText = execResult;
+      const fetched = await fetchCleanPageText(tab.id, tab.url);
+      if (fetched && fetched.ok && fetched.text) {
+        text = String(fetched.text || '').trim();
+      } else {
+        // Show friendly message if permission required
+        if (fetched && fetched.reason === 'permission-not-granted') {
+          toast('Permission required to read this page. Please grant site permission and try again.', 'error', 8000);
+        } else {
+          toast('Unable to access page content. Give ClarityRead permission for this site and try again.', 'error', 6000);
         }
-
-        text = stripCssLikeFragments(String(pageText || '')).trim();
-      } catch (e) {
-        safeLog('full page exec failed', e);
-        toast('Unable to access page content. Give ClarityRead permission for this site and try again.', 'error');
         summarizePageBtn.disabled = false;
         return;
       }
@@ -1844,7 +1955,7 @@ async function summarizeCurrentPageOrSelection_AiAware() {
       return;
     }
 
-        // read preference + compute sentences
+    // read preference + compute sentences
     const pref = await readSummaryPref();
     const adaptiveMax = computeAdaptiveMax(text, pref);
 
@@ -1853,31 +1964,23 @@ async function summarizeCurrentPageOrSelection_AiAware() {
     let summary = '(no summary produced)';
     try {
       // additional pre-scrub to drop author lines / bylines that confuse scoring
- // stronger pre-scrub to drop author lines, contact/footer, and nav artifacts that confuse scoring
-try {
-  // common byline patterns
-  text = text.replace(/^\s*(By|Author:|Written by)\s+[^\n]{0,200}$/gim, ' ');
-  // dates / last updated / published on / copyright lines
-  text = text.replace(/\b(last edited|last updated|published on|©|copyright|all rights reserved)\b[^\n]*/gi, ' ');
-  // remove obvious contact / subscribe / follow / related links lines
-  text = text.replace(/^\s*(Contact|Contact us|Subscribe|Follow (us|@)|Related articles|Read more|Advert(isement)?|Sponsored)\b[^\n]*$/gim, ' ');
-  // remove email addresses, phone numbers and explicit URLs
-  text = text.replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, ' ');
-  text = text.replace(/\b(?:https?:\/\/|www\.)\S+\b/gi, ' ');
-  text = text.replace(/(?:\+?\d[\d() .-]{7,}\d)/g, ' ');
-  // drop lines that are mostly punctuation/links/short nav fragments
-  text = text.split(/\n/).filter(line => {
-    const t = line.trim();
-    if (!t) return false;
-    if (t.length < 20 && /^(Read|More|Share|Related|Jump|Contents|Table of contents|Menu|Skip to)/i.test(t)) return false;
-    if (/^(\/|#|\-|\*|:){2,}/.test(t)) return false;
-    return true;
-  }).join('\n');
-} catch (e) { safeLog('prescrub threw', e); }
-
+      try {
+        text = text.replace(/^\s*(By|Author:|Written by)\s+[^\n]{0,200}$/gim, ' ');
+        text = text.replace(/\b(last edited|last updated|published on|©|copyright|all rights reserved)\b[^\n]*/gi, ' ');
+        text = text.replace(/^\s*(Contact|Contact us|Subscribe|Follow (us|@)|Related articles|Read more|Advert(isement)?|Sponsored)\b[^\n]*$/gim, ' ');
+        text = text.replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, ' ');
+        text = text.replace(/\b(?:https?:\/\/|www\.)\S+\b/gi, ' ');
+        text = text.replace(/(?:\+?\d[\d() .-]{7,}\d)/g, ' ');
+        text = text.split(/\n/).filter(line => {
+          const t = line.trim();
+          if (!t) return false;
+          if (t.length < 20 && /^(Read|More|Share|Related|Jump|Contents|Table of contents|Menu|Skip to)/i.test(t)) return false;
+          if (/^(\/|#|\-|\*|:){2,}/.test(t)) return false;
+          return true;
+        }).join('\n');
+      } catch (e) { safeLog('prescrub threw', e); }
 
       if (typeof summarizeTextLocal === 'function') {
-        // pass both adaptiveMax and user pref so summarizer scales & respects length preference
         summary = summarizeTextLocal(text, adaptiveMax, pref) || summary;
       } else {
         summary = '(summarizer not available)';
@@ -1888,13 +1991,11 @@ try {
       clearProgressToast();
     }
 
-
-
     // lightweight post-filter to remove TOC-like garbage
     try {
       const parts = summary.split(/(?<=[.?!])\s+/).map(s => s.trim()).filter(Boolean);
       const filtered = parts.filter(s => {
-        if (s.length < 30) return false;
+        if (s.length < 30 && (pref !== 'detailed')) return false;
         if (/^(Outline|History|See also|References|External links|Category|vte)\b/i.test(s)) return false;
         const nonAlphaRatio = (s.replace(/[A-Za-z0-9]/g,'').length) / Math.max(1, s.length);
         if (nonAlphaRatio > 0.20) return false;
@@ -1904,11 +2005,10 @@ try {
     } catch (e) { safeLog('post-filter threw', e); }
 
     // present modal with adaptive header
-   const modeSubtitle = usedSelection ? 'Selection' : 'Full page';
-// count sentences in produced summary (best-effort)
-const actualSentences = (summary || '').split(/(?<=[.?!])\s+/).map(s => s.trim()).filter(Boolean).length || 0;
-const headerTitle = `Page Summary — ${actualSentences} sentence${actualSentences === 1 ? '' : 's'} (${modeSubtitle})`;
-createSummaryModal(headerTitle, summary);
+    const modeSubtitle = usedSelection ? 'Selection' : 'Full page';
+    const actualSentences = (summary || '').split(/(?<=[.?!])\s+/).map(s => s.trim()).filter(Boolean).length || 0;
+    const headerTitle = `Page Summary — ${actualSentences} sentence${actualSentences === 1 ? '' : 's'} (${modeSubtitle})`;
+    createSummaryModal(headerTitle, summary);
 
     toast('Summary ready', 'success', 3000);
 
@@ -1925,6 +2025,17 @@ createSummaryModal(headerTitle, summary);
     summarizePageBtn.disabled = false;
   }
 }
+
+// Hook up summary button: replace old handler with the local-only summarizer
+try {
+  let btn = $('summarizePageBtn');
+  if (btn) {
+    btn.replaceWith(btn.cloneNode(true));
+    const newBtn = $('summarizePageBtn');
+    if (newBtn) safeOn(newBtn, 'click', summarizeCurrentPageOrSelection_AiAware);
+  }
+} catch (e) { safeLog('hook summarize button failed', e); }
+
 
 
 

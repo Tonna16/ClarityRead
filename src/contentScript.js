@@ -1,3 +1,4 @@
+// contentScript.js
 // Handles applySettings, readAloud, speedRead, pause/resume/stop, selection, detectLanguage.
 // All speech synthesis happens in this file only.
 
@@ -7,21 +8,22 @@
     return;
   }
   window.__clarityread_contentScriptLoaded = true;
-  // ---------- ClarityRead reflow helper (paste near top of contentScript.js) ----------
-(function() {
-  // don't re-install
-  if (window.__clarity_reflow_installed) return;
-  window.__clarity_reflow_installed = true;
 
-  const REFLOW_STYLE_ID = 'clarityreflow-style';
+  // ---------- Reflow / dys / overlay helpers ----------
+  (function() {
+    // don't re-install
+    if (window.__clarity_reflow_installed) return;
+    window.__clarity_reflow_installed = true;
 
-  function ensureReflowStyle() {
-    try {
-      if (document.getElementById(REFLOW_STYLE_ID)) return;
-      const st = document.createElement('style');
-      st.id = REFLOW_STYLE_ID;
-      st.type = 'text/css';
-      st.textContent = `
+    const REFLOW_STYLE_ID = 'clarityreflow-style';
+
+    function ensureReflowStyle() {
+      try {
+        if (document.getElementById(REFLOW_STYLE_ID)) return;
+        const st = document.createElement('style');
+        st.id = REFLOW_STYLE_ID;
+        st.type = 'text/css';
+        st.textContent = `
 :root { --clarity-font-size: 20px; --clarity-line-height: 1.5; }
 
 /* scope activation via html.clarityreflow-active */
@@ -67,72 +69,81 @@ html.clarityreflow-active h6 {
   font-size: calc(var(--clarity-font-size) * 1.2) !important;
   line-height: 1.2 !important;
 }
-
-/* avoid breaking layout by not forcing widths etc. */
 `;
-      try { (document.head || document.documentElement).appendChild(st); } catch(e) { document.documentElement.appendChild(st); }
-    } catch (e) { /* ignore */ }
-  }
-
-  function applyClarityFontSize(px) {
-    try {
-      ensureReflowStyle();
-      let v = Number(px) || 20;
-      v = Math.max(10, Math.min(48, Math.round(v))); // clamp
-      document.documentElement.style.setProperty('--clarity-font-size', v + 'px');
-      // set supportive line height
-      const lh = (1.25 + Math.min(0.6, (v - 14) / 80)).toFixed(2);
-      document.documentElement.style.setProperty('--clarity-line-height', lh);
-      document.documentElement.classList.add('clarityreflow-active');
-      // try also setting body inline for sites reading that directly
-      try { document.body.style.fontSize = v + 'px'; } catch(e) {}
-      return { ok: true, size: v };
-    } catch (e) {
-      return { ok: false, error: String(e) };
+        try { (document.head || document.documentElement).appendChild(st); } catch(e) { document.documentElement.appendChild(st); }
+      } catch (e) { /* ignore */ }
     }
-  }
 
-  function removeClarityReflow() {
-    try {
-      document.documentElement.classList.remove('clarityreflow-active');
-      document.documentElement.style.removeProperty('--clarity-font-size');
-      document.documentElement.style.removeProperty('--clarity-line-height');
-      try { document.body.style.removeProperty('font-size'); } catch(e) {}
-      return { ok: true };
-    } catch (e) {
-      return { ok: false, error: String(e) };
-    }
-  }
-
-  // expose for debug/manual
-  window.ClarityRead = window.ClarityRead || {};
-  window.ClarityRead.applyClarityFontSize = applyClarityFontSize;
-  window.ClarityRead.removeClarityReflow = removeClarityReflow;
-
-  // message listener - keep single point of messaging (coexists with your existing onMessage)
-  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-    try {
-      if (!msg || !msg.action) return;
-      if (msg.action === 'clarity_apply_font_size') {
-        const res = applyClarityFontSize(msg.size);
-        sendResponse(res);
-        return true;
+    function applyClarityFontSize(px) {
+      try {
+        ensureReflowStyle();
+        let v = Number(px) || 20;
+        v = Math.max(10, Math.min(48, Math.round(v))); // clamp
+        document.documentElement.style.setProperty('--clarity-font-size', v + 'px');
+        // set supportive line height
+        const lh = (1.25 + Math.min(0.6, (v - 14) / 80)).toFixed(2);
+        document.documentElement.style.setProperty('--clarity-line-height', lh);
+        document.documentElement.classList.add('clarityreflow-active');
+        // try also setting body inline for sites reading that directly
+        try { document.body.style.fontSize = v + 'px'; } catch(e) {}
+        // if overlay present, update overlay font size to match
+        try {
+          const overlay = document.getElementById('readeasy-reader-overlay');
+          if (overlay) overlay.style.fontSize = v + 'px';
+        } catch(e){}
+        return { ok: true, size: v };
+      } catch (e) {
+        return { ok: false, error: String(e) };
       }
-      if (msg.action === 'clarity_remove_reflow') {
-        const r = removeClarityReflow();
-        sendResponse(r);
-        return true;
-      }
-    } catch (e) {
-      try { sendResponse({ ok: false, error: String(e) }); } catch(e2) {}
     }
-    // let other listeners handle other messages
-    return false;
-  });
 
-  // ensure style exists early
-  ensureReflowStyle();
-})();
+    function removeClarityReflow() {
+      try {
+        document.documentElement.classList.remove('clarityreflow-active');
+        document.documentElement.style.removeProperty('--clarity-font-size');
+        document.documentElement.style.removeProperty('--clarity-line-height');
+        try { document.body.style.removeProperty('font-size'); } catch(e) {}
+        // overlay revert
+        try {
+          const overlay = document.getElementById('readeasy-reader-overlay');
+          if (overlay) overlay.style.fontSize = '';
+        } catch(e){}
+        return { ok: true };
+      } catch (e) {
+        return { ok: false, error: String(e) };
+      }
+    }
+
+    // expose for debug/manual
+    window.ClarityRead = window.ClarityRead || {};
+    window.ClarityRead.applyClarityFontSize = applyClarityFontSize;
+    window.ClarityRead.removeClarityReflow = removeClarityReflow;
+
+    // message listener for reflow control (keeps handler local)
+    chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+      try {
+        if (!msg || !msg.action) return;
+        if (msg.action === 'clarity_apply_font_size') {
+          const res = applyClarityFontSize(msg.size);
+          sendResponse(res);
+          return true;
+        }
+        if (msg.action === 'clarity_remove_reflow') {
+          const r = removeClarityReflow();
+          sendResponse(r);
+          return true;
+        }
+      } catch (e) {
+        try { sendResponse({ ok: false, error: String(e) }); } catch(e2) {}
+      }
+      // let other listeners handle other messages
+      return false;
+    });
+
+    // ensure style exists early
+    ensureReflowStyle();
+  })();
+
 
   // --- State
   let currentUtterance = null;
@@ -182,44 +193,51 @@ html.clarityreflow-active h6 {
     } catch (e) { safeLog('sendState send failed', e); }
     safeLog('sendState sent', state);
   }
-  // src/contentScript.js (append or add)
-/* lightweight selection tracker to persist last selection so popup can read it
-   Only stores text > 20 chars to avoid tiny accidental selections.
-*/
-(function() {
-  try {
-    let lastStored = null;
-    function storeSelection(text) {
-      try {
-        if (!text || typeof text !== 'string') return;
-        const trimmed = text.trim();
-        if (!trimmed || trimmed.length < 20) return;
-        lastStored = { text: trimmed, ts: Date.now(), url: location.href, title: document.title || '' };
-        chrome.storage.local.set({ clarity_last_selection: lastStored }, () => {});
-      } catch (e) {}
-    }
 
-    // on mouseup and selectionchange capture selection
-    function capture() {
-      try {
-        const s = (window.getSelection && window.getSelection().toString && window.getSelection().toString()) || '';
-        if (s && s.trim().length >= 20) storeSelection(s);
-      } catch (e) {}
-    }
+  // --- Overlay state notifier for popup/background
+  function notifyOverlayState(active) {
+    try {
+      chrome.runtime.sendMessage({ action: 'clarity_overlay_state', overlayActive: !!active }, () => {});
+    } catch (e) { safeLog('notifyOverlayState failed', e); }
+  }
 
-    document.addEventListener('mouseup', () => setTimeout(capture, 10));
-    document.addEventListener('selectionchange', () => {
-      // store only if selection is non-empty and reasonably long
-      try {
-        const s = (window.getSelection && window.getSelection().toString && window.getSelection().toString()) || '';
-        if (s && s.trim().length >= 20) storeSelection(s);
-      } catch (e) {}
-    });
+  /* lightweight selection tracker to persist last selection so popup can read it
+     Only stores text > 20 chars to avoid tiny accidental selections.
+  */
+  (function() {
+    try {
+      let lastStored = null;
+      function storeSelection(text) {
+        try {
+          if (!text || typeof text !== 'string') return;
+          const trimmed = text.trim();
+          if (!trimmed || trimmed.length < 20) return;
+          lastStored = { text: trimmed, ts: Date.now(), url: location.href, title: document.title || '' };
+          chrome.storage.local.set({ clarity_last_selection: lastStored }, () => {});
+        } catch (e) {}
+      }
 
-    // also store selection on Ctrl/Cmd+C to be extra-reliable
-    document.addEventListener('copy', () => setTimeout(capture, 10));
-  } catch (e) {}
-})();
+      // on mouseup and selectionchange capture selection
+      function capture() {
+        try {
+          const s = (window.getSelection && window.getSelection().toString && window.getSelection().toString()) || '';
+          if (s && s.trim().length >= 20) storeSelection(s);
+        } catch (e) {}
+      }
+
+      document.addEventListener('mouseup', () => setTimeout(capture, 10));
+      document.addEventListener('selectionchange', () => {
+        // store only if selection is non-empty and reasonably long
+        try {
+          const s = (window.getSelection && window.getSelection().toString && window.getSelection().toString()) || '';
+          if (s && s.trim().length >= 20) storeSelection(s);
+        } catch (e) {}
+      });
+
+      // also store selection on Ctrl/Cmd+C to be extra-reliable
+      document.addEventListener('copy', () => setTimeout(capture, 10));
+    } catch (e) {}
+  })();
 
 
   // --- sanitize text for TTS
@@ -271,6 +289,11 @@ html.clarityreflow-active h6 {
       if (el) el.remove();
     } catch(e){ safeLog('removeDysFontInjected error', e); }
     try { document.documentElement.classList.remove('readeasy-dyslexic'); } catch(e){}
+    // ensure overlay returns to normal font
+    try {
+      const overlay = document.getElementById('readeasy-reader-overlay');
+      if (overlay) overlay.style.fontFamily = '';
+    } catch(e){}
   }
 
   // --- Heuristics: choose main content node
@@ -316,6 +339,141 @@ html.clarityreflow-active h6 {
     } catch (e) { safeLog('getMainNode err', e); }
     safeLog('getMainNode fallback to documentElement');
     return document.documentElement || document.body;
+  }
+
+  // --- Extraction helper: robust cleaning (site-specific heuristics + general noise filtering)
+  function extractCleanMainTextAndHtml(mainNode) {
+    try {
+      const clone = (mainNode && mainNode.cloneNode) ? mainNode.cloneNode(true) : null;
+      if (!clone) return { text: '', html: '', title: document.title || '' };
+
+      // default selectors to remove
+      const toRemove = [
+        'header','footer','nav','aside',
+        '.navbox','.vertical-navbox','.toc','#toc',
+        '.infobox','.sidebar','.mw-jump-link','.mw-references-wrap',
+        '.reference','.references','.reflist','.mw-editsection','.hatnote',
+        '.author','.byline','.by-line','.contributor','.credit','.editor',
+        'form','input','button','svg','picture','video','figure','iframe','noscript',
+        '.advert','.ads','.ad','.ad-wrapper','.adslot','.promo','.promo-block',
+        '.related','.related-articles','.related-links','.related-content',
+        '.share','.social','.cookie','.cookie-banner','.newsletter','.subscribe',
+        '.comments','.comment','.comments-list','.comment-list',
+        '.promo-banner','.promo-module','.meta','.meta-data','.article-meta',
+        '.breadcrumb','.breadcrumbs','.tag-list','.tags','.topics'
+      ];
+
+      // site-specific extra selectors (extend as needed)
+      const hostname = (location.hostname || '').toLowerCase();
+      const siteExtras = {
+        'health.clevelandclinic.org': [
+          '.related-articles', '.related-articles-module', '.rc-article-related', '.article__related',
+          '.trending', '.more-articles', '.cc-byline', '.byline', '.author'
+        ],
+        'clevelandclinic.org': [
+          '.related-articles', '.trending', '.more-articles'
+        ],
+        'www.nytimes.com': [
+          '.meteredContent', '.css-1fanzo5', '.ad-section', '.story-footer', '.StoryBodyCompanionColumn'
+        ],
+        'nytimes.com': [
+          '.meteredContent', '.story-footer'
+        ],
+        'www.washingtonpost.com': [
+          '.paywall', '.latest', '.related-content', '.story-body__aside'
+        ],
+        'washingtonpost.com': [
+          '.paywall'
+        ],
+        // Add more hosts if needed
+      };
+
+      if (siteExtras[hostname] && Array.isArray(siteExtras[hostname])) {
+        toRemove.push(...siteExtras[hostname]);
+      } else {
+        // quick host patterns (subdomain variants)
+        Object.keys(siteExtras).forEach(k => {
+          if (hostname.endsWith(k)) toRemove.push(...siteExtras[k]);
+        });
+      }
+
+      // Remove selectors
+      try {
+        toRemove.forEach(sel => {
+          try {
+            clone.querySelectorAll(sel).forEach(n => {
+              try { n.remove(); } catch (e) {}
+            });
+          } catch (e) {}
+        });
+      } catch (e) {}
+
+      // Additional generic heuristic: remove nodes with noisy class/id patterns
+      try {
+        const noisyRe = /(related|promo|advert|ad-|ad_|ads|subscribe|newsletter|share|social|comments?|footer|header|cookie|breadcrumb|promo|trending|author|byline|meta|signup|signup|cta|paywall)/i;
+        Array.from(clone.querySelectorAll('*')).forEach(el => {
+          try {
+            const idc = (el.id || '') + ' ' + (el.className || '');
+            if (noisyRe.test(idc) && (el.innerText || '').length < 600) {
+              // small noisy blocks removed, keep big blocks even if class matches
+              el.remove();
+            }
+          } catch (e) {}
+        });
+      } catch (e) {}
+
+      // remove script/style and sanitize attributes
+      try {
+        clone.querySelectorAll('script, style, link, iframe').forEach(n => { try { n.remove(); } catch(e){} });
+      } catch (e) {}
+
+      // remove inline event handlers / inline styles for safe html fallback
+      try {
+        clone.querySelectorAll('*').forEach(el => {
+          try {
+            if (!el || !el.attributes) return;
+            for (let i = el.attributes.length - 1; i >= 0; i--) {
+              const at = el.attributes[i];
+              if (!at) continue;
+              const name = (at.name || '').toLowerCase();
+              if (name.startsWith('on') || name === 'style' || name === 'onclick' || name === 'onmouseover') {
+                try { el.removeAttribute(at.name); } catch (e) {}
+              }
+            }
+          } catch (e) {}
+        });
+      } catch (e) {}
+
+      // Collect text and fallback HTML
+      let text = '';
+      try {
+        text = clone.innerText || '';
+        // collapse whitespace
+        text = String(text).replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n').replace(/[ \t]{2,}/g, ' ').replace(/\s{2,}/g, ' ').trim();
+        // remove trailing nav/ref sections common in publisher dumps
+        text = text.replace(/\b(References|External links|See also|Further reading|Related articles|Related Articles|Trending|Advertisement)\b[\s\S]*/ig, '');
+        // remove emails/contact lines
+        text = text.replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, ' ');
+        text = text.replace(/\s{2,}/g, ' ').trim();
+      } catch (e) { text = ''; }
+
+      let html = '';
+      try {
+        html = clone.innerHTML || '';
+      } catch (e) { html = ''; }
+
+      // Final safety fallback: if text is tiny, try extracting body text (less filtered)
+      if ((!text || text.length < 120) && document.body && document.body.innerText && document.body.innerText.length > 200) {
+        try {
+          text = String(document.body.innerText || '').replace(/\s{2,}/g, ' ').trim();
+        } catch (e) {}
+      }
+
+      return { text: (text || '').trim(), html: html || '', title: document.title || '' };
+    } catch (err) {
+      safeLog('extractCleanMainTextAndHtml error', err);
+      return { text: '', html: '', title: document.title || '' };
+    }
   }
 
   // --- Overlay helper (preferred because it avoids DOM mutation issues)
@@ -410,6 +568,10 @@ html.clarityreflow-active h6 {
     highlightSpans = Array.from(inner.querySelectorAll('.readeasy-word'));
     safeLog('createReaderOverlay created with', highlightSpans.length, 'spans (overlayActive)');
     buildCumLengths();
+
+    // notify popup/background that overlay is active
+    try { notifyOverlayState(true); } catch(e){ safeLog('notify overlay create failed', e); }
+
     return overlay;
   }
   function removeReaderOverlay() {
@@ -418,6 +580,9 @@ html.clarityreflow-active h6 {
     overlayActive = false;
     overlayTextSplice = null;
     safeLog('removeReaderOverlay executed');
+
+    // notify popup/background that overlay is closed
+    try { notifyOverlayState(false); } catch(e){ safeLog('notify overlay remove failed', e); }
   }
 
   // --- Highlight management
@@ -1000,6 +1165,21 @@ html.clarityreflow-active h6 {
                 if (m) try { m.style.fontSize = fs; } catch(e) {}
               }
             }
+
+            // Update overlay styling immediately so popup toggles reflect on-overlay changes:
+            try {
+              const overlay = document.getElementById('readeasy-reader-overlay');
+              if (overlay) {
+                if (typeof msg.dys !== 'undefined') {
+                  if (msg.dys) overlay.style.fontFamily = "'OpenDyslexic', system-ui, Arial, sans-serif";
+                  else overlay.style.fontFamily = '';
+                }
+                if (typeof msg.fontSize !== 'undefined' && msg.fontSize) {
+                  overlay.style.fontSize = (typeof msg.fontSize === 'number') ? `${msg.fontSize}px` : String(msg.fontSize);
+                }
+              }
+            } catch (e) { safeLog('applySettings overlay update failed', e); }
+
             safeLog('applySettings applied', { dys: !!msg.dys, reflow: !!msg.reflow, fontSize: msg.fontSize });
           } catch (e) {
             safeLog('applySettings failed', e);
@@ -1007,6 +1187,29 @@ html.clarityreflow-active h6 {
           sendResponse({ ok: true });
           safeLog('applySettings responded ok');
           break;
+
+        case 'clarity_query_overlay': {
+          try {
+            const has = !!document.getElementById('readeasy-reader-overlay');
+            sendResponse({ ok: true, overlayActive: has });
+          } catch (e) { sendResponse({ ok: true, overlayActive: !!overlayActive }); }
+          break;
+        }
+
+        // NEW: extraction for popup summarizer -> returns cleaned text/html/title
+        case 'clarity_extract_main': {
+          try {
+            const main = getMainNode();
+            const out = extractCleanMainTextAndHtml(main);
+            // return flat shape so background/popup can use out.text/out.html
+            sendResponse({ ok: true, text: out.text || '', html: out.html || '', title: out.title || '' });
+            safeLog('clarity_extract_main responded', { textLen: (out.text || '').length, title: out.title });
+          } catch (e) {
+            safeLog('clarity_extract_main failed', e);
+            try { sendResponse({ ok: false, error: String(e) }); } catch(e2) {}
+          }
+          break;
+        }
 
         case 'readAloud': {
           chrome.storage.sync.get(['voice','rate','pitch','highlight'], (res) => {
@@ -1104,7 +1307,7 @@ html.clarityreflow-active h6 {
 
   // cleanup when the page unloads
   window.addEventListener('pagehide', () => {
-    try { 
+    try {
       // Ensure full cleanup and stats finalization on page hide/navigation
       if (typeof stopReadingAll === 'function') {
         stopReadingAll();
