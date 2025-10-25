@@ -4,7 +4,7 @@
 
 document.addEventListener('DOMContentLoaded', () => {
   // ---------- CONFIG ----------
-  const DEBUG = false; // set true for development, false for production
+  const DEBUG = true; // set true for development, false for production
   const $ = id => document.getElementById(id) || null;
   const safeLog = (...a) => { try { if (DEBUG) console.log('[ClarityRead popup]', ...a); } catch(e){} };
   // wire summaryDetailSelect -> chrome.storage.local
@@ -24,6 +24,22 @@ function wireSummaryDetailSelect() {
     } catch (e) { safeLog('saving summaryDetail failed', e); }
   });
 }
+
+async function queryOverlayStateOnActiveTab() {
+  try {
+    const res = await sendMessageToActiveTabWithInject({ action: 'clarity_query_overlay' });
+    const r = normalizeBgResponse(res);
+    const btn = document.getElementById('focusModeBtn');
+    const textEl = btn ? btn.querySelector('.action-text') : null;
+    if (btn && textEl && r && typeof r.overlayActive !== 'undefined') {
+      if (r.overlayActive) { btn.classList.add('active'); textEl.textContent = `Close ${_focusModeOriginalText}`; }
+      else { btn.classList.remove('active'); textEl.textContent = _focusModeOriginalText; }
+    }
+  } catch (e) { safeLog('queryOverlayStateOnActiveTab failed', e); }
+}
+
+// Call this once during init
+try { queryOverlayStateOnActiveTab(); } catch(e) {}
 
 
   // ensure popup can receive keyboard events immediately
@@ -277,42 +293,130 @@ function clearToastsLocal() { Toasts.clearAll(); }
 
 // ---------------- Toast cleanup helper ---------------
 // keep focusModeBtn in sync with overlay state messages from content script
+// ---------- runtime -> popup sync (overlay + reading state) ----------
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   try {
+    // Normalize quick access to the focusMode button text element
+    const btn = document.getElementById('focusModeBtn');
+    const textEl = btn ? btn.querySelector('.action-text') : null;
+
+    // Primary overlay message (content script explicitly notifies overlay open/close)
     if (msg && msg.action === 'clarity_overlay_state') {
-      const btn = document.getElementById('focusModeBtn');
       if (!btn) return;
       if (msg.overlayActive) {
-        btn.classList.add('active'); // your code likely toggles class; update whichever you use
-        btn.querySelector('.action-text').textContent = 'Close Focus Mode';
+        btn.classList.add('active');
+        if (textEl) textEl.textContent = `Close ${_focusModeOriginalText}`;
       } else {
         btn.classList.remove('active');
-        btn.querySelector('.action-text').textContent = 'Focus Mode';
+        if (textEl) textEl.textContent = _focusModeOriginalText;
       }
+      return;
     }
-  } catch(e){}
+
+    // Fallback messages: some code paths may send readingStopped/readingResumed
+    if (msg && (msg.action === 'readingStopped' || msg.action === 'readingPaused')) {
+      // If we receive stopped/paused, ensure UI reflects overlay closed (safe)
+      if (btn && textEl) {
+        btn.classList.remove('active');
+        textEl.textContent = _focusModeOriginalText;
+      }
+      return;
+    }
+
+    if (msg && msg.action === 'readingResumed') {
+      // reading resumed elsewhere — keep button in "Close" state to reflect active focus/read
+      if (btn && textEl) {
+        btn.classList.add('active');
+        textEl.textContent = `Close ${_focusModeOriginalText}`;
+      }
+      return;
+    }
+
+  } catch (e) {
+    safeLog('runtime.onMessage popup handler error', e);
+  }
 });
+
+chrome.runtime.onMessage.addListener((msg) => {
+  try {
+    const btn = document.getElementById('focusModeBtn');
+    const textEl = btn ? btn.querySelector('.action-text') : null;
+    if (!btn) return;
+    if (msg && (msg.action === 'clarity_overlay_state')) {
+      if (msg.overlayActive) { btn.classList.add('active'); if (textEl) textEl.textContent = `Close ${_focusModeOriginalText}`; }
+      else { btn.classList.remove('active'); if (textEl) textEl.textContent = _focusModeOriginalText; }
+      return;
+    }
+
+    // fallback: any Not Reading state should un-toggle the button
+    if (msg && msg.action === 'readingStopped') {
+      btn.classList.remove('active');
+      if (textEl) textEl.textContent = _focusModeOriginalText;
+      return;
+    }
+  } catch(e) { safeLog('onMessage popup error', e); }
+});
+
  
 // Call this on slider input/change
+// Improved: apply font size -> will attempt injection, and if permission is missing will request it then retry
+// Replace existing applyFontSizeToActiveTab with this
 async function applyFontSizeToActiveTab(sizePx) {
   try {
-    chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
-      const t = tabs && tabs[0];
-      if (!t || !t.id) { toast('No active tab', 'error'); return; }
-      // send targeted message to content script
-      chrome.tabs.sendMessage(t.id, { action: 'clarity_apply_font_size', size: Number(sizePx) }, (resp) => {
-        if (chrome.runtime.lastError) {
-          safeLog('applyFontSize sendMessage failed', chrome.runtime.lastError);
-          // Consider asking background to request host permission for this tab if needed
-          toast('Unable to apply font on this page. Allow ClarityRead to access the site.', 'error', 6000);
-          return;
-        }
-        safeLog('applyFontSize response', resp);
-        toast(`Font set to ${sizePx}px`, 'success', 900);
+    const sizeNum = Number(sizePx) || DEFAULTS.fontSize || 16;
+
+    // Centralized helper that tries send+inject and returns normalized bg response
+    const firstTry = await sendMessageToActiveTabWithInject({ action: 'clarity_apply_font_size', size: sizeNum });
+    const normalized = normalizeBgResponse(firstTry);
+
+    if (normalized && normalized.ok) {
+      toast(`Font set to ${sizeNum}px`, 'success', 900);
+      return normalized;
+    }
+
+    // If we got no-host-permission, request via background then retry
+    if (normalized && normalized.error === 'no-host-permission' && normalized.permissionPattern) {
+      toast('Requesting permission to modify this site — approve the prompt in the browser.', 'info', 6000);
+
+      // Ask background to request permission
+      const tab = await new Promise(resolve => chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => resolve(tabs && tabs[0])));
+      const url = tab && tab.url ? tab.url : null;
+      if (!url) { toast('Cannot determine tab URL to request permission.', 'error', 5000); return { ok:false, error:'no-url' }; }
+
+      const permResp = await new Promise(resolve => {
+        chrome.runtime.sendMessage({ __internal: 'requestHostPermission', url }, (resp) => {
+          if (chrome.runtime.lastError) return resolve({ ok: false, error: 'runtime-lastError', detail: chrome.runtime.lastError.message });
+          resolve(resp || { ok: false });
+        });
       });
-    });
-  } catch (e) { safeLog('applyFontSizeToActiveTab error', e); }
+
+      if (!permResp || !permResp.ok) {
+        toast('Permission not granted. Cannot apply font size to this site.', 'error', 6000);
+        return { ok: false, error: 'permission-denied', detail: permResp && permResp.detail };
+      }
+
+      // Permission granted - retry
+      const retry = await sendMessageToActiveTabWithInject({ action: 'clarity_apply_font_size', size: sizeNum });
+      const r2 = normalizeBgResponse(retry);
+      if (r2 && r2.ok) toast(`Font set to ${sizeNum}px`, 'success', 900);
+      else toast('Failed to apply font even after permission.', 'error', 6000);
+      return r2 || { ok: false };
+    }
+
+    // generic failure
+    toast('Unable to apply font on this page. Allow ClarityRead to access the site.', 'error', 6000);
+    return normalized || { ok: false };
+  } catch (e) {
+    safeLog('applyFontSizeToActiveTab error', e);
+    toast('Failed to apply font (see console).', 'error', 6000);
+    return { ok: false, error: String(e) };
+  }
 }
+
+// Ask page whether overlay exists (content script should respond to 'clarity_query_overlay' with { ok:true, overlayActive: bool })
+
+
+
 
 // wire slider element (example)
 const fontSlider = document.getElementById('fontSizeSlider'); // change to your element id
@@ -881,6 +985,15 @@ function normalizeSelectionResponse(raw) {
         } else {
           if (options.showToast) toast('Settings applied.', 'success', 1800);
         }
+        // after successful applySettings response, also ensure overlay font updates immediately in case overlay is open
+try {
+  if (res && res.ok) {
+    // best-effort message to page to update overlay font-family/size instantly
+    // (content script will also respond to applySettings but this ensures overlay update even on edge cases)
+    sendMessageToActiveTabWithInject({ action: 'applySettings', dys: settings.dys, fontSize: settings.fontSize }).catch(() => {});
+  }
+} catch (e) { safeLog('overlay font immediate update failed', e); }
+
         return res;
       })
       .catch(err => { safeLog('applySettings err', err); if (options.showToast) toast('Failed to apply settings (see console).', 'error'); return { ok:false, error: String(err) }; });
@@ -1740,11 +1853,28 @@ async function summarizeCurrentPageOrSelection_AiAware() {
     let summary = '(no summary produced)';
     try {
       // additional pre-scrub to drop author lines / bylines that confuse scoring
-      try {
-        text = text.replace(/^\s*(By|Author:)\s+[A-Z][^\n]{0,120}$/gim, ' ');
-        text = text.replace(/\b(last edited|last updated|published on|©)\b[^\n]*/gi, ' ');
-        text = text.replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, ' ');
-      } catch (e) { safeLog('prescrub threw', e); }
+ // stronger pre-scrub to drop author lines, contact/footer, and nav artifacts that confuse scoring
+try {
+  // common byline patterns
+  text = text.replace(/^\s*(By|Author:|Written by)\s+[^\n]{0,200}$/gim, ' ');
+  // dates / last updated / published on / copyright lines
+  text = text.replace(/\b(last edited|last updated|published on|©|copyright|all rights reserved)\b[^\n]*/gi, ' ');
+  // remove obvious contact / subscribe / follow / related links lines
+  text = text.replace(/^\s*(Contact|Contact us|Subscribe|Follow (us|@)|Related articles|Read more|Advert(isement)?|Sponsored)\b[^\n]*$/gim, ' ');
+  // remove email addresses, phone numbers and explicit URLs
+  text = text.replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, ' ');
+  text = text.replace(/\b(?:https?:\/\/|www\.)\S+\b/gi, ' ');
+  text = text.replace(/(?:\+?\d[\d() .-]{7,}\d)/g, ' ');
+  // drop lines that are mostly punctuation/links/short nav fragments
+  text = text.split(/\n/).filter(line => {
+    const t = line.trim();
+    if (!t) return false;
+    if (t.length < 20 && /^(Read|More|Share|Related|Jump|Contents|Table of contents|Menu|Skip to)/i.test(t)) return false;
+    if (/^(\/|#|\-|\*|:){2,}/.test(t)) return false;
+    return true;
+  }).join('\n');
+} catch (e) { safeLog('prescrub threw', e); }
+
 
       if (typeof summarizeTextLocal === 'function') {
         // pass both adaptiveMax and user pref so summarizer scales & respects length preference
