@@ -16,6 +16,9 @@
 
     const REFLOW_STYLE_ID = 'clarityreflow-style';
     let _prevBodyFontSize = null;
+    let _prevMainNode = null;
+    let _prevMainNodeFontSize = null;
+    let _prevMainNodeLineHeight = null;
 
     function ensureReflowStyle() {
       try {
@@ -23,6 +26,7 @@
         const st = document.createElement('style');
         st.id = REFLOW_STYLE_ID;
         st.type = 'text/css';
+
         /* IMPORTANT: limit scope to article-like containers only.
            Avoid applying to the entire page to prevent breaking complex layouts. */
         st.textContent = `
@@ -39,6 +43,8 @@ html.clarityreflow-active .mw-parser-output,
 html.clarityreflow-active #content,
 html.clarityreflow-active #primary,
 html.clarityreflow-active .page-content,
+html.clarityreflow-active .article-body,
+html.clarityreflow-active .article-content,
 html.readeasy-reflow article,
 html.readeasy-reflow main,
 html.readeasy-reflow [role="main"],
@@ -48,7 +54,9 @@ html.readeasy-reflow .entry-content,
 html.readeasy-reflow .mw-parser-output,
 html.readeasy-reflow #content,
 html.readeasy-reflow #primary,
-html.readeasy-reflow .page-content {
+html.readeasy-reflow .page-content,
+html.readeasy-reflow .article-body,
+html.readeasy-reflow .article-content {
   max-width: 760px !important;
   margin: 20px auto !important;
   line-height: var(--clarity-line-height) !important;
@@ -68,7 +76,9 @@ html.readeasy-reflow article p,
 html.readeasy-reflow article ul,
 html.readeasy-reflow article ol,
 html.clarityreflow-active .entry-content p,
-html.readeasy-reflow .entry-content p {
+html.readeasy-reflow .entry-content p,
+html.clarityreflow-active .article-body p,
+html.readeasy-reflow .article-body p {
   font-size: inherit !important;
   line-height: inherit !important;
   margin-bottom: 1.2em !important;
@@ -92,6 +102,8 @@ html.readeasy-reflow h3 {
       } catch (e) { /* ignore */ }
     }
 
+    // Apply font-size to article containers. If no known container matches,
+    // apply to the "main node" found by getMainNode() inline (safe fallback).
     function applyClarityFontSize(px) {
       try {
         ensureReflowStyle();
@@ -105,7 +117,7 @@ html.readeasy-reflow h3 {
           }
         } catch (e) { _prevBodyFontSize = null; }
 
-        // set CSS variables (include unit)
+        // set CSS variables (include unit) — preferred approach
         document.documentElement.style.setProperty('--clarity-font-size', v + 'px');
         document.documentElement.style.setProperty('--readeasy-font-size', v + 'px');
 
@@ -118,8 +130,39 @@ html.readeasy-reflow h3 {
         document.documentElement.classList.add('clarityread-reflow');
         document.documentElement.classList.add('readeasy-reflow');
 
-        // set body inline for sites that read inline font-size
+        // set body inline for sites that read inline font-size (best-effort)
         try { document.body.style.fontSize = v + 'px'; } catch(e) {}
+
+        // If the page's article container doesn't pick up our rules due to very specific site CSS,
+        // also apply a safe inline font-size to the 'mainNode' (restorable on remove).
+        try {
+          const main = (typeof getMainNode === 'function') ? getMainNode() : null;
+          if (main && main instanceof Element) {
+            // Save previous inline styles for this node (one-time)
+            if (!_prevMainNode) {
+              _prevMainNode = main;
+              _prevMainNodeFontSize = main.style && main.style.fontSize ? main.style.fontSize : null;
+              _prevMainNodeLineHeight = main.style && main.style.lineHeight ? main.style.lineHeight : null;
+            } else if (_prevMainNode !== main) {
+              // if main node changed, try to restore previous then re-capture
+              try {
+                if (_prevMainNode && typeof _prevMainNode === 'object') {
+                  if (_prevMainNodeFontSize) _prevMainNode.style.fontSize = _prevMainNodeFontSize;
+                  else _prevMainNode.style.removeProperty('font-size');
+                  if (_prevMainNodeLineHeight) _prevMainNode.style.lineHeight = _prevMainNodeLineHeight;
+                  else _prevMainNode.style.removeProperty('line-height');
+                }
+              } catch(e) {}
+              _prevMainNode = main;
+              _prevMainNodeFontSize = main.style && main.style.fontSize ? main.style.fontSize : null;
+              _prevMainNodeLineHeight = main.style && main.style.lineHeight ? main.style.lineHeight : null;
+            }
+            try {
+              main.style.fontSize = v + 'px';
+              main.style.lineHeight = lh;
+            } catch(e){}
+          }
+        } catch(e){}
 
         // update overlay font if present
         try {
@@ -155,13 +198,38 @@ html.readeasy-reflow h3 {
           }
         } catch(e){}
 
+        // restore mainNode inline styles if we changed them
+        try {
+          if (_prevMainNode && (_prevMainNode instanceof Element)) {
+            try {
+              if (_prevMainNodeFontSize) _prevMainNode.style.fontSize = _prevMainNodeFontSize;
+              else _prevMainNode.style.removeProperty('font-size');
+              if (_prevMainNodeLineHeight) _prevMainNode.style.lineHeight = _prevMainNodeLineHeight;
+              else _prevMainNode.style.removeProperty('line-height');
+            } catch(e){}
+          } else {
+            // ensure we at least remove any remaining inline font-size from the main element that may have been created
+            try {
+              const main = (typeof getMainNode === 'function') ? getMainNode() : null;
+              if (main && main instanceof Element) {
+                main.style.removeProperty('font-size');
+                main.style.removeProperty('line-height');
+              }
+            } catch(e){}
+          }
+        } catch(e){}
+
         // overlay revert
         try {
           const overlay = document.getElementById('readeasy-reader-overlay') || document.getElementById('clarityread-overlay');
           if (overlay) { overlay.style.fontSize = ''; overlay.style.fontFamily = ''; }
         } catch(e){}
 
-        _prevBodyFontSize = null;
+        // clear saved main overrides
+        _prevMainNode = null;
+        _prevMainNodeFontSize = null;
+        _prevMainNodeLineHeight = null;
+
         return { ok: true };
       } catch (e) {
         return { ok: false, error: String(e) };
@@ -197,7 +265,7 @@ html.readeasy-reflow h3 {
     ensureReflowStyle();
   })();
 
-
+ 
 // --- State
   let currentUtterance = null;
   let readTimer = null;

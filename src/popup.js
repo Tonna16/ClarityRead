@@ -412,54 +412,30 @@ async function applyFontSizeToActiveTab(sizePx) {
 
 // Ask page whether overlay exists (content script should respond to 'clarity_query_overlay' with { ok:true, overlayActive: bool })
 
-
-
-
-// Debounced slider wiring (paste into popup.js where you handle font slider)
-const fontSlider = document.getElementById('fontSizeSlider');
-let _fontApplyPending = null;
-let _fontDebounceTimer = null;
-const FONT_DEBOUNCE_MS = 180; // small delay to batch rapid slider input
-
-async function _applyFontSizeDebounced(size) {
-  // cancel prior debounce timer
-  if (_fontDebounceTimer) clearTimeout(_fontDebounceTimer);
-
-  return new Promise((resolve) => {
-    _fontDebounceTimer = setTimeout(async () => {
-      try {
-        // If there's a pending in-flight apply, await it (prevents racing with opLock)
-        if (_fontApplyPending) {
-          try { await _fontApplyPending; } catch(_) {/* ignore */}
-        }
-
-        // Issue the apply (this calls your existing helper that uses sendMessageToActiveTabWithInject)
-        _fontApplyPending = applyFontSizeToActiveTab(size);
-        const res = await _fontApplyPending;
-        _fontApplyPending = null;
-        resolve(res);
-      } catch (e) {
-        _fontApplyPending = null;
-        resolve({ ok: false, error: String(e) });
-      }
-    }, FONT_DEBOUNCE_MS);
-  });
+// In popup: add debounce helper near top-level code
+function debounce(fn, wait) {
+  let t = null;
+  return function (...args) {
+    clearTimeout(t);
+    t = setTimeout(() => fn.apply(this, args), wait);
+  };
 }
 
+// When wiring the slider, debounce the apply call (200ms is a good start)
+const fontSlider = document.getElementById('fontSizeSlider');
 if (fontSlider) {
+  const debouncedApply = debounce((v) => applyFontSizeToActiveTab(v), 200);
   fontSlider.addEventListener('input', (ev) => {
     const v = ev.target.value;
-    _applyFontSizeDebounced(Number(v)).then((r) => {
-      // optionally update UI/value readout here
-    });
+    debouncedApply(v);
   });
+  // keep immediate apply for change if you prefer final commit
   fontSlider.addEventListener('change', (ev) => {
     const v = ev.target.value;
-    _applyFontSizeDebounced(Number(v)).then((r) => {
-      // final update on release
-    });
+    applyFontSizeToActiveTab(v);
   });
 }
+
 
 
 
