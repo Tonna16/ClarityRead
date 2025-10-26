@@ -1717,16 +1717,32 @@ async function readSummaryPref() {
 }
 
 // adaptive sentence count (pref + length-based mild scaling)
+function summarizerConfigForPref(pref = 'normal') {
+  // returns config adjustments per preference
+  // concise: fewer sentences, higher title weight, higher lambda (favor score over novelty)
+  // normal: balanced
+  // detailed: more sentences, lower lambda (favor novelty/diversity), allow shorter final sentences
+  const cfg = {
+    concise: { baseSentences: 2, lambda: 0.75, titleBoost: 1.6, minSentenceLen: 22, idfBoost: 1.0 },
+    normal:  { baseSentences: 4, lambda: 0.62, titleBoost: 1.3, minSentenceLen: 28, idfBoost: 1.2 },
+    detailed:{ baseSentences: 7, lambda: 0.48, titleBoost: 1.1, minSentenceLen: 14, idfBoost: 1.5 }
+  };
+  return cfg[pref] || cfg.normal;
+}
+
 function computeAdaptiveMax(text = '', pref = 'normal') {
   const words = (text || '').trim().split(/\s+/).filter(Boolean).length || 0;
-  // base by pref
-  let base = (pref === 'concise') ? 2 : (pref === 'detailed') ? 6 : 4;
-  // scale by words: +1 per ~1200 words
-  if (words > 1200) base += Math.floor((words - 1200) / 1200) + 1;
-  // clamp to a sensible maximum (allow longer docs more room)
-  const cap = Math.min(20, Math.max(6, Math.round(base)));
-  return Math.max(1, Math.min(cap, Math.round(base)));
+  const cfg = summarizerConfigForPref(pref);
+  // base scaled by words; small docs still get at least baseSentences
+  let base = cfg.baseSentences;
+  // add ~1 sentence per 350-700 words depending on pref (detailed gets more)
+  const per = (pref === 'detailed') ? 350 : (pref === 'concise' ? 700 : 500);
+  base += Math.floor(words / per);
+  // clamp to 1..25 but allow larger docs to breathe
+  const cap = Math.min(25, Math.max(base, Math.round(base)));
+  return Math.max(1, cap);
 }
+
 
 
 // deterministic progress toast helpers (if you already have similar ones, this will be compatible)
