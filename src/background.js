@@ -143,49 +143,43 @@
                   // Attempt to inject the content script (manifest declared)
                   try {
                     safeLog('attempting scripting.executeScript', { tabId, jsFile });
-                    chrome.scripting.executeScript({ target: { tabId }, files: [jsFile] }, (injectionResults) => {
-                      if (chrome.runtime.lastError) {
-                        const lower = (chrome.runtime.lastError.message || '').toLowerCase();
-                        safeWarn('scripting.executeScript failed', chrome.runtime.lastError.message);
+                    // Attempt to inject the content script into all frames (same-origin only)
+chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: [jsFile] }, (injectionResults) => {
+  if (chrome.runtime.lastError) {
+    const lower = (chrome.runtime.lastError.message || '').toLowerCase();
+    // permission problems or cross-origin frame
+    if (lower.includes('must request permission') || lower.includes('cannot access contents of the page') || lower.includes('has no access to')) {
+      return finish({ ok: false, error: 'no-host-permission', detail: chrome.runtime.lastError.message, permissionPattern });
+    }
+    // If the page is a known viewer or hosted editor return friendlier reason
+    if (tab.url && /sharepoint\.com|office\.com|microsoftonline\.com|docs\.google\.com/.test(tab.url)) {
+      return finish({ ok: false, error: 'viewer-or-iframe', detail: 'Page may be a hosted document viewer or cross-origin iframe' , permissionPattern});
+    }
+    return finish({ ok: false, error: 'injection-failed', detail: chrome.runtime.lastError.message });
+  }
 
-                        // host permission required (double-check)
-                        if (lower.includes('must request permission') || lower.includes('cannot access contents of the page') || lower.includes('has no access to')) {
-                          // surface permission pattern so UI can request permission
-                          return finish({ ok: false, error: 'no-host-permission', detail: chrome.runtime.lastError.message, permissionPattern });
-                        }
+  // try insert CSS into the same frames
+  chrome.scripting.insertCSS({ target: { tabId, allFrames: true }, files: [cssFile] }, (cssRes) => {
+    const cssErrorMsg = chrome.runtime.lastError ? String(chrome.runtime.lastError.message || chrome.runtime.lastError) : null;
+    // Now attempt the message to the top-level content script; it should route as needed
+    chrome.tabs.sendMessage(tabId, message, (resp2) => {
+      if (chrome.runtime.lastError) {
+        const msg2 = (chrome.runtime.lastError.message || '').toLowerCase();
+        if (msg2.includes('must request permission') || msg2.includes('cannot access contents of the page') || msg2.includes('has no access to')) {
+          return finish({ ok: false, error: 'no-host-permission', detail: chrome.runtime.lastError.message, permissionPattern });
+        }
+        // If it's a frames/viewer case, let the caller know
+        if (msg2.includes('receiving end does not exist') || msg2.includes('no receiver')) {
+          return finish({ ok: false, error: 'no-receiver-after-inject', detail: chrome.runtime.lastError.message, cssError: cssErrorMsg });
+        }
+        return finish({ ok: false, error: 'no-receiver-after-inject', detail: chrome.runtime.lastError.message });
+      }
+      const unwrapped2 = unwrapResponseMaybe(resp2);
+      return finish({ ok: true, response: unwrapped2, cssError: cssErrorMsg || null });
+    });
+  });
+});
 
-                        return finish({ ok: false, error: 'injection-failed', detail: chrome.runtime.lastError.message });
-                      }
-
-                      safeLog('executeScript injectionResults', Array.isArray(injectionResults) ? injectionResults.length : typeof injectionResults);
-
-                      // best-effort CSS insertion (non-fatal) — capture error message to surface alongside success
-                      chrome.scripting.insertCSS({ target: { tabId }, files: [cssFile] }, (cssRes) => {
-                        if (chrome.runtime.lastError) {
-                          cssErrorMsg = String(chrome.runtime.lastError.message || chrome.runtime.lastError);
-                          safeWarn('insertCSS failed', cssErrorMsg);
-                        } else {
-                          safeLog('insertCSS succeeded');
-                        }
-
-                        // Now attempt to message again (content script should be present now)
-                        safeLog('attempting sendMessage after injection', { tabId, action: message && message.action });
-                        chrome.tabs.sendMessage(tabId, message, (resp2) => {
-                          if (chrome.runtime.lastError) {
-                            const msg2 = (chrome.runtime.lastError.message || '').toLowerCase();
-                            safeWarn('sendMessage after inject failed', chrome.runtime.lastError.message);
-                            if (msg2.includes('must request permission') || msg2.includes('cannot access contents of the page') || msg2.includes('has no access to')) {
-                              return finish({ ok: false, error: 'no-host-permission', detail: chrome.runtime.lastError.message, permissionPattern });
-                            }
-                            return finish({ ok: false, error: 'no-receiver-after-inject', detail: chrome.runtime.lastError.message });
-                          }
-                          safeLog('sendMessage after inject succeeded', { tabId, action: message && message.action, resp2, cssError: !!cssErrorMsg });
-                          // unwrap nested response if present and include cssError metadata
-                          const unwrapped2 = unwrapResponseMaybe(resp2);
-                          return finish({ ok: true, response: unwrapped2, cssError: cssErrorMsg || null });
-                        });
-                      });
-                    });
                   } catch (ex) {
                     safeWarn('scripting.executeScript threw', ex);
                     return finish({ ok: false, error: 'executeScript-exception', detail: String(ex) });

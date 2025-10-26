@@ -1262,6 +1262,69 @@ html.readeasy-reflow h3 {
     safeLog('toggleFocusMode: opened overlay');
     return { ok: true, overlayActive: true };
   }
+  // --- Contrast / Invert runtime style injection (more resilient)
+const CLARITY_CONTRAST_STYLE_ID = 'clarity-contrast-style';
+const CLARITY_INVERT_STYLE_ID = 'clarity-invert-style';
+
+function ensureContrastStyle() {
+  if (document.getElementById(CLARITY_CONTRAST_STYLE_ID)) return;
+  const st = document.createElement('style');
+  st.id = CLARITY_CONTRAST_STYLE_ID;
+  st.type = 'text/css';
+
+  // ultra-specific selectors with !important to beat many site rules.
+  // We avoid using the universal star where possible but include fallback rules.
+  st.textContent = `
+html.readeasy-contrast, html.readeasy-contrast body,
+html.clarityread-contrast, html.clarityread-contrast body {
+  background-color: #000 !important;
+  color: #fff !important;
+}
+html.readeasy-contrast *:not(script):not(style):not(iframe),
+html.clarityread-contrast *:not(script):not(style):not(iframe) {
+  background: transparent !important;
+  color: #fff !important;
+  border-color: #666 !important;
+}
+html.readeasy-contrast a, html.clarityread-contrast a {
+  color: #00ffff !important;
+  text-decoration: underline !important;
+}
+html.readeasy-contrast img, html.clarityread-contrast img {
+  filter: grayscale(50%) contrast(120%) brightness(1.05) !important;
+  opacity: 0.95 !important;
+  border: 1px solid #444 !important;
+}
+`;
+  try { (document.head || document.documentElement).appendChild(st); } catch (e) { document.documentElement.appendChild(st); }
+}
+
+function removeContrastStyle() {
+  try { const el = document.getElementById(CLARITY_CONTRAST_STYLE_ID); if (el) el.remove(); } catch (e) {}
+}
+
+function ensureInvertStyle() {
+  if (document.getElementById(CLARITY_INVERT_STYLE_ID)) return;
+  const st = document.createElement('style');
+  st.id = CLARITY_INVERT_STYLE_ID;
+  st.type = 'text/css';
+  st.textContent = `
+html.readeasy-invert, html.readeasy-invert body,
+html.clarityread-invert, html.clarityread-invert body {
+  filter: invert(100%) hue-rotate(180deg) !important;
+}
+html.readeasy-invert img, html.readeasy-invert video,
+html.clarityread-invert img, html.clarityread-invert video {
+  filter: invert(100%) hue-rotate(180deg) !important;
+}
+`;
+  try { (document.head || document.documentElement).appendChild(st); } catch (e) { document.documentElement.appendChild(st); }
+}
+
+function removeInvertStyle() {
+  try { const el = document.getElementById(CLARITY_INVERT_STYLE_ID); if (el) el.remove(); } catch (e) {}
+}
+
 
   // --- Message handler
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -1283,6 +1346,25 @@ html.readeasy-reflow h3 {
                 try { removeDysFontInjected(); } catch(e){}
               }
             }
+
+            // Contrast toggle
+if (typeof msg.contrast !== 'undefined') {
+  if (msg.contrast) {
+    try { ensureContrastStyle(); document.documentElement.classList.add('readeasy-contrast'); document.documentElement.classList.add('clarityread-contrast'); } catch(e){}
+  } else {
+    try { document.documentElement.classList.remove('readeasy-contrast'); document.documentElement.classList.remove('clarityread-contrast'); removeContrastStyle(); } catch(e){}
+  }
+}
+
+// Invert toggle
+if (typeof msg.invert !== 'undefined') {
+  if (msg.invert) {
+    try { ensureInvertStyle(); document.documentElement.classList.add('readeasy-invert'); document.documentElement.classList.add('clarityread-invert'); } catch(e){}
+  } else {
+    try { document.documentElement.classList.remove('readeasy-invert'); document.documentElement.classList.remove('clarityread-invert'); removeInvertStyle(); } catch(e){}
+  }
+}
+
 
             // Apply/Remove reflow class (document-level marker kept for compatibility)
             if (typeof msg.reflow !== 'undefined') {

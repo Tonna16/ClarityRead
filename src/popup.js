@@ -2387,7 +2387,7 @@ try { renderSavedList(); } catch (e) { safeLog('initial renderSavedList failed',
       const res = normalizeBgResponse(resRaw);
       if (res && res.ok === false) {
         if (res.error === 'no-host-permission') {
-          toast('Extension lacks permission to access this site. Open the page and allow access.', 'error', 7000);
+          toast('ClarityRead lacks permission to access this site. Open the page and allow access.', 'error', 7000);
           saveSelectionBtn.disabled = false;
           return;
         }
