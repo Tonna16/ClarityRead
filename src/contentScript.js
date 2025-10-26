@@ -15,109 +15,184 @@
     if (window.__clarity_reflow_installed) return;
     window.__clarity_reflow_installed = true;
 
-    const REFLOW_STYLE_ID = 'clarityreflow-style';
+    const REFLOW_SCOPED_STYLE_ID = 'clarityreflow-scoped-style';
+    const REFLOW_STYLE_ID = 'clarityreflow-style'; // kept for legacy but will be non-invasive
+    const REFLOW_ATTR = 'data-clarity-reflow-target';
 
-    function ensureReflowStyle() {
+    function ensureLegacyReflowStyle() {
+      // Keep a small legacy style that doesn't aggressively apply to all elements.
+      // We keep it minimal and non-invasive; main reflow is handled by scoped style below.
       try {
         if (document.getElementById(REFLOW_STYLE_ID)) return;
         const st = document.createElement('style');
         st.id = REFLOW_STYLE_ID;
         st.type = 'text/css';
-        // Accept both historical names so popup/background and helper are compatible
         st.textContent = `
-:root { --clarity-font-size: 20px; --clarity-line-height: 1.5; --readeasy-font-size: 20px; }
-
-/* scope activation via html.clarityreflow-active OR html.readeasy-reflow */
-html.clarityreflow-active,
-html.clarityreflow-active body,
-html.readeasy-reflow,
-html.readeasy-reflow body,
-html.clarityreflow-active * ,
-html.readeasy-reflow * {
-  font-size: var(--clarity-font-size, var(--readeasy-font-size)) !important;
-  line-height: var(--clarity-line-height) !important;
-}
-
-/* apply to many common article containers */
-html.clarityreflow-active article,
-html.clarityreflow-active main,
-html.readeasy-reflow article,
-html.readeasy-reflow main,
-html.clarityreflow-active .article,
-html.readeasy-reflow .article,
-html.clarityreflow-active .post,
-html.readeasy-reflow .post,
-html.clarityreflow-active .entry-content,
-html.readeasy-reflow .entry-content,
-html.clarityreflow-active .mw-parser-output,
-html.readeasy-reflow .mw-parser-output,
-html.clarityreflow-active #content,
-html.readeasy-reflow #content,
-html.clarityreflow-active #primary,
-html.readeasy-reflow #primary,
-html.clarityreflow-active .page-content,
-html.readeasy-reflow .page-content {
-  font-size: var(--clarity-font-size, var(--readeasy-font-size)) !important;
-  line-height: var(--clarity-line-height) !important;
-}
-
-/* Ensure paragraphs and lists inherit */
-html.clarityreflow-active p,
-html.readeasy-reflow p,
-html.clarityreflow-active li,
-html.readeasy-reflow li,
-html.clarityreflow-active dd,
-html.readeasy-reflow dd,
-html.clarityreflow-active dt,
-html.readeasy-reflow dt,
-html.clarityreflow-active blockquote,
-html.readeasy-reflow blockquote {
-  font-size: inherit !important;
-  line-height: inherit !important;
-}
-
-/* headings scale up */
-html.clarityreflow-active h1,
-html.readeasy-reflow h1,
-html.clarityreflow-active h2,
-html.readeasy-reflow h2,
-html.clarityreflow-active h3,
-html.readeasy-reflow h3,
-html.clarityreflow-active h4,
-html.readeasy-reflow h4,
-html.clarityreflow-active h5,
-html.readeasy-reflow h5,
-html.clarityreflow-active h6,
-html.readeasy-reflow h6 {
-  font-size: calc(var(--clarity-font-size, var(--readeasy-font-size)) * 1.2) !important;
-  line-height: 1.2 !important;
+/* Minimal legacy rules (non-invasive). Real reflow is applied via scoped style. */
+html.readeasy-reflow, html.clarityread-reflow, html.clarityreflow-active {
+  scroll-behavior: smooth !important;
 }
 `;
         try { (document.head || document.documentElement).appendChild(st); } catch(e) { document.documentElement.appendChild(st); }
       } catch (e) { /* ignore */ }
     }
 
+    // Build or update a scoped style that targets only the element with REFLOW_ATTR
+    function updateScopedReflowStyle(targetFontPx = 20, lineHeight = 1.8) {
+      try {
+        // ensure we have the style node
+        let st = document.getElementById(REFLOW_SCOPED_STYLE_ID);
+        if (!st) {
+          st = document.createElement('style');
+          st.id = REFLOW_SCOPED_STYLE_ID;
+          st.type = 'text/css';
+          try { (document.head || document.documentElement).appendChild(st); } catch(e) { document.documentElement.appendChild(st); }
+        }
+        // Scoped selectors use the attribute on the chosen main node so only that subtree is affected.
+        const fontVar = `var(--clarity-font-size, ${targetFontPx}px)`;
+        const text = `
+/* Scoped reflow rules applied only to node with [${REFLOW_ATTR}] */
+[${REFLOW_ATTR}] {
+  --clarity-font-size: ${targetFontPx}px !important;
+  --clarity-line-height: ${lineHeight} !important;
+  max-width: 760px !important;
+  margin: 20px auto !important;
+  padding: 0 24px !important;
+  box-sizing: border-box !important;
+  word-break: break-word !important;
+  overflow-wrap: break-word !important;
+  line-height: var(--clarity-line-height) !important;
+  font-size: var(--clarity-font-size) !important;
+}
+
+/* Ensure common content children inherit */
+[${REFLOW_ATTR}] p,
+[${REFLOW_ATTR}] li,
+[${REFLOW_ATTR}] dd,
+[${REFLOW_ATTR}] dt,
+[${REFLOW_ATTR}] blockquote {
+  font-size: inherit !important;
+  line-height: inherit !important;
+  margin-bottom: 1.2em !important;
+}
+
+/* Headings scale relative to the main font variable */
+[${REFLOW_ATTR}] h1,
+[${REFLOW_ATTR}] h2,
+[${REFLOW_ATTR}] h3,
+[${REFLOW_ATTR}] h4,
+[${REFLOW_ATTR}] h5,
+[${REFLOW_ATTR}] h6 {
+  font-size: calc(var(--clarity-font-size, ${targetFontPx}px) * 1.2) !important;
+  line-height: 1.2 !important;
+}
+
+/* Size presets if the host or UI adds classes on the target */
+[${REFLOW_ATTR}].readeasy-size-small { --clarity-font-size: 18px !important; }
+[${REFLOW_ATTR}].readeasy-size-medium { --clarity-font-size: 20px !important; }
+[${REFLOW_ATTR}].readeasy-size-large { --clarity-font-size: 24px !important; }
+
+/* High contrast limited to the scoped node too */
+[${REFLOW_ATTR}].readeasy-contrast,
+[${REFLOW_ATTR}].clarityread-contrast {
+  background: #000 !important;
+  color: #fff !important;
+}
+
+/* Overlay highlight compatibility for when reader overlay is inside the scoped node */
+[${REFLOW_ATTR}] .readeasy-highlight,
+[${REFLOW_ATTR}] .clarityread-highlight {
+  background: linear-gradient(135deg, #fef08a, #facc15) !important;
+  color: #000 !important;
+  padding: 0 0.08em !important;
+  border-radius: 3px !important;
+}
+`;
+        st.textContent = text;
+        return true;
+      } catch (e) {
+        console.log('[ClarityRead] updateScopedReflowStyle error', e);
+        return false;
+      }
+    }
+
+    function removeScopedReflowStyle() {
+      try {
+        const st = document.getElementById(REFLOW_SCOPED_STYLE_ID);
+        if (st) st.remove();
+      } catch(e){}
+    }
+
     function applyClarityFontSize(px) {
       try {
-        ensureReflowStyle();
+        ensureLegacyReflowStyle();
+
         let v = Number(px) || 20;
         v = Math.max(10, Math.min(48, Math.round(v))); // clamp
-        // set both variable names to remain backwards compatible
-        document.documentElement.style.setProperty('--clarity-font-size', v + 'px');
-        document.documentElement.style.setProperty('--readeasy-font-size', v + 'px');
-        // set supportive line height
+
+        // compute a supportive line height
         const lh = (1.25 + Math.min(0.6, (v - 14) / 80)).toFixed(2);
-        document.documentElement.style.setProperty('--clarity-line-height', lh);
-        // set both helper classes so either toggle name works
-        document.documentElement.classList.add('clarityreflow-active');
-        document.documentElement.classList.add('readeasy-reflow');
-        // try also setting body inline for sites reading that directly
-        try { document.body.style.fontSize = v + 'px'; } catch(e) {}
-        // if overlay present, update overlay font size to match
+
+        // Find main node to scope reflow to
+        const mainNode = (function() {
+          try {
+            // Prefer same logic as getMainNode() used elsewhere so behavior consistent
+            const prefer = ['article', 'main', '[role="main"]', '#content', '#primary', '.post', '.article', '#mw-content-text'];
+            for (const s of prefer) {
+              const el = document.querySelector(s);
+              if (el && el.innerText && el.innerText.length > 200 && isVisible(el)) return el;
+            }
+            const candidates = Array.from(document.querySelectorAll('article, main, section, div, p'))
+              .filter(el => el && el.innerText && el.innerText.trim().length > 200 && isVisible(el))
+              .map(el => ({ el, len: (el.innerText || '').trim().length }));
+            if (candidates.length) {
+              candidates.sort((a,b) => b.len - a.len);
+              return candidates[0].el;
+            }
+            return document.body && document.body.innerText && document.body.innerText.length > 200 ? document.body : document.documentElement;
+          } catch (e) { return document.documentElement; }
+        })();
+
+        // add compatibility classes on documentElement for external CSS that expects them
         try {
-          const overlay = document.getElementById('readeasy-reader-overlay');
-          if (overlay) overlay.style.fontSize = v + 'px';
+          document.documentElement.classList.add('clarityreflow-active');
+          document.documentElement.classList.add('clarityread-reflow');
+          document.documentElement.classList.add('readeasy-reflow');
         } catch(e){}
+
+        // Instead of writing to body.style (CSP risk), add attribute to chosen main node and update scoped style
+        try {
+          if (mainNode && mainNode.setAttribute) {
+            mainNode.setAttribute(REFLOW_ATTR, '1');
+            // also store a marker to allow clean removal
+            mainNode.setAttribute('data-clarity-reflow-applied-ts', String(Date.now()));
+            // update a scoped style that targets this attribute
+            const ok = updateScopedReflowStyle(v, lh);
+            if (!ok) {
+              // fallback: still set CSS variables on documentElement (safe)
+              document.documentElement.style.setProperty('--clarity-font-size', v + 'px');
+              document.documentElement.style.setProperty('--clarity-line-height', lh);
+              document.documentElement.style.setProperty('--readeasy-font-size', v + 'px');
+            } else {
+              // ensure variables on documentElement too so other CSS that references them works
+              try {
+                document.documentElement.style.setProperty('--clarity-font-size', v + 'px');
+                document.documentElement.style.setProperty('--clarity-line-height', lh);
+                document.documentElement.style.setProperty('--readeasy-font-size', v + 'px');
+              } catch(e){}
+            }
+          } else {
+            // fallback: set variables on documentElement only
+            document.documentElement.style.setProperty('--clarity-font-size', v + 'px');
+            document.documentElement.style.setProperty('--clarity-line-height', lh);
+            document.documentElement.style.setProperty('--readeasy-font-size', v + 'px');
+          }
+        } catch (e) {
+          // If any write fails due to CSP, return the failure for caller to display toast
+          console.log('[ClarityRead] applyClarityFontSize write error', e);
+          return { ok: false, error: String(e) };
+        }
+
         return { ok: true, size: v };
       } catch (e) {
         return { ok: false, error: String(e) };
@@ -126,18 +201,37 @@ html.readeasy-reflow h6 {
 
     function removeClarityReflow() {
       try {
-        // remove both helper classes and variables
-        document.documentElement.classList.remove('clarityreflow-active');
-        document.documentElement.classList.remove('readeasy-reflow');
-        document.documentElement.style.removeProperty('--clarity-font-size');
-        document.documentElement.style.removeProperty('--readeasy-font-size');
-        document.documentElement.style.removeProperty('--clarity-line-height');
-        try { document.body.style.removeProperty('font-size'); } catch(e) {}
-        // overlay revert
+        // remove compatibility classes
         try {
-          const overlay = document.getElementById('readeasy-reader-overlay');
-          if (overlay) overlay.style.fontSize = '';
+          document.documentElement.classList.remove('clarityreflow-active');
+          document.documentElement.classList.remove('clarityread-reflow');
+          document.documentElement.classList.remove('readeasy-reflow');
         } catch(e){}
+
+        // remove CSS variables we set
+        try {
+          document.documentElement.style.removeProperty('--clarity-font-size');
+          document.documentElement.style.removeProperty('--readeasy-font-size');
+          document.documentElement.style.removeProperty('--clarity-line-height');
+        } catch(e){}
+
+        // Remove the attribute from any node that was marked
+        try {
+          const marked = document.querySelectorAll('[' + REFLOW_ATTR + ']');
+          if (marked && marked.length) {
+            marked.forEach(n => {
+              try {
+                n.removeAttribute(REFLOW_ATTR);
+                n.removeAttribute('data-clarity-reflow-applied-ts');
+                // also remove size-specific classes if we added any
+                n.classList.remove('readeasy-size-small','readeasy-size-medium','readeasy-size-large');
+              } catch(e){}
+            });
+          }
+        } catch(e){}
+
+        // Remove the scoped style
+        removeScopedReflowStyle();
         return { ok: true };
       } catch (e) {
         return { ok: false, error: String(e) };
@@ -170,8 +264,8 @@ html.readeasy-reflow h6 {
       return false;
     });
 
-    // ensure style exists early
-    ensureReflowStyle();
+    // ensure minimal legacy style exists early
+    ensureLegacyReflowStyle();
   })();
 
 
@@ -295,9 +389,10 @@ html.readeasy-reflow h6 {
         font-display: swap;
       }
 
-      html.readeasy-dyslexic, 
-      html.readeasy-dyslexic body, 
-      html.readeasy-dyslexic * {
+      /* only set font-family when the dyslexic class is present on the html element.
+         The contentScript toggles html.readeasy-dyslexic so this rule will apply then. */
+      html.readeasy-dyslexic, html.clarityread-dyslexic,
+      .readeasy-dyslexic, .clarityread-dyslexic {
         font-family: 'OpenDyslexic', system-ui, Arial, sans-serif !important;
       }
     `;
@@ -313,18 +408,22 @@ html.readeasy-reflow h6 {
     }
   }
 
-  function removeDysFontInjected() {
-    try {
-      const el = document.getElementById(DYS_STYLE_ID);
-      if (el) el.remove();
-    } catch(e){ safeLog('removeDysFontInjected error', e); }
-    try { document.documentElement.classList.remove('readeasy-dyslexic'); } catch(e){}
-    // ensure overlay returns to normal font
-    try {
-      const overlay = document.getElementById('readeasy-reader-overlay');
-      if (overlay) overlay.style.fontFamily = '';
+  function removeDysFontInjected() { 
+    try { 
+      const el = document.getElementById(DYS_STYLE_ID); 
+      if (el) el.remove(); 
+    } catch(e){ safeLog('removeDysFontInjected error', e); } 
+
+    try { 
+      document.documentElement.classList.remove('readeasy-dyslexic'); 
+      document.documentElement.classList.remove('clarityread-dyslexic'); // compatibility 
+    } catch(e){} 
+
+    try { 
+      const overlay = document.getElementById('readeasy-reader-overlay') || document.getElementById('clarityread-overlay'); 
+      if (overlay) { overlay.style.fontFamily = ''; }
     } catch(e){}
-  }
+  } 
 
   // --- Heuristics: choose main content node
   function isVisible(el) {
@@ -513,7 +612,7 @@ html.readeasy-reflow h6 {
     overlay.id = 'readeasy-reader-overlay';
     overlay.setAttribute('role','dialog');
     overlay.setAttribute('aria-label','Reader overlay');
-    const dys = document.documentElement.classList.contains('readeasy-dyslexic');
+    const dys = document.documentElement.classList.contains('readeasy-dyslexic') || document.documentElement.classList.contains('clarityread-dyslexic');
     overlay.style.position = 'fixed';
     overlay.style.inset = '6%';
     overlay.style.zIndex = 2147483647;
@@ -523,6 +622,7 @@ html.readeasy-reflow h6 {
     overlay.style.overflow = 'auto';
     overlay.style.borderRadius = '8px';
     overlay.style.boxShadow = '0 8px 30px rgba(0,0,0,0.35)';
+    // only apply the dyslexic font if the html element has the dys class; this prevents "sticking"
     overlay.style.fontFamily = dys ? "'OpenDyslexic', system-ui, Arial, sans-serif" : "system-ui, Arial, sans-serif";
     overlay.style.lineHeight = '1.8';
     overlay.style.fontSize = '18px';
@@ -1179,29 +1279,48 @@ html.readeasy-reflow h6 {
               if (msg.dys) {
                 try { ensureDysFontInjected(); } catch(e){ safeLog('ensureDysFontInjected threw', e); }
                 try { document.documentElement.classList.add('readeasy-dyslexic'); } catch(e){}
+                try { document.documentElement.classList.add('clarityread-dyslexic'); } catch(e){}
               } else {
                 try { document.documentElement.classList.remove('readeasy-dyslexic'); } catch(e){}
+                try { document.documentElement.classList.remove('clarityread-dyslexic'); } catch(e){}
                 try { removeDysFontInjected(); } catch(e){}
               }
             }
 
-            if (msg.reflow) document.documentElement.classList.add('readeasy-reflow'); else document.documentElement.classList.remove('readeasy-reflow');
+            // Apply/Remove reflow class (document-level marker kept for compatibility)
+            if (typeof msg.reflow !== 'undefined') {
+              if (msg.reflow) {
+                try {
+                  // Use our safer scoped approach
+                  const sizeNum = (typeof msg.fontSize === 'number') ? msg.fontSize : Number(String(msg.fontSize || 20).replace('px','')) || 20;
+                  const r = window.ClarityRead.applyClarityFontSize(sizeNum);
+                  safeLog('applySettings applied scoped reflow', r);
+                } catch(e) { safeLog('applySettings applyClarityFontSize failed', e); }
+              } else {
+                try {
+                  const r = window.ClarityRead.removeClarityReflow();
+                  safeLog('applySettings removed scoped reflow', r);
+                } catch(e) { safeLog('applySettings removeClarityReflow failed', e); }
+              }
+            }
+
             if (msg.contrast) document.documentElement.classList.add('readeasy-contrast'); else document.documentElement.classList.remove('readeasy-contrast');
             if (msg.invert) document.documentElement.classList.add('readeasy-invert'); else document.documentElement.classList.remove('readeasy-invert');
 
             // centralize reflow/font-size handling using helper so both overlay + page are consistent
             if (typeof msg.fontSize !== 'undefined') {
               try {
-                // If reflow requested, apply both the "clarity" and "readeasy" variables via helper
-                if (msg.reflow) {
-                  const sizeNum = (typeof msg.fontSize === 'number') ? msg.fontSize : Number(String(msg.fontSize).replace('px','')) || 20;
-                  try { window.ClarityRead.applyClarityFontSize(sizeNum); } catch(e) { safeLog('applyClarityFontSize failed', e); }
-                } else {
-                  // no reflow requested, just set overlay font and the readeasy variable for compatibility
+                // If reflow requested, ClarityRead.applyClarityFontSize already handled font-size above.
+                if (!msg.reflow) {
+                  // no reflow requested: set CSS variable (avoid body.style writes)
                   const fs = (typeof msg.fontSize === 'number') ? `${msg.fontSize}px` : String(msg.fontSize);
-                  document.documentElement.style.setProperty('--readeasy-font-size', fs);
                   try {
-                    const overlay = document.getElementById('readeasy-reader-overlay');
+                    document.documentElement.style.setProperty('--readeasy-font-size', fs);
+                    document.documentElement.style.setProperty('--clarity-font-size', fs);
+                  } catch(e) { safeLog('setting font-size variable failed', e); }
+                  // also update overlay if present
+                  try {
+                    const overlay = document.getElementById('readeasy-reader-overlay') || document.getElementById('clarityread-overlay');
                     if (overlay) overlay.style.fontSize = (typeof msg.fontSize === 'number') ? `${msg.fontSize}px` : String(msg.fontSize);
                   } catch(e){ safeLog('overlay font set failed', e); }
                 }
@@ -1210,7 +1329,7 @@ html.readeasy-reflow h6 {
 
             // Update overlay styling immediately so popup toggles reflect on-overlay changes:
             try {
-              const overlay = document.getElementById('readeasy-reader-overlay');
+              const overlay = document.getElementById('readeasy-reader-overlay') || document.getElementById('clarityread-overlay');
               if (overlay) {
                 if (typeof msg.dys !== 'undefined') {
                   if (msg.dys) overlay.style.fontFamily = "'OpenDyslexic', system-ui, Arial, sans-serif";

@@ -609,6 +609,7 @@ chrome.commands.onCommand.addListener(async (command) => {
         case 'speedRead':
         case 'detectLanguage':
         case 'getSelection':
+          case 'clarity_apply_font_size':
         case 'clarity_extract_main':
         // (fallthrough to the general forward handler below)
 

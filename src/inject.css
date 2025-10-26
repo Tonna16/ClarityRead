@@ -1,14 +1,18 @@
-/* ===== simplified & compatible inject.css for ClarityRead ===== */
-/* NOTE: font-face removed here. The contentScript injects the OpenDyslexic @font-face
-   using chrome.runtime.getURL(...) which is more reliable inside extensions. */
-
-/* --- Dyslexia font family targets (applies to both readeasy and legacy clarity names) --- */
+@font-face {
+  font-family: 'OpenDyslexic';
+  font-style: normal;
+  font-weight: 400;
+  /* These paths must match the files exposed in web_accessible_resources in manifest.json */
+  src: local('OpenDyslexic'),
+       url('src/fonts/OpenDyslexic-Regular.woff2') format('woff2'),
+       url('src/fonts/OpenDyslexic-Regular.woff') format('woff');
+  font-display: swap;
+}
+/*  --- Enhanced Dyslexia font --- */
 html.readeasy-dyslexic,
 html.readeasy-dyslexic *,
 .readeasy-dyslexic,
 .readeasy-dyslexic *,
-html.clarityreflow-active,
-html.clarityreflow-active *,
 html.clarityread-dyslexic,
 html.clarityread-dyslexic *,
 .clarityread-dyslexic,
@@ -18,23 +22,24 @@ html.clarityread-dyslexic *,
   letter-spacing: 0.02em !important;
 }
 
-/* --- Reflow / reading mode (covers readeasy-* and clarityreflow-active legacy) --- */
+/* --- Enhanced Reflow / reading mode ---
+   Note: include compatibility names used by contentScript:
+   - readeasy-reflow (legacy)
+   - clarityread-reflow (compat)
+   - clarityreflow-active (compat)
+*/
 html.readeasy-reflow,
-html.readeasy-reflow body,
-html.readeasy-reflow article,
-html.readeasy-reflow main,
 html.clarityreflow-active,
+html.clarityread-reflow,
+html.readeasy-reflow body,
 html.clarityreflow-active body,
-html.clarityreflow-active article,
-html.clarityreflow-active main,
+html.clarityread-reflow body,
 .readeasy-reflow,
-.readeasy-reflow body,
-.readeasy-reflow article,
-.readeasy-reflow main,
+.clarityreflow-active,
 .clarityread-reflow,
-.clarityread-reflow body,
-.clarityread-reflow article,
-.clarityread-reflow main {
+.readeasy-reflow *,
+.clarityreflow-active *,
+.clarityread-reflow * {
   max-width: 760px !important;
   margin: 20px auto !important;
   line-height: 1.8 !important;
@@ -43,50 +48,152 @@ html.clarityreflow-active main,
   overflow-wrap: break-word !important;
   box-sizing: border-box !important;
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
-  scroll-behavior: smooth !important;
 }
 
-/* Enhanced size presets (applied to the container classes) */
+/* Apply to common article containers (compat names included) */
+html.readeasy-reflow article,
+html.clarityreflow-active article,
+html.clarityread-reflow article,
+html.readeasy-reflow main,
+html.clarityreflow-active main,
+html.clarityread-reflow main,
+.readeasy-reflow article,
+.clarityreflow-active article,
+.clarityread-reflow article,
+.readeasy-reflow main,
+.clarityreflow-active main,
+.clarityread-reflow main,
+.readeasy-reflow .article,
+.clarityreflow-active .article,
+.clarityread-reflow .article,
+.readeasy-reflow .post,
+.clarityreflow-active .post,
+.clarityread-reflow .post,
+.readeasy-reflow .entry-content,
+.clarityreflow-active .entry-content,
+.clarityread-reflow .entry-content,
+.readeasy-reflow .mw-parser-output,
+.clarityreflow-active .mw-parser-output,
+.clarityread-reflow .mw-parser-output,
+.readeasy-reflow #content,
+.clarityreflow-active #content,
+.clarityread-reflow #content,
+.readeasy-reflow #primary,
+.clarityreflow-active #primary,
+.clarityread-reflow #primary,
+.readeasy-reflow .page-content,
+.clarityreflow-active .page-content,
+.clarityread-reflow .page-content {
+  font-size: var(--clarity-font-size, var(--readeasy-font-size)) !important;
+  line-height: var(--clarity-line-height) !important;
+}
+
+/* Ensure paragraphs and lists inherit */
+html.clarityreflow-active p,
+html.readeasy-reflow p,
+html.clarityread-reflow p,
+.readeasy-reflow p,
+.clarityreflow-active p,
+.clarityread-reflow p,
+html.clarityreflow-active li,
+html.readeasy-reflow li,
+html.clarityread-reflow li,
+.readeasy-reflow li,
+.clarityreflow-active li,
+.clarityread-reflow li,
+html.clarityreflow-active dd,
+html.readeasy-reflow dd,
+html.clarityread-reflow dd,
+.readeasy-reflow dd,
+.clarityreflow-active dd,
+.clarityread-reflow dd,
+html.clarityreflow-active dt,
+html.readeasy-reflow dt,
+html.clarityread-reflow dt,
+.readeasy-reflow dt,
+.clarityreflow-active dt,
+.clarityread-reflow dt,
+html.clarityreflow-active blockquote,
+html.readeasy-reflow blockquote,
+html.clarityread-reflow blockquote,
+.readeasy-reflow blockquote,
+.clarityreflow-active blockquote,
+.clarityread-reflow blockquote {
+  font-size: inherit !important;
+  line-height: inherit !important;
+}
+
+/* headings scale up (compat) */
+html.clarityreflow-active h1,
+html.readeasy-reflow h1,
+html.clarityread-reflow h1,
+html.clarityreflow-active h2,
+html.readeasy-reflow h2,
+html.clarityread-reflow h2,
+html.clarityreflow-active h3,
+html.readeasy-reflow h3,
+html.clarityread-reflow h3,
+html.clarityreflow-active h4,
+html.readeasy-reflow h4,
+html.clarityread-reflow h4,
+html.clarityreflow-active h5,
+html.readeasy-reflow h5,
+html.clarityread-reflow h5,
+html.clarityreflow-active h6,
+html.readeasy-reflow h6,
+html.clarityread-reflow h6 {
+  font-size: calc(var(--clarity-font-size, var(--readeasy-font-size)) * 1.2) !important;
+  line-height: 1.2 !important;
+}
+
+/* Enhanced size presets (keep compatibility selectors simple) */
 .readeasy-reflow.readeasy-size-small,
 .clarityread-reflow.clarityread-size-small,
-html.clarityreflow-active.clarityread-size-small { 
+.clarityreflow-active.readeasy-size-small,
+.clarityreflow-active.clarityread-size-small { 
   font-size: 18px !important; 
 }
 .readeasy-reflow.readeasy-size-medium,
 .clarityread-reflow.clarityread-size-medium,
-html.clarityreflow-active.clarityread-size-medium { 
+.clarityreflow-active.readeasy-size-medium,
+.clarityreflow-active.clarityread-size-medium { 
   font-size: 20px !important; 
 }
 .readeasy-reflow.readeasy-size-large,
 .clarityread-reflow.clarityread-size-large,
-html.clarityreflow-active.clarityread-size-large { 
+.clarityreflow-active.readeasy-size-large,
+.clarityreflow-active.clarityread-size-large { 
   font-size: 24px !important; 
 }
 
 .readeasy-reflow p,
 .clarityread-reflow p,
-html.clarityreflow-active p { 
+.clarityreflow-active p { 
   margin-bottom: 1.2em !important; 
   transition: all 0.2s ease !important;
 }
 
-/* Enhanced High contrast mode (both families) */
+/* --- Enhanced High contrast mode --- */
 .readeasy-contrast *,
 .clarityread-contrast *,
-html.clarityreflow-active .readeasy-contrast * {
+.clarityreflow-active.readeasy-contrast *,
+.clarityreflow-active.clarityread-contrast * {
   background: #000 !important;
   color: #fff !important;
   border-color: #333 !important;
   transition: all 0.2s ease !important;
 }
 
-/* Links/forms under contrast */
+/* Enhanced links & form elements */
 .readeasy-contrast a,
-.clarityread-contrast a {
+.clarityread-contrast a,
+.clarityreflow-active.readeasy-contrast a,
+.clarityreflow-active.clarityread-contrast a {
   color: #00ffff !important;
   text-decoration: underline !important;
   text-shadow: 0 0 2px rgba(0, 255, 255, 0.5) !important;
 }
+
 .readeasy-contrast button,
 .readeasy-contrast input,
 .readeasy-contrast textarea,
@@ -94,7 +201,9 @@ html.clarityreflow-active .readeasy-contrast * {
 .clarityread-contrast button,
 .clarityread-contrast input,
 .clarityread-contrast textarea,
-.clarityread-contrast select {
+.clarityread-contrast select,
+.clarityreflow-active.readeasy-contrast button,
+.clarityreflow-active.clarityread-contrast button {
   background: #111 !important;
   color: #fff !important;
   border: 2px solid #fff !important;
@@ -103,15 +212,40 @@ html.clarityreflow-active .readeasy-contrast * {
   transition: all 0.2s ease !important;
 }
 
-/* Invert */
+/* Enhanced images */
+.readeasy-contrast img,
+.clarityread-contrast img,
+.clarityreflow-active.readeasy-contrast img,
+.clarityreflow-active.clarityread-contrast img {
+  opacity: 0.9 !important;
+  filter: grayscale(50%) contrast(140%) brightness(1.1) !important;
+  border: 1px solid #444 !important;
+  transition: all 0.3s ease !important;
+}
+
+/* --- Enhanced Full invert mode --- */
 .readeasy-invert,
 .clarityread-invert,
-html.clarityreflow-active.readeasy-invert {
+.clarityreflow-active.readeasy-invert,
+.clarityreflow-active.clarityread-invert {
   filter: invert(100%) hue-rotate(180deg) !important;
   transition: filter 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
 }
 
-/* Word span and highlight styling */
+.readeasy-invert img,
+.readeasy-invert video,
+.clarityread-invert img,
+.clarityread-invert video {
+  filter: invert(100%) hue-rotate(180deg) !important;
+  transition: filter 0.3s ease !important;
+}
+
+.readeasy-invert.readeasy-contrast,
+.clarityread-invert.clarityread-contrast {
+  filter: invert(100%) hue-rotate(180deg) !important;
+}
+
+/* --- Enhanced Word-span behaviour --- */
 .readeasy-word,
 .clarityread-word {
   display: inline !important;
@@ -121,6 +255,8 @@ html.clarityreflow-active.readeasy-invert {
   -webkit-box-decoration-break: clone !important;
   transition: all 0.1s ease !important;
 }
+
+/* --- Enhanced Highlight styling --- */
 .readeasy-highlight,
 .clarityread-highlight {
   background: linear-gradient(135deg, #fef08a, #facc15) !important;
@@ -129,14 +265,51 @@ html.clarityreflow-active.readeasy-invert {
   padding: 0 0.1em !important;
   border-radius: 4px !important;
   box-shadow: 0 2px 4px rgba(0,0,0,0.1), 0 0 0 1px rgba(251, 191, 36, 0.3) !important;
+  box-decoration-break: clone !important;
+  -webkit-box-decoration-break: clone !important;
   transform: scale(1.02) !important;
   position: relative !important;
 }
 
-/* Overlay container (use the primary overlay id the contentScript creates) */
+.readeasy-highlight::before,
+.clarityread-highlight::before {
+  content: '';
+  position: absolute;
+  top: -2px;
+  left: -2px;
+  right: -2px;
+  bottom: -2px;
+  background: linear-gradient(135deg, #fbbf24, #f59e0b);
+  border-radius: 6px;
+  z-index: -1;
+  opacity: 0.3;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.3; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(1.02); }
+}
+
+/* Enhanced highlight under special modes */
+.readeasy-invert .readeasy-highlight,
+.readeasy-invert.readeasy-contrast .readeasy-highlight,
+.clarityread-invert .clarityread-highlight,
+.clarityread-invert.clarityread-contrast .clarityread-highlight {
+  background: linear-gradient(135deg, #fef08a, #facc15) !important;
+  color: #000 !important;
+  filter: none !important;
+  box-shadow: 0 0 8px rgba(251, 191, 36, 0.8) !important;
+}
+
+/* --- Enhanced Overlay container ---
+   Default overlay uses system UI fonts. Only switch to OpenDyslexic
+   when the dyslexic classes are present on the page/documentElement.
+*/
 #readeasy-reader-overlay,
 #clarityread-overlay {
-  font-family: 'OpenDyslexic', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif !important;
+  /* default overlay font - do NOT force OpenDyslexic here */
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
   box-sizing: border-box !important;
   background: linear-gradient(135deg, #fff, #f9fafb) !important;
   color: #1f2937 !important;
@@ -151,7 +324,40 @@ html.clarityreflow-active.readeasy-invert {
   animation: overlayFadeIn 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
 }
 
-/* overlay controls, focus, highlight small refinements (kept from your file) */
+/* ONLY override overlay font to OpenDyslexic when the dyslexic class is active */
+html.readeasy-dyslexic #readeasy-reader-overlay,
+html.readeasy-dyslexic #clarityread-overlay,
+html.clarityread-dyslexic #readeasy-reader-overlay,
+html.clarityread-dyslexic #clarityread-overlay,
+.readeasy-dyslexic #readeasy-reader-overlay,
+.readeasy-dyslexic #clarityread-overlay,
+.clarityread-dyslexic #readeasy-reader-overlay,
+.clarityread-dyslexic #clarityread-overlay {
+  font-family: 'OpenDyslexic', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+}
+
+/* overlay animation */
+@keyframes overlayFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(20px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+#readeasy-reader-overlay .readeasy-highlight,
+#clarityread-overlay .clarityread-highlight {
+  background: linear-gradient(135deg, #fef08a, #facc15) !important;
+  color: #000 !important;
+  padding: 0 0.08em !important;
+  border-radius: 3px !important;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1) !important;
+}
+
+/* Enhanced overlay controls */
 #readeasy-reader-overlay button,
 #clarityread-overlay button {
   appearance: none !important;
@@ -164,9 +370,24 @@ html.clarityreflow-active.readeasy-invert {
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
   color: #374151 !important;
 }
+
 #readeasy-reader-overlay button:hover,
 #clarityread-overlay button:hover {
   background: linear-gradient(135deg, #f3f4f6, #e5e7eb) !important;
   transform: translateY(-1px) !important;
   box-shadow: 0 4px 12px rgba(0,0,0,0.1) !important;
+}
+
+/* Smooth scrolling for better reading experience */
+html.readeasy-reflow,
+html.clarityread-reflow,
+html.clarityreflow-active {
+  scroll-behavior: smooth !important;
+}
+
+/* Focus ring improvements */
+.readeasy-highlight:focus,
+.clarityread-highlight:focus {
+  outline: 2px solid #10b981 !important;
+  outline-offset: 2px !important;
 }
