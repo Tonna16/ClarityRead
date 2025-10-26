@@ -15,6 +15,15 @@
     "tabs",
     "contextMenus"
   ],
+  "host_permissions": [
+    "https://*.sharepoint.com/*",
+    "https://*.office.com/*",
+    "https://*.microsoftonline.com/*",
+    "https://docs.google.com/*"
+  ],
+  "optional_permissions": [
+    "<all_urls>"
+  ],
   "action": {
     "default_icon": {
       "16": "assets/icons/icon16.png",

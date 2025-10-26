@@ -358,57 +358,91 @@ chrome.runtime.onMessage.addListener((msg) => {
 // Call this on slider input/change
 // Improved: apply font size -> will attempt injection, and if permission is missing will request it then retry
 // Replace existing applyFontSizeToActiveTab with this
+// Apply font size, with improved handling for 'in-flight' / permission flows and UI disable while pending.
 async function applyFontSizeToActiveTab(sizePx) {
   try {
     const sizeNum = Number(sizePx) || DEFAULTS.fontSize || 16;
 
-    // Centralized helper that tries send+inject and returns normalized bg response
-    const firstTry = await sendMessageToActiveTabWithInject({ action: 'clarity_apply_font_size', size: sizeNum });
-    const normalized = normalizeBgResponse(firstTry);
-
-    if (normalized && normalized.ok) {
-      toast(`Font set to ${sizeNum}px`, 'success', 900);
-      return normalized;
+    // Disable the slider while we work to avoid races
+    if (fontSizeSlider) { fontSizeSlider.disabled = true; }
+    if (fontSizeValue) {
+      try { fontSizeValue.textContent = `${sizeNum}px`; } catch(e){}
     }
 
-    // If we got no-host-permission, request via background then retry
-    if (normalized && normalized.error === 'no-host-permission' && normalized.permissionPattern) {
-      toast('Requesting permission to modify this site — approve the prompt in the browser.', 'info', 6000);
+    // Attempt, with a small retry for transient 'in-flight' responses
+    const MAX_RETRIES = 2;
+    let attempt = 0;
+    let lastNormalized = null;
 
-      // Ask background to request permission
-      const tab = await new Promise(resolve => chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => resolve(tabs && tabs[0])));
-      const url = tab && tab.url ? tab.url : null;
-      if (!url) { toast('Cannot determine tab URL to request permission.', 'error', 5000); return { ok:false, error:'no-url' }; }
+    while (attempt <= MAX_RETRIES) {
+      attempt++;
+      const firstTry = await sendMessageToActiveTabWithInject({ action: 'clarity_apply_font_size', size: sizeNum });
+      const normalized = normalizeBgResponse(firstTry);
+      lastNormalized = normalized;
 
-      const permResp = await new Promise(resolve => {
-        chrome.runtime.sendMessage({ __internal: 'requestHostPermission', url }, (resp) => {
-          if (chrome.runtime.lastError) return resolve({ ok: false, error: 'runtime-lastError', detail: chrome.runtime.lastError.message });
-          resolve(resp || { ok: false });
-        });
-      });
-
-      if (!permResp || !permResp.ok) {
-        toast('Permission not granted. Cannot apply font size to this site.', 'error', 6000);
-        return { ok: false, error: 'permission-denied', detail: permResp && permResp.detail };
+      if (normalized && normalized.ok) {
+        toast(`Font set to ${sizeNum}px`, 'success', 900);
+        break;
       }
 
-      // Permission granted - retry
-      const retry = await sendMessageToActiveTabWithInject({ action: 'clarity_apply_font_size', size: sizeNum });
-      const r2 = normalizeBgResponse(retry);
-      if (r2 && r2.ok) toast(`Font set to ${sizeNum}px`, 'success', 900);
-      else toast('Failed to apply font even after permission.', 'error', 6000);
-      return r2 || { ok: false };
+      // If background requests host permission -> run permission request flow here
+      if (normalized && normalized.error === 'no-host-permission' && normalized.permissionPattern) {
+        toast('Requesting permission to modify this site — approve the prompt in the browser.', 'info', 6000);
+
+        // Ask background to request permission (use the tab's URL)
+        const tab = await new Promise(resolve => chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => resolve(tabs && tabs[0])));
+        const url = tab && tab.url ? tab.url : null;
+        if (!url) { toast('Cannot determine tab URL to request permission.', 'error', 5000); lastNormalized = { ok:false, error:'no-url' }; break; }
+
+        const permResp = await new Promise(resolve => {
+          chrome.runtime.sendMessage({ __internal: 'requestHostPermission', url }, (resp) => {
+            if (chrome.runtime.lastError) return resolve({ ok: false, error: 'runtime-lastError', detail: chrome.runtime.lastError.message });
+            resolve(resp || { ok: false });
+          });
+        });
+
+        if (!permResp || !permResp.ok) {
+          toast('Permission not granted. Cannot apply font size to this site.', 'error', 6000);
+          lastNormalized = { ok:false, error: 'permission-denied', detail: permResp && permResp.detail };
+          break;
+        }
+
+        // Permission granted: loop continues and we retry immediately
+        attempt = 0; // reset retry counter after permission
+        continue;
+      }
+
+      // If the error is transient 'in-flight', wait small delay and retry
+      if (normalized && normalized.error === 'in-flight' && attempt <= MAX_RETRIES) {
+        safeLog('applyFontSizeToActiveTab got in-flight; retrying', attempt);
+        await new Promise(r => setTimeout(r, 180 + attempt * 120));
+        continue;
+      }
+
+      // Generic failure - bubble message to the user and stop retrying
+      toast('Unable to apply font on this page. Allow ClarityRead to access the site.', 'error', 6000);
+      break;
     }
 
-    // generic failure
-    toast('Unable to apply font on this page. Allow ClarityRead to access the site.', 'error', 6000);
-    return normalized || { ok: false };
+    // final state handling
+    if (lastNormalized && lastNormalized.ok) {
+      // success already toasted above
+    } else if (lastNormalized && lastNormalized.error && lastNormalized.error !== 'in-flight') {
+      safeLog('applyFontSizeToActiveTab final failure', lastNormalized);
+      // error already notified via toast above
+    }
+
+    return lastNormalized || { ok: false };
   } catch (e) {
     safeLog('applyFontSizeToActiveTab error', e);
     toast('Failed to apply font (see console).', 'error', 6000);
     return { ok: false, error: String(e) };
+  } finally {
+    // always re-enable slider
+    if (fontSizeSlider) { fontSizeSlider.disabled = false; }
   }
 }
+
 
 // Ask page whether overlay exists (content script should respond to 'clarity_query_overlay' with { ok:true, overlayActive: bool })
 
@@ -649,13 +683,22 @@ function normalizeSelectionResponse(raw) {
 
 
 
-  // Robust send helper - popup -> background forward wrapper
-  // robust forwarder: popup -> background -> content (with retry / permission prompt)
+// robust send helper - popup -> background forward wrapper
+// improved: wait a short while if opLock already in use (avoids spamming 'in-flight' failures)
 async function sendMessageToActiveTabWithInject(message, _retry = 0) {
+  // If opLock is active, wait briefly for it to clear (helps slider & concurrent quick UI events)
+  const WAIT_MS = 1600; // total wait before giving up
+  const POLL_MS = 50;
+  let waited = 0;
+  while (opLock && waited < WAIT_MS) {
+    await new Promise(r => setTimeout(r, POLL_MS));
+    waited += POLL_MS;
+  }
   if (opLock) {
-    safeLog('sendMessageToActiveTabWithInject blocked: opLock active');
+    safeLog('sendMessageToActiveTabWithInject giving up due to opLock after wait');
     return { ok: false, error: 'in-flight' };
   }
+
   opLock = true;
   try {
     return await new Promise(resolve => {
@@ -698,27 +741,11 @@ async function sendMessageToActiveTabWithInject(message, _retry = 0) {
 
             const res = normalizeBgResponse(resRaw);
 
-            // if background requests host permission, prompt once and retry
+            // If background requests host permission, popup logic (or caller) will handle retry/prompt
             if (res && res.ok === false && res.error === 'no-host-permission' && _retry < 1) {
-              const pattern = res.permissionPattern || (message._targetTabUrl ? buildOriginPermissionPattern(message._targetTabUrl) : null);
-              const friendlyHost = pattern ? (pattern.replace('/*', '')) : (message._targetTabUrl || 'this site');
-              try {
-                const want = confirm(`ClarityRead needs permission to access ${friendlyHost} to operate on that page. Grant access for this site?`);
-                if (!want) { opLock = false; return resolve(res); }
-                chrome.permissions.request({ origins: [pattern] }, (granted) => {
-                  if (chrome.runtime.lastError) {
-                    opLock = false;
-                    safeLog('permissions.request error', chrome.runtime.lastError);
-                    return resolve({ ok: false, error: 'permission-request-failed', detail: chrome.runtime.lastError.message });
-                  }
-                  if (!granted) { opLock = false; return resolve({ ok: false, error: 'permission-denied' }); }
-                  // small delay to allow permission to settle, then retry once
-                  setTimeout(() => {
-                    sendMessageToActiveTabWithInject(message, _retry + 1).then(r => { opLock = false; resolve(r); }).catch(e => { opLock = false; resolve({ ok: false, error: String(e) }); });
-                  }, 250);
-                });
-              } catch (e) { opLock = false; safeLog('permission flow threw', e); return resolve({ ok: false, error: 'permission-flow-exception', detail: String(e) }); }
-              return;
+              // bubble up the permission result to caller for a nicer UX
+              opLock = false;
+              return resolve(res);
             }
 
             opLock = false;
@@ -732,9 +759,11 @@ async function sendMessageToActiveTabWithInject(message, _retry = 0) {
       });
     });
   } finally {
-    opLock = false; // ensure lock cleared as a last-resort guard
+    // ensure lock cleared as a last-resort guard
+    opLock = false;
   }
 }
+
 
 
   // ---------- Stats / chart ----------
