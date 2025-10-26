@@ -85,7 +85,8 @@
       }
 
       let settled = false;
-      const finish = (r) => { if (!settled) { settled = true; resolve(r); } };
+      // make finish mutable so we can wrap it with timeout cleanup below
+      let finish = (r) => { if (!settled) { settled = true; resolve(r); } };
 
       try {
         // initial quick send
@@ -250,7 +251,10 @@
       }, SAFETY_MS);
       // ensure we don't leave stray timeout after resolve
       const origFinish = finish;
-      finish = (r) => { try { clearTimeout(to); } catch(e) {} ; origFinish(r); };
+      finish = (r) => { 
+        try { clearTimeout(to); } catch(e) { /* ignore */ } 
+        origFinish(r); 
+      };
     });
   }
 
