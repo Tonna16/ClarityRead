@@ -8,38 +8,38 @@
        url('src/fonts/OpenDyslexic-Regular.woff') format('woff');
   font-display: swap;
 }
-/*  --- Enhanced Dyslexia font --- */
+
+/* --- Enhanced Dyslexia font (scoped via html classes) --- */
 html.readeasy-dyslexic,
-html.readeasy-dyslexic *,
-.readeasy-dyslexic,
-.readeasy-dyslexic *,
+html.readeasy-dyslexic * ,
 html.clarityread-dyslexic,
-html.clarityread-dyslexic *,
-.clarityread-dyslexic,
-.clarityread-dyslexic * {
+html.clarityread-dyslexic * {
   font-family: 'OpenDyslexic', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif !important;
   font-weight: 400 !important;
   letter-spacing: 0.02em !important;
 }
 
-/* --- Enhanced Reflow / reading mode ---
-   Note: include compatibility names used by contentScript:
-   - readeasy-reflow (legacy)
-   - clarityread-reflow (compat)
-   - clarityreflow-active (compat)
-*/
-html.readeasy-reflow,
-html.clarityreflow-active,
-html.clarityread-reflow,
-html.readeasy-reflow body,
-html.clarityreflow-active body,
-html.clarityread-reflow body,
-.readeasy-reflow,
-.clarityreflow-active,
-.clarityread-reflow,
-.readeasy-reflow *,
-.clarityreflow-active *,
-.clarityread-reflow * {
+/* --- Enhanced Reflow / reading mode (SCOPE: article-like containers only) --- */
+html.readeasy-reflow article,
+html.readeasy-reflow main,
+html.readeasy-reflow [role="main"],
+html.readeasy-reflow .article,
+html.readeasy-reflow .post,
+html.readeasy-reflow .entry-content,
+html.readeasy-reflow .mw-parser-output,
+html.readeasy-reflow #content,
+html.readeasy-reflow #primary,
+html.readeasy-reflow .page-content,
+html.clarityread-reflow article,
+html.clarityread-reflow main,
+html.clarityread-reflow [role="main"],
+html.clarityread-reflow .article,
+html.clarityread-reflow .post,
+html.clarityread-reflow .entry-content,
+html.clarityread-reflow .mw-parser-output,
+html.clarityread-reflow #content,
+html.clarityread-reflow #primary,
+html.clarityread-reflow .page-content {
   max-width: 760px !important;
   margin: 20px auto !important;
   line-height: 1.8 !important;
@@ -48,132 +48,23 @@ html.clarityread-reflow body,
   overflow-wrap: break-word !important;
   box-sizing: border-box !important;
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+  font-size: var(--readeasy-font-size, 20px) !important;
 }
 
-/* Apply to common article containers (compat names included) */
-html.readeasy-reflow article,
-html.clarityreflow-active article,
-html.clarityread-reflow article,
-html.readeasy-reflow main,
-html.clarityreflow-active main,
-html.clarityread-reflow main,
-.readeasy-reflow article,
-.clarityreflow-active article,
-.clarityread-reflow article,
-.readeasy-reflow main,
-.clarityreflow-active main,
-.clarityread-reflow main,
-.readeasy-reflow .article,
-.clarityreflow-active .article,
-.clarityread-reflow .article,
-.readeasy-reflow .post,
-.clarityreflow-active .post,
-.clarityread-reflow .post,
-.readeasy-reflow .entry-content,
-.clarityreflow-active .entry-content,
-.clarityread-reflow .entry-content,
-.readeasy-reflow .mw-parser-output,
-.clarityreflow-active .mw-parser-output,
-.clarityread-reflow .mw-parser-output,
-.readeasy-reflow #content,
-.clarityreflow-active #content,
-.clarityread-reflow #content,
-.readeasy-reflow #primary,
-.clarityreflow-active #primary,
-.clarityread-reflow #primary,
-.readeasy-reflow .page-content,
-.clarityreflow-active .page-content,
-.clarityread-reflow .page-content {
-  font-size: var(--clarity-font-size, var(--readeasy-font-size)) !important;
-  line-height: var(--clarity-line-height) !important;
-}
-
-/* Ensure paragraphs and lists inherit */
-html.clarityreflow-active p,
-html.readeasy-reflow p,
-html.clarityread-reflow p,
-.readeasy-reflow p,
-.clarityreflow-active p,
-.clarityread-reflow p,
-html.clarityreflow-active li,
-html.readeasy-reflow li,
-html.clarityread-reflow li,
-.readeasy-reflow li,
-.clarityreflow-active li,
-.clarityread-reflow li,
-html.clarityreflow-active dd,
-html.readeasy-reflow dd,
-html.clarityread-reflow dd,
-.readeasy-reflow dd,
-.clarityreflow-active dd,
-.clarityread-reflow dd,
-html.clarityreflow-active dt,
-html.readeasy-reflow dt,
-html.clarityread-reflow dt,
-.readeasy-reflow dt,
-.clarityreflow-active dt,
-.clarityread-reflow dt,
-html.clarityreflow-active blockquote,
-html.readeasy-reflow blockquote,
-html.clarityread-reflow blockquote,
-.readeasy-reflow blockquote,
-.clarityreflow-active blockquote,
-.clarityread-reflow blockquote {
-  font-size: inherit !important;
-  line-height: inherit !important;
-}
-
-/* headings scale up (compat) */
-html.clarityreflow-active h1,
-html.readeasy-reflow h1,
-html.clarityread-reflow h1,
-html.clarityreflow-active h2,
-html.readeasy-reflow h2,
-html.clarityread-reflow h2,
-html.clarityreflow-active h3,
-html.readeasy-reflow h3,
-html.clarityread-reflow h3,
-html.clarityreflow-active h4,
-html.readeasy-reflow h4,
-html.clarityread-reflow h4,
-html.clarityreflow-active h5,
-html.readeasy-reflow h5,
-html.clarityread-reflow h5,
-html.clarityreflow-active h6,
-html.readeasy-reflow h6,
-html.clarityread-reflow h6 {
-  font-size: calc(var(--clarity-font-size, var(--readeasy-font-size)) * 1.2) !important;
-  line-height: 1.2 !important;
-}
-
-/* Enhanced size presets (keep compatibility selectors simple) */
+/* Enhanced size presets */
 .readeasy-reflow.readeasy-size-small,
-.clarityread-reflow.clarityread-size-small,
-.clarityreflow-active.readeasy-size-small,
-.clarityreflow-active.clarityread-size-small { 
-  font-size: 18px !important; 
-}
+.clarityread-reflow.clarityread-size-small { font-size: 18px !important; }
 .readeasy-reflow.readeasy-size-medium,
-.clarityread-reflow.clarityread-size-medium,
-.clarityreflow-active.readeasy-size-medium,
-.clarityreflow-active.clarityread-size-medium { 
-  font-size: 20px !important; 
-}
+.clarityread-reflow.clarityread-size-medium { font-size: 20px !important; }
 .readeasy-reflow.readeasy-size-large,
-.clarityread-reflow.clarityread-size-large,
-.clarityreflow-active.readeasy-size-large,
-.clarityreflow-active.clarityread-size-large { 
-  font-size: 24px !important; 
-}
+.clarityread-reflow.clarityread-size-large { font-size: 24px !important; }
 
 .readeasy-reflow p,
-.clarityread-reflow p,
-.clarityreflow-active p { 
+.clarityread-reflow p { 
   margin-bottom: 1.2em !important; 
   transition: all 0.2s ease !important;
 }
 
-/* --- Enhanced High contrast mode --- */
 .readeasy-contrast *,
 .clarityread-contrast *,
 .clarityreflow-active.readeasy-contrast *,

@@ -353,6 +353,7 @@ chrome.runtime.onMessage.addListener((msg) => {
   } catch(e) { safeLog('onMessage popup error', e); }
 });
 
+
  
 // Call this on slider input/change
 // Improved: apply font size -> will attempt injection, and if permission is missing will request it then retry
@@ -414,18 +415,54 @@ async function applyFontSizeToActiveTab(sizePx) {
 
 
 
-// wire slider element (example)
-const fontSlider = document.getElementById('fontSizeSlider'); // change to your element id
+// Debounced slider wiring (paste into popup.js where you handle font slider)
+const fontSlider = document.getElementById('fontSizeSlider');
+let _fontApplyPending = null;
+let _fontDebounceTimer = null;
+const FONT_DEBOUNCE_MS = 180; // small delay to batch rapid slider input
+
+async function _applyFontSizeDebounced(size) {
+  // cancel prior debounce timer
+  if (_fontDebounceTimer) clearTimeout(_fontDebounceTimer);
+
+  return new Promise((resolve) => {
+    _fontDebounceTimer = setTimeout(async () => {
+      try {
+        // If there's a pending in-flight apply, await it (prevents racing with opLock)
+        if (_fontApplyPending) {
+          try { await _fontApplyPending; } catch(_) {/* ignore */}
+        }
+
+        // Issue the apply (this calls your existing helper that uses sendMessageToActiveTabWithInject)
+        _fontApplyPending = applyFontSizeToActiveTab(size);
+        const res = await _fontApplyPending;
+        _fontApplyPending = null;
+        resolve(res);
+      } catch (e) {
+        _fontApplyPending = null;
+        resolve({ ok: false, error: String(e) });
+      }
+    }, FONT_DEBOUNCE_MS);
+  });
+}
+
 if (fontSlider) {
   fontSlider.addEventListener('input', (ev) => {
     const v = ev.target.value;
-    applyFontSizeToActiveTab(v);
+    _applyFontSizeDebounced(Number(v)).then((r) => {
+      // optionally update UI/value readout here
+    });
   });
   fontSlider.addEventListener('change', (ev) => {
     const v = ev.target.value;
-    applyFontSizeToActiveTab(v);
+    _applyFontSizeDebounced(Number(v)).then((r) => {
+      // final update on release
+    });
   });
 }
+
+
+
 
  
   // dynamic focusMode + summarize presence
