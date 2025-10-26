@@ -1262,6 +1262,167 @@ html.readeasy-reflow h3 {
     safeLog('toggleFocusMode: opened overlay');
     return { ok: true, overlayActive: true };
   }
+  /// --- Contrast / Invert runtime style injection (more resilient)
+const CLARITY_CONTRAST_STYLE_ID = 'clarity-contrast-style';
+const CLARITY_INVERT_STYLE_ID = 'clarity-invert-style';
+
+// short-lived MutationObservers to resist immediate site JS that nukes our classes/attrs
+let contrastObserver = null;
+let invertObserver = null;
+const GUARD_TIMEOUT_MS = 10_000; // how long the observer tries to reapply classes/attrs
+
+function ensureContrastStyle() {
+  if (document.getElementById(CLARITY_CONTRAST_STYLE_ID)) return;
+  const st = document.createElement('style');
+  st.id = CLARITY_CONTRAST_STYLE_ID;
+  st.type = 'text/css';
+
+  st.textContent = `
+/* class and dataset attribute selectors as fallbacks */
+html.readeasy-contrast, html.readeasy-contrast body,
+html.clarityread-contrast, html.clarityread-contrast body,
+html[data-clarity-contrast="1"], html[data-clarity-contrast="1"] body {
+  background-color: #000 !important;
+  color: #fff !important;
+}
+html.readeasy-contrast *:not(script):not(style):not(iframe),
+html.clarityread-contrast *:not(script):not(style):not(iframe),
+html[data-clarity-contrast="1"] *:not(script):not(style):not(iframe) {
+  background: transparent !important;
+  color: #fff !important;
+  border-color: #666 !important;
+}
+html.readeasy-contrast a, html.clarityread-contrast a, html[data-clarity-contrast="1"] a {
+  color: #00ffff !important;
+  text-decoration: underline !important;
+}
+html.readeasy-contrast img, html.clarityread-contrast img, html[data-clarity-contrast="1"] img {
+  filter: grayscale(50%) contrast(120%) brightness(1.05) !important;
+  opacity: 0.95 !important;
+  border: 1px solid #444 !important;
+}
+`;
+  try { (document.head || document.documentElement).appendChild(st); } catch (e) { try { document.documentElement.appendChild(st); } catch(_){} }
+}
+
+function removeContrastStyle() {
+  try { const el = document.getElementById(CLARITY_CONTRAST_STYLE_ID); if (el) el.remove(); } catch (e) {}
+  stopContrastGuard();
+}
+
+function ensureInvertStyle() {
+  if (document.getElementById(CLARITY_INVERT_STYLE_ID)) return;
+  const st = document.createElement('style');
+  st.id = CLARITY_INVERT_STYLE_ID;
+  st.type = 'text/css';
+  st.textContent = `
+html.readeasy-invert, html.readeasy-invert body,
+html.clarityread-invert, html.clarityread-invert body,
+html[data-clarity-invert="1"], html[data-clarity-invert="1"] body {
+  filter: invert(100%) hue-rotate(180deg) !important;
+}
+html.readeasy-invert img, html.readeasy-invert video,
+html.clarityread-invert img, html.clarityread-invert video,
+html[data-clarity-invert="1"] img, html[data-clarity-invert="1"] video {
+  filter: invert(100%) hue-rotate(180deg) !important;
+}
+`;
+  try { (document.head || document.documentElement).appendChild(st); } catch (e) { try { document.documentElement.appendChild(st); } catch(_){} }
+}
+
+function removeInvertStyle() {
+  try { const el = document.getElementById(CLARITY_INVERT_STYLE_ID); if (el) el.remove(); } catch (e) {}
+  stopInvertGuard();
+}
+
+/* ---------- Guard utilities ---------- 
+   These try to reapply our classes/attributes if site JS removes them immediately
+   (observes class + data-attribute changes for a short window).
+*/
+function startContrastGuard() {
+  try {
+    const el = document.documentElement;
+    // ensure both class + data attr
+    el.classList.add('readeasy-contrast', 'clarityread-contrast');
+    el.setAttribute('data-clarity-contrast', '1');
+
+    // disconnect any prior observer
+    if (contrastObserver) { contrastObserver.disconnect(); contrastObserver = null; }
+
+    contrastObserver = new MutationObserver((mutations) => {
+      for (const m of mutations) {
+        if (m.type === 'attributes' && (m.attributeName === 'class' || m.attributeName === 'data-clarity-contrast')) {
+          // reapply if missing
+          if (!el.classList.contains('readeasy-contrast')) el.classList.add('readeasy-contrast');
+          if (!el.classList.contains('clarityread-contrast')) el.classList.add('clarityread-contrast');
+          if (el.getAttribute('data-clarity-contrast') !== '1') el.setAttribute('data-clarity-contrast', '1');
+        }
+      }
+    });
+    contrastObserver.observe(el, { attributes: true, attributeFilter: ['class', 'data-clarity-contrast'] });
+
+    // auto-stop after a short period to avoid long-lived observers
+    setTimeout(() => { try { if (contrastObserver) { contrastObserver.disconnect(); contrastObserver = null; } } catch (e) {} }, GUARD_TIMEOUT_MS);
+  } catch (e) { safeLog('startContrastGuard failed', e); }
+}
+
+function stopContrastGuard() {
+  try {
+    if (contrastObserver) { contrastObserver.disconnect(); contrastObserver = null; }
+  } catch (e) {}
+}
+
+function startInvertGuard() {
+  try {
+    const el = document.documentElement;
+    el.classList.add('readeasy-invert', 'clarityread-invert');
+    el.setAttribute('data-clarity-invert', '1');
+
+    if (invertObserver) { invertObserver.disconnect(); invertObserver = null; }
+
+    invertObserver = new MutationObserver((mutations) => {
+      for (const m of mutations) {
+        if (m.type === 'attributes' && (m.attributeName === 'class' || m.attributeName === 'data-clarity-invert')) {
+          if (!el.classList.contains('readeasy-invert')) el.classList.add('readeasy-invert');
+          if (!el.classList.contains('clarityread-invert')) el.classList.add('clarityread-invert');
+          if (el.getAttribute('data-clarity-invert') !== '1') el.setAttribute('data-clarity-invert', '1');
+        }
+      }
+    });
+    invertObserver.observe(el, { attributes: true, attributeFilter: ['class', 'data-clarity-invert'] });
+
+    setTimeout(() => { try { if (invertObserver) { invertObserver.disconnect(); invertObserver = null; } } catch (e) {} }, GUARD_TIMEOUT_MS);
+  } catch (e) { safeLog('startInvertGuard failed', e); }
+}
+
+function stopInvertGuard() {
+  try {
+    if (invertObserver) { invertObserver.disconnect(); invertObserver = null; }
+  } catch (e) {}
+}
+
+
+
+  // --- Message handler
+  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    try {
+      safeLog('onMessage received', msg, 'from', sender && sender.tab ? { tabId: sender.tab.id, url: sender.tab.url } : sender);
+      if (!msg || !msg.action) { sendResponse({ ok: false }); safeLog('onMessage missing action -> responded false'); return true; }
+
+      switch (msg.action) {
+        case 'applySettings':
+          try {
+            if (typeof msg.dys !== 'undefined') {
+              if (msg.dys) {
+                try { ensureDysFontInjected(); } catch(e){ safeLog('ensureDysFontInjected threw', e); }
+                try { document.documentElement.classList.add('readeasy-dyslexic'); } catch(e){}
+                try { document.documentElement.classList.add('clarityread-dyslexic'); } catch(e){}
+              } else {
+                try { document.documentElement.classList.remove('readeasy-dyslexic'); } catch(e){}
+                try { document.documentElement.classList.remove('clarityread-dyslexic'); } catch(e){}
+                try { removeDysFontInjected(); } catch(e){}
+              }
+            }
 // Contrast toggle
 if (typeof msg.contrast !== 'undefined') {
   if (msg.contrast) {
@@ -1299,7 +1460,6 @@ if (typeof msg.invert !== 'undefined') {
     } catch(e){}
   }
 }
-
 
 
             // Apply/Remove reflow class (document-level marker kept for compatibility)
