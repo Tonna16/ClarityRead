@@ -1272,25 +1272,26 @@ function ensureContrastStyle() {
   st.id = CLARITY_CONTRAST_STYLE_ID;
   st.type = 'text/css';
 
-  // ultra-specific selectors with !important to beat many site rules.
-  // We avoid using the universal star where possible but include fallback rules.
   st.textContent = `
+/* class and dataset attribute selectors as fallbacks */
 html.readeasy-contrast, html.readeasy-contrast body,
-html.clarityread-contrast, html.clarityread-contrast body {
+html.clarityread-contrast, html.clarityread-contrast body,
+html[data-clarity-contrast="1"], html[data-clarity-contrast="1"] body {
   background-color: #000 !important;
   color: #fff !important;
 }
 html.readeasy-contrast *:not(script):not(style):not(iframe),
-html.clarityread-contrast *:not(script):not(style):not(iframe) {
+html.clarityread-contrast *:not(script):not(style):not(iframe),
+html[data-clarity-contrast="1"] *:not(script):not(style):not(iframe) {
   background: transparent !important;
   color: #fff !important;
   border-color: #666 !important;
 }
-html.readeasy-contrast a, html.clarityread-contrast a {
+html.readeasy-contrast a, html.clarityread-contrast a, html[data-clarity-contrast="1"] a {
   color: #00ffff !important;
   text-decoration: underline !important;
 }
-html.readeasy-contrast img, html.clarityread-contrast img {
+html.readeasy-contrast img, html.clarityread-contrast img, html[data-clarity-contrast="1"] img {
   filter: grayscale(50%) contrast(120%) brightness(1.05) !important;
   opacity: 0.95 !important;
   border: 1px solid #444 !important;
@@ -1298,6 +1299,7 @@ html.readeasy-contrast img, html.clarityread-contrast img {
 `;
   try { (document.head || document.documentElement).appendChild(st); } catch (e) { document.documentElement.appendChild(st); }
 }
+
 
 function removeContrastStyle() {
   try { const el = document.getElementById(CLARITY_CONTRAST_STYLE_ID); if (el) el.remove(); } catch (e) {}
@@ -1310,16 +1312,19 @@ function ensureInvertStyle() {
   st.type = 'text/css';
   st.textContent = `
 html.readeasy-invert, html.readeasy-invert body,
-html.clarityread-invert, html.clarityread-invert body {
+html.clarityread-invert, html.clarityread-invert body,
+html[data-clarity-invert="1"], html[data-clarity-invert="1"] body {
   filter: invert(100%) hue-rotate(180deg) !important;
 }
 html.readeasy-invert img, html.readeasy-invert video,
-html.clarityread-invert img, html.clarityread-invert video {
+html.clarityread-invert img, html.clarityread-invert video,
+html[data-clarity-invert="1"] img, html[data-clarity-invert="1"] video {
   filter: invert(100%) hue-rotate(180deg) !important;
 }
 `;
   try { (document.head || document.documentElement).appendChild(st); } catch (e) { document.documentElement.appendChild(st); }
 }
+
 
 function removeInvertStyle() {
   try { const el = document.getElementById(CLARITY_INVERT_STYLE_ID); if (el) el.remove(); } catch (e) {}

@@ -16,13 +16,8 @@
     "contextMenus"
   ],
   "host_permissions": [
-    "https://*.sharepoint.com/*",
-    "https://*.office.com/*",
-    "https://*.microsoftonline.com/*",
-    "https://docs.google.com/*"
-  ],
-  "optional_permissions": [
-    "<all_urls>"
+    "http://*/*",
+    "https://*/*"
   ],
   "action": {
     "default_icon": {
@@ -36,7 +31,10 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://*/*", "http://*/*"],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
       "js": ["src/contentScript.js"],
       "css": ["src/inject.css"],
       "run_at": "document_idle"
@@ -50,7 +48,10 @@
         "src/lib/chart.umd.min.js",
         "src/toast.css"
       ],
-      "matches": ["<all_urls>"]
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ]
     }
   ],
   "commands": {
