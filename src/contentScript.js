@@ -469,138 +469,179 @@ html.readeasy-reflow h3 {
 
   // --- Extraction helper: robust cleaning (site-specific heuristics + general noise filtering)
   function extractCleanMainTextAndHtml(mainNode) {
+  try {
+    // --- Try Readability first (best-effort). ---
     try {
-      const clone = (mainNode && mainNode.cloneNode) ? mainNode.cloneNode(true) : null;
-      if (!clone) return { text: '', html: '', title: document.title || '' };
-
-      // default selectors to remove
-      const toRemove = [
-        'header','footer','nav','aside',
-        '.navbox','.vertical-navbox','.toc','#toc',
-        '.infobox','.sidebar','.mw-jump-link','.mw-references-wrap',
-        '.reference','.references','.reflist','.mw-editsection','.hatnote',
-        '.author','.byline','.by-line','.contributor','.credit','.editor',
-        'form','input','button','svg','picture','video','figure','iframe','noscript',
-        '.advert','.ads','.ad','.ad-wrapper','.adslot','.promo','.promo-block',
-        '.related','.related-articles','.related-links','.related-content',
-        '.share','.social','.cookie','.cookie-banner','.newsletter','.subscribe',
-        '.comments','.comment','.comments-list','.comment-list',
-        '.promo-banner','.promo-module','.meta','.meta-data','.article-meta',
-        '.breadcrumb','.breadcrumbs','.tag-list','.tags','.topics'
-      ];
-
-      // site-specific extra selectors (extend as needed)
-      const hostname = (location.hostname || '').toLowerCase();
-      const siteExtras = {
-        'health.clevelandclinic.org': [
-          '.related-articles', '.related-articles-module', '.rc-article-related', '.article__related',
-          '.trending', '.more-articles', '.cc-byline', '.byline', '.author'
-        ],
-        'clevelandclinic.org': [
-          '.related-articles', '.trending', '.more-articles'
-        ],
-        'www.nytimes.com': [
-          '.meteredContent', '.css-1fanzo5', '.ad-section', '.story-footer', '.StoryBodyCompanionColumn'
-        ],
-        'nytimes.com': [
-          '.meteredContent', '.story-footer'
-        ],
-        'www.washingtonpost.com': [
-          '.paywall', '.latest', '.related-content', '.story-body__aside'
-        ],
-        'washingtonpost.com': [
-          '.paywall'
-        ],
-        // Add more hosts if needed
-      };
-
-      if (siteExtras[hostname] && Array.isArray(siteExtras[hostname])) {
-        toRemove.push(...siteExtras[hostname]);
-      } else {
-        // quick host patterns (subdomain variants)
-        Object.keys(siteExtras).forEach(k => {
-          if (hostname.endsWith(k)) toRemove.push(...siteExtras[k]);
-        });
-      }
-
-      // Remove selectors
-      try {
-        toRemove.forEach(sel => {
-          try {
-            clone.querySelectorAll(sel).forEach(n => {
-              try { n.remove(); } catch (e) {}
-            });
-          } catch (e) {}
-        });
-      } catch (e) {}
-
-      // Additional generic heuristic: remove nodes with noisy class/id patterns
-      try {
-        const noisyRe = /(related|promo|advert|ad-|ad_|ads|subscribe|newsletter|share|social|comments?|footer|header|cookie|breadcrumb|promo|trending|author|byline|meta|signup|signup|cta|paywall)/i;
-        Array.from(clone.querySelectorAll('*')).forEach(el => {
-          try {
-            const idc = (el.id || '') + ' ' + (el.className || '');
-            if (noisyRe.test(idc) && (el.innerText || '').length < 600) {
-              // small noisy blocks removed, keep big blocks even if class matches
-              el.remove();
-            }
-          } catch (e) {}
-        });
-      } catch (e) {}
-
-      // remove script/style and sanitize attributes
-      try {
-        clone.querySelectorAll('script, style, link, iframe').forEach(n => { try { n.remove(); } catch(e){} });
-      } catch (e) {}
-
-      // remove inline event handlers / inline styles for safe html fallback
-      try {
-        clone.querySelectorAll('*').forEach(el => {
-          try {
-            if (!el || !el.attributes) return;
-            for (let i = el.attributes.length - 1; i >= 0; i--) {
-              const at = el.attributes[i];
-              if (!at) continue;
-              const name = (at.name || '').toLowerCase();
-              if (name.startsWith('on') || name === 'style' || name === 'onclick' || name === 'onmouseover') {
-                try { el.removeAttribute(at.name); } catch (e) {}
-              }
-            }
-          } catch (e) {}
-        });
-      } catch (e) {}
-
-      // Collect text and fallback HTML
-      let text = '';
-      try {
-        text = clone.innerText || '';
-        // collapse whitespace
-        text = String(text).replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n').replace(/[ \t]{2,}/g, ' ').replace(/\s{2,}/g, ' ').trim();
-        // remove trailing nav/ref sections common in publisher dumps
-        text = text.replace(/\b(References|External links|See also|Further reading|Related articles|Related Articles|Trending|Advertisement)\b[\s\S]*/ig, '');
-        // remove emails/contact lines
-        text = text.replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, ' ');
-        text = text.replace(/\s{2,}/g, ' ').trim();
-      } catch (e) { text = ''; }
-
-      let html = '';
-      try {
-        html = clone.innerHTML || '';
-      } catch (e) { html = ''; }
-
-      // Final safety fallback: if text is tiny, try extracting body text (less filtered)
-      if ((!text || text.length < 120) && document.body && document.body.innerText && document.body.innerText.length > 200) {
+      if (typeof Readability === 'function') {
         try {
-          text = String(document.body.innerText || '').replace(/\s{2,}/g, ' ').trim();
-        } catch (e) {}
-      }
+          // Build a sanitized serialized snapshot of the document so Readability isn't confused
+          const serialized = (document.documentElement && document.documentElement.outerHTML)
+            ? document.documentElement.outerHTML
+            : document.documentElement && document.documentElement.innerHTML
+              ? document.documentElement.innerHTML
+              : document.body && document.body.outerHTML
+                ? document.body.outerHTML
+                : '';
 
-      return { text: (text || '').trim(), html: html || '', title: document.title || '' };
-    } catch (err) {
-      safeLog('extractCleanMainTextAndHtml error', err);
-      return { text: '', html: '', title: document.title || '' };
+          if (serialized && serialized.length) {
+            const parser = new DOMParser();
+            const parsedDoc = parser.parseFromString('<!doctype html>\n' + serialized, 'text/html');
+
+            // Run Readability on the parsed document
+            try {
+              const article = new Readability(parsedDoc).parse();
+              if (article && article.textContent && String(article.textContent).trim().length > 200) {
+                return {
+                  text: String(article.textContent || '').replace(/\s{2,}/g, ' ').trim(),
+                  html: String(article.content || '').trim(),
+                  title: (article.title || document.title || '')
+                };
+              }
+              // If article is too small we fall through to the legacy extractor
+            } catch (rdErr) {
+              // Readability sometimes throws on exotic pages; ignore and continue to fallback
+              // safeLog('Readability parse failed, falling back', rdErr);
+            }
+          }
+        } catch (e) {
+          // Readability invocation failed; fall back to legacy approach
+        }
+      }
+    } catch (e) {
+      // Readability not present or other error; continue
     }
+
+    // --- Legacy fallback extractor (your original logic, slightly hardened) ---
+    const clone = (mainNode && typeof mainNode.cloneNode === 'function') ? mainNode.cloneNode(true) : null;
+    if (!clone) return { text: '', html: '', title: document.title || '' };
+
+    // default selectors to remove
+    const toRemove = [
+      'header','footer','nav','aside',
+      '.navbox','.vertical-navbox','.toc','#toc',
+      '.infobox','.sidebar','.mw-jump-link','.mw-references-wrap',
+      '.reference','.references','.reflist','.mw-editsection','.hatnote',
+      '.author','.byline','.by-line','.contributor','.credit','.editor',
+      'form','input','button','svg','picture','video','figure','iframe','noscript',
+      '.advert','.ads','.ad','.ad-wrapper','.adslot','.promo','.promo-block',
+      '.related','.related-articles','.related-links','.related-content',
+      '.share','.social','.cookie','.cookie-banner','.newsletter','.subscribe',
+      '.comments','.comment','.comments-list','.comment-list',
+      '.promo-banner','.promo-module','.meta','.meta-data','.article-meta',
+      '.breadcrumb','.breadcrumbs','.tag-list','.tags','.topics'
+    ];
+
+    // site-specific extra selectors (extend as needed)
+    const hostname = (location.hostname || '').toLowerCase();
+    const siteExtras = {
+      'health.clevelandclinic.org': [
+        '.related-articles', '.related-articles-module', '.rc-article-related', '.article__related',
+        '.trending', '.more-articles', '.cc-byline', '.byline', '.author'
+      ],
+      'clevelandclinic.org': [
+        '.related-articles', '.trending', '.more-articles'
+      ],
+      'www.nytimes.com': [
+        '.meteredContent', '.css-1fanzo5', '.ad-section', '.story-footer', '.StoryBodyCompanionColumn'
+      ],
+      'nytimes.com': [
+        '.meteredContent', '.story-footer'
+      ],
+      'www.washingtonpost.com': [
+        '.paywall', '.latest', '.related-content', '.story-body__aside'
+      ],
+      'washingtonpost.com': [
+        '.paywall'
+      ],
+      // Add more hosts if needed
+    };
+
+    if (siteExtras[hostname] && Array.isArray(siteExtras[hostname])) {
+      toRemove.push(...siteExtras[hostname]);
+    } else {
+      Object.keys(siteExtras).forEach(k => {
+        if (hostname.endsWith(k)) toRemove.push(...siteExtras[k]);
+      });
+    }
+
+    // Remove selectors (best-effort catch)
+    try {
+      toRemove.forEach(sel => {
+        try {
+          clone.querySelectorAll(sel).forEach(n => {
+            try { n.remove(); } catch (e) {}
+          });
+        } catch (e) {}
+      });
+    } catch (e) {}
+
+    // Additional generic heuristic: remove nodes with noisy class/id patterns
+    try {
+      const noisyRe = /(related|promo|advert|ad-|ad_|ads|subscribe|newsletter|share|social|comments?|footer|header|cookie|breadcrumb|promo|trending|author|byline|meta|signup|cta|paywall)/i;
+      Array.from(clone.querySelectorAll('*')).forEach(el => {
+        try {
+          const idc = (el.id || '') + ' ' + (el.className || '');
+          if (noisyRe.test(idc) && (el.innerText || '').length < 600) {
+            el.remove();
+          }
+        } catch (e) {}
+      });
+    } catch (e) {}
+
+    // remove script/style and sanitize attributes
+    try {
+      clone.querySelectorAll('script, style, link, iframe').forEach(n => { try { n.remove(); } catch(e){} });
+    } catch (e) {}
+
+    // remove inline event handlers / inline styles for safe html fallback
+    try {
+      clone.querySelectorAll('*').forEach(el => {
+        try {
+          if (!el || !el.attributes) return;
+          for (let i = el.attributes.length - 1; i >= 0; i--) {
+            const at = el.attributes[i];
+            if (!at) continue;
+            const name = (at.name || '').toLowerCase();
+            if (name.startsWith('on') || name === 'style' || name === 'onclick' || name === 'onmouseover') {
+              try { el.removeAttribute(at.name); } catch (e) {}
+            }
+          }
+        } catch (e) {}
+      });
+    } catch (e) {}
+
+    // Collect text and fallback HTML
+    let text = '';
+    try {
+      text = clone.innerText || '';
+      // collapse whitespace
+      text = String(text).replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n').replace(/[ \t]{2,}/g, ' ').replace(/\s{2,}/g, ' ').trim();
+      // remove trailing nav/ref sections common in publisher dumps
+      text = text.replace(/\b(References|External links|See also|Further reading|Related articles|Related Articles|Trending|Advertisement)\b[\s\S]*/ig, '');
+      // remove emails/contact lines
+      text = text.replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, ' ');
+      text = text.replace(/\s{2,}/g, ' ').trim();
+    } catch (e) { text = ''; }
+
+    let html = '';
+    try {
+      html = clone.innerHTML || '';
+    } catch (e) { html = ''; }
+
+    // Final safety fallback: if text is tiny, try extracting body text (less filtered)
+    if ((!text || text.length < 120) && document.body && document.body.innerText && document.body.innerText.length > 200) {
+      try {
+        text = String(document.body.innerText || '').replace(/\s{2,}/g, ' ').trim();
+      } catch (e) {}
+    }
+
+    return { text: (text || '').trim(), html: html || '', title: document.title || '' };
+  } catch (err) {
+    safeLog('extractCleanMainTextAndHtml error', err);
+    return { text: '', html: '', title: document.title || '' };
   }
+}
+
 
   // --- Overlay helper (preferred because it avoids DOM mutation issues)
   function createReaderOverlay(text) {

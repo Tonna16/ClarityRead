@@ -1466,10 +1466,13 @@ function summarizeTextLocal(rawText, maxSentencesArg = null, userPref = 'normal'
   const cleaned = scrubInputForSummarizer(rawText);
   if (!cleaned) return '';
 
+  // config for pref
+  const cfg = summarizerConfigForPref(userPref || 'normal');
+
   // adaptive max sentences if not explicitly provided
   const adaptiveMax = (typeof maxSentencesArg === 'number' && maxSentencesArg > 0)
-    ? Math.min(20, Math.max(1, Math.floor(maxSentencesArg)))
-    : getAdaptiveMaxSentences(cleaned, userPref);
+    ? Math.min(25, Math.max(1, Math.floor(maxSentencesArg)))
+    : computeAdaptiveMax(cleaned, userPref);
 
   // short text fast path
   if (cleaned.length < 220) {
@@ -1524,8 +1527,8 @@ function summarizeTextLocal(rawText, maxSentencesArg = null, userPref = 'normal'
   const candidatesList = scoredCandidates.map(x => x.sentence);
   const scoresList = scoredCandidates.map(x => ({ sentence: x.sentence, score: x.score }));
 
-  // MMR with adaptive lambda; k = adaptiveMax but clamp to available candidates
-  const lambda = 0.62;
+  // MMR with adaptive lambda from config; k = adaptiveMax but clamp to available candidates
+  const lambda = (typeof cfg.lambda === 'number') ? cfg.lambda : 0.62;
   const k = Math.max(1, Math.min(adaptiveMax, Math.max(1, candidatesList.length)));
   let selected = mmrSelectLocal(candidatesList, scoresList, k, lambda);
 
@@ -1544,16 +1547,15 @@ function summarizeTextLocal(rawText, maxSentencesArg = null, userPref = 'normal'
   const orderedSelected = docSents.filter(s => selected.includes(s));
   let final = (orderedSelected.length ? orderedSelected.join(' ') : selected.join(' ')).trim();
 
-  // final post-filter to remove TOC-like fragments or repeated nav junk
+  // final post-filter to remove TOC-like fragments or repeated nav junk (use pref-specific min length)
   try {
     const parts = final.split(/(?<=[.?!])\s+/).map(s => s.trim()).filter(Boolean);
     const filtered = parts.filter(s => {
-      // allow shorter sentences when user asked for detailed output
-      const minLen = (userPref === 'detailed') ? 16 : 28;
-      if (s.length < minLen) return false;
+      const minLen = (cfg && cfg.minSentenceLen) ? cfg.minSentenceLen : 28;
+      if (s.length < minLen && userPref !== 'detailed') return false;
       if (/^(Outline|History|See also|References|External links|Category|vte|Navigation)\b/i.test(s)) return false;
       const nonAlphaRatio = (s.replace(/[A-Za-z0-9]/g,'').length) / Math.max(1, s.length);
-      if (nonAlphaRatio > 0.30) return false; // slightly relaxed
+      if (nonAlphaRatio > 0.30) return false;
       if (/^[\u2000-\u206F\u2E00-\u2E7F\W]+$/.test(s)) return false;
       return true;
     });
@@ -1568,6 +1570,7 @@ function summarizeTextLocal(rawText, maxSentencesArg = null, userPref = 'normal'
     return final.slice(0, 800);
   }
 }
+
 
 
 
@@ -1716,12 +1719,7 @@ async function readSummaryPref() {
   } catch (e) { return 'normal'; }
 }
 
-// adaptive sentence count (pref + length-based mild scaling)
 function summarizerConfigForPref(pref = 'normal') {
-  // returns config adjustments per preference
-  // concise: fewer sentences, higher title weight, higher lambda (favor score over novelty)
-  // normal: balanced
-  // detailed: more sentences, lower lambda (favor novelty/diversity), allow shorter final sentences
   const cfg = {
     concise: { baseSentences: 2, lambda: 0.75, titleBoost: 1.6, minSentenceLen: 22, idfBoost: 1.0 },
     normal:  { baseSentences: 4, lambda: 0.62, titleBoost: 1.3, minSentenceLen: 28, idfBoost: 1.2 },
@@ -1738,10 +1736,11 @@ function computeAdaptiveMax(text = '', pref = 'normal') {
   // add ~1 sentence per 350-700 words depending on pref (detailed gets more)
   const per = (pref === 'detailed') ? 350 : (pref === 'concise' ? 700 : 500);
   base += Math.floor(words / per);
-  // clamp to 1..25 but allow larger docs to breathe
-  const cap = Math.min(25, Math.max(base, Math.round(base)));
+  // clamp to 1..25 but allow larger docs more room
+  const cap = Math.min(25, Math.max(1, Math.round(base)));
   return Math.max(1, cap);
 }
+
 
 
 

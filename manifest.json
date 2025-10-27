@@ -35,7 +35,7 @@
         "http://*/*",
         "https://*/*"
       ],
-      "js": ["src/contentScript.js"],
+      "js": ["src/contentScript.js", "src/lib/Readability.js"],
       "css": ["src/inject.css"],
       "run_at": "document_idle"
     }
