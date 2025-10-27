@@ -1387,22 +1387,21 @@ function tokenizeForScoring(sentence) {
   if (!sentence) return [];
   return (sentence.toLowerCase().match(/\b[^\d\W]+\b/g) || []).filter(w => !STOPWORDS_LOCAL.has(w) && w.length > 1);
 }
-
-/** Improved sentence score:
- * - stronger IDF influence when IDF present
- * - title overlap more influential
- * - penalize TOC-like or punctuation heavy lines (but not too aggressively)
- */
-function sentenceScoreLocal(sentence, tfGlobal, positionWeight = 1, titleTokens = new Set()) {
+// Updated to accept an optional opts param: { idfBoost, titleBoost }
+// Old callers (4 args) still work.
+function sentenceScoreLocal(sentence, tfGlobal, positionWeight = 1, titleTokens = new Set(), opts = {}) {
   const tokens = tokenizeForScoring(sentence);
   if (!tokens.length) return 0;
   let score = 0;
+
+  const idfBoost = (typeof opts.idfBoost === 'number') ? opts.idfBoost : 0.7; // default multiplier already used historically
+  const titleBoost = (typeof opts.titleBoost === 'number') ? opts.titleBoost : 1.2;
+
   for (const t of tokens) {
     const tf = tfGlobal[t] || 0;
-    // prefer IDF if available; fallback to 1
     const idf = (IDF_MAP && typeof IDF_MAP[t] !== 'undefined') ? IDF_MAP[t] : 1;
-    // amplify idf slightly to favor rarer terms
-    score += tf * (1 + 0.7 * idf);
+    // Use idfBoost from opts to alter how important rare terms are
+    score += tf * (1 + idfBoost * idf);
   }
 
   // normalize by length
@@ -1411,22 +1410,22 @@ function sentenceScoreLocal(sentence, tfGlobal, positionWeight = 1, titleTokens 
   // title overlap (bump)
   let titleOverlap = 0;
   for (const t of tokens) if (titleTokens.has(t)) titleOverlap++;
-  score += titleOverlap * 1.2;
+  score += titleOverlap * titleBoost;
 
-  // heuristics
+  // heuristics (unchanged)
   if (/\b(18|19|20)\d{2}\b/.test(sentence)) score *= 1.08;
   if (/[€$\£¥¢%]/.test(sentence)) score *= 1.06;
-  if (/\b[A-Z][a-z]{2,}\s+[A-Z][a-z]{2,}\b/.test(sentence)) score *= 1.05; // named entity bump
+  if (/\b[A-Z][a-z]{2,}\s+[A-Z][a-z]{2,}\b/.test(sentence)) score *= 1.05;
 
-  // penalty: headings/TOC-like (short uppercase lines, lots of punctuation or many commas)
   const nonAlphaRatio = (sentence.replace(/[A-Za-z0-9]/g,'').length) / Math.max(1, sentence.length);
-  if (nonAlphaRatio > 0.25) score *= 0.7;            // less aggressive than before
+  if (nonAlphaRatio > 0.25) score *= 0.7;
   if (/^[A-Z0-9\W]{5,40}$/.test(sentence) && sentence === sentence.toUpperCase()) score *= 0.6;
-  if (sentence.length < 18) score *= 0.7;            // allow shorter sentences a little more
+  if (sentence.length < 18) score *= 0.7;
 
   score *= positionWeight;
   return score;
 }
+
 
 /** MMR: same algorithm but lambda can be slightly adaptive */
 function mmrSelectLocal(candidates, scoresArr, k = 3, lambda = 0.62) {
@@ -1462,26 +1461,30 @@ function mmrSelectLocal(candidates, scoresArr, k = 3, lambda = 0.62) {
  */
 function summarizeTextLocal(rawText, maxSentencesArg = null, userPref = 'normal') {
   if (!rawText || typeof rawText !== 'string') return '';
-  // 1) scrub TONS of junk early
   const cleaned = scrubInputForSummarizer(rawText);
   if (!cleaned) return '';
 
-  // config for pref
   const cfg = summarizerConfigForPref(userPref || 'normal');
 
-  // adaptive max sentences if not explicitly provided
-  const adaptiveMax = (typeof maxSentencesArg === 'number' && maxSentencesArg > 0)
+  // plannedK: deterministic final count for this pref
+  const plannedK = (typeof maxSentencesArg === 'number' && maxSentencesArg > 0)
     ? Math.min(25, Math.max(1, Math.floor(maxSentencesArg)))
-    : computeAdaptiveMax(cleaned, userPref);
+    : computeFinalKForPref(cleaned, userPref);
 
-  // short text fast path
+  // debugging log if you turn on debugging flag on the page
+  try { if (window.__clarity_debug_summary) safeLog('summarizer config', { userPref, cfg, plannedK, rawLen: cleaned.length }); } catch(e){}
+
+  // very short fast path
   if (cleaned.length < 220) {
     const sents = splitIntoSentencesLocal(cleaned);
-    if (sents.length <= adaptiveMax) return sents.join(' ');
+    if (sents.length <= plannedK) return sents.join(' ');
     const tf = buildTermFrequenciesLocal(cleaned);
-    const scored = sents.map((sen, idx) => ({ sentence: sen, score: sentenceScoreLocal(sen, tf, ((idx === 0 || idx === sents.length-1) ? 1.12 : 1)) }));
+    const scored = sents.map((sen, idx) => ({
+      sentence: sen,
+      score: sentenceScoreLocal(sen, tf, ((idx === 0 || idx === sents.length-1) ? 1.12 : 1), new Set(), { idfBoost: cfg.idfBoost, titleBoost: cfg.titleBoost })
+    }));
     scored.sort((a,b) => b.score - a.score);
-    const chosen = scored.slice(0, adaptiveMax).map(x => x.sentence);
+    const chosen = scored.slice(0, plannedK).map(x => x.sentence);
     const ordered = sents.filter(s => chosen.includes(s));
     return (ordered.length ? ordered.join(' ') : chosen.join(' ')).trim();
   }
@@ -1497,18 +1500,18 @@ function summarizeTextLocal(rawText, maxSentencesArg = null, userPref = 'normal'
     if (!p) continue;
     const sents = splitIntoSentencesLocal(p);
     if (!sents.length) continue;
-    const scored = sents.map((sen, idx) => ({ sentence: sen, score: sentenceScoreLocal(sen, globalTF, (idx === 0 ? 1.08 : (idx === sents.length - 1 ? 1.03 : 1)), titleTokens) }));
+    const scored = sents.map((sen, idx) => ({
+      sentence: sen,
+      score: sentenceScoreLocal(sen, globalTF, (idx === 0 ? 1.08 : (idx === sents.length - 1 ? 1.03 : 1)), titleTokens, { idfBoost: cfg.idfBoost, titleBoost: cfg.titleBoost })
+    }));
     scored.sort((a,b) => b.score - a.score);
 
-    // choose top N: for long paragraphs allow more candidates
     const longPara = p.length > 800;
     const topCount = longPara ? Math.min(3, Math.max(1, Math.ceil(scored.length * 0.33))) : Math.min(2, Math.max(1, Math.ceil(scored.length * 0.20)));
     for (let i = 0; i < Math.min(topCount, scored.length); i++) {
       const candidate = scored[i].sentence.trim();
-      // relax small-sentence cutoff (allow shorter candidates)
       if (candidate && candidate.length > 18) paraSummaries.push(candidate);
     }
-    // limit candidate gathering to avoid exploding memory
     if (paraSummaries.join(' ').length > Math.max(CHUNK_SIZE_CHARS || 10000, 3 * (CHUNK_SIZE_CHARS || 10000))) break;
   }
 
@@ -1520,25 +1523,29 @@ function summarizeTextLocal(rawText, maxSentencesArg = null, userPref = 'normal'
     if (!allCandidates.length) allCandidates = paraSummaries.slice();
   }
 
-  // score candidates globally
-  const scoredCandidates = allCandidates.map((sen, idx) => ({ sentence: sen, score: sentenceScoreLocal(sen, globalTF, (idx === 0 || idx === allCandidates.length - 1) ? 1.05 : 1, titleTokens) }));
+  const scoredCandidates = allCandidates.map((sen, idx) => ({
+    sentence: sen,
+    score: sentenceScoreLocal(sen, globalTF, (idx === 0 || idx === allCandidates.length - 1) ? 1.05 : 1, titleTokens, { idfBoost: cfg.idfBoost, titleBoost: cfg.titleBoost })
+  }));
   scoredCandidates.sort((a,b) => b.score - a.score);
 
   const candidatesList = scoredCandidates.map(x => x.sentence);
   const scoresList = scoredCandidates.map(x => ({ sentence: x.sentence, score: x.score }));
 
-  // MMR with adaptive lambda from config; k = adaptiveMax but clamp to available candidates
+  // Use cfg.lambda and plannedK
   const lambda = (typeof cfg.lambda === 'number') ? cfg.lambda : 0.62;
-  const k = Math.max(1, Math.min(adaptiveMax, Math.max(1, candidatesList.length)));
+  const k = Math.max(1, Math.min(plannedK, Math.max(1, candidatesList.length)));
+  try { if (window.__clarity_debug_summary) safeLog('MMR input', { lambda, k, candidates: Math.min(200, candidatesList.length) }); } catch(e){}
+
   let selected = mmrSelectLocal(candidatesList, scoresList, k, lambda);
 
-  // trim to adaptiveMax
-  if (selected.length > adaptiveMax) selected = selected.slice(0, adaptiveMax);
+  // ensure we have at most k
+  if (selected.length > k) selected = selected.slice(0, k);
 
-  // fallback if selection fails or weird
+  // fallback if broken
   const joinedSel = selected.join(' ');
   if (!joinedSel || (joinedSel.length / Math.max(1, cleaned.length) > 0.95) || selected.length === 0) {
-    const firstSents = splitIntoSentencesLocal(cleaned).slice(0, adaptiveMax);
+    const firstSents = splitIntoSentencesLocal(cleaned).slice(0, k);
     if (firstSents && firstSents.length) return firstSents.join(' ').trim();
   }
 
@@ -1547,7 +1554,7 @@ function summarizeTextLocal(rawText, maxSentencesArg = null, userPref = 'normal'
   const orderedSelected = docSents.filter(s => selected.includes(s));
   let final = (orderedSelected.length ? orderedSelected.join(' ') : selected.join(' ')).trim();
 
-  // final post-filter to remove TOC-like fragments or repeated nav junk (use pref-specific min length)
+  // post-filter: use cfg.minSentenceLen; be conservative for concise/normal
   try {
     const parts = final.split(/(?<=[.?!])\s+/).map(s => s.trim()).filter(Boolean);
     const filtered = parts.filter(s => {
@@ -1565,11 +1572,13 @@ function summarizeTextLocal(rawText, maxSentencesArg = null, userPref = 'normal'
   try {
     if (!final) return cleaned.slice(0, 800);
     const finalSents = splitIntoSentencesLocal(final);
-    return finalSents.slice(0, Math.max(1, Math.min(adaptiveMax, finalSents.length))).join(' ').trim();
+    // Return up to plannedK (not the earlier adaptiveMax which could be different)
+    return finalSents.slice(0, Math.max(1, Math.min(k, finalSents.length))).join(' ').trim();
   } catch (e) {
     return final.slice(0, 800);
   }
 }
+
 
 
 
@@ -1719,14 +1728,31 @@ async function readSummaryPref() {
   } catch (e) { return 'normal'; }
 }
 
+// returns config adjustments per preference
 function summarizerConfigForPref(pref = 'normal') {
   const cfg = {
-    concise: { baseSentences: 2, lambda: 0.75, titleBoost: 1.6, minSentenceLen: 22, idfBoost: 1.0 },
-    normal:  { baseSentences: 4, lambda: 0.62, titleBoost: 1.3, minSentenceLen: 28, idfBoost: 1.2 },
-    detailed:{ baseSentences: 7, lambda: 0.48, titleBoost: 1.1, minSentenceLen: 14, idfBoost: 1.5 }
+    concise: { baseSentences: 2, lambda: 0.78, titleBoost: 1.6, minSentenceLen: 22, idfBoost: 1.0, lengthFactor: 0.6 },
+    normal:  { baseSentences: 4, lambda: 0.62, titleBoost: 1.3, minSentenceLen: 28, idfBoost: 1.2, lengthFactor: 1.0 },
+    detailed:{ baseSentences: 7, lambda: 0.48, titleBoost: 1.1, minSentenceLen: 14, idfBoost: 1.5, lengthFactor: 1.6 }
   };
   return cfg[pref] || cfg.normal;
 }
+
+/**
+ * Deterministic final-k computation so concise <= normal <= detailed.
+ * This uses a small multiplier (lengthFactor) per-pref and scales with document length.
+ */
+function computeFinalKForPref(text = '', pref = 'normal') {
+  const words = (text || '').trim().split(/\s+/).filter(Boolean).length || 0;
+  const cfg = summarizerConfigForPref(pref);
+  // base + scaled by words, then multiplied by lengthFactor so prefs always order correctly
+  const wordsBoost = Math.floor(words / 450); // 1 extra sentence ~ per ~450 words
+  const raw = cfg.baseSentences + wordsBoost;
+  const k = Math.max(1, Math.round(raw * (cfg.lengthFactor || 1)));
+  // clamp to avoid absurd sizes
+  return Math.min(25, k);
+}
+
 
 function computeAdaptiveMax(text = '', pref = 'normal') {
   const words = (text || '').trim().split(/\s+/).filter(Boolean).length || 0;
