@@ -1478,7 +1478,9 @@ function summarizeTextLocal(rawText, maxSentencesArg = null, userPref = 'normal'
     ? Math.min(25, Math.max(1, Math.floor(maxSentencesArg)))
     : computeFinalKForPref(cleaned, userPref);
 
-  try { if (window.__clarity_debug_summary) safeLog('summarizer config', { userPref, cfg, plannedK, rawLen: cleaned.length }); } catch(e){}
+try {
+  if (window.__clarity_debug_summary) safeLog('summarizer config', { userPref, cfg, plannedK, rawLen: cleaned.length, candidatesHeuristic: computeAdaptiveMax ? computeAdaptiveMax(cleaned, userPref) : null });
+} catch(e){}
 
   // small fast-path unchanged but with idf/titleBoost from cfg
   if (cleaned.length < 220) {
@@ -1555,15 +1557,25 @@ function summarizeTextLocal(rawText, maxSentencesArg = null, userPref = 'normal'
   // post-filter: prefer cfg.minSentenceLen but preserve enough sentences; relax if we end up with too few
   try {
     const parts = final.split(/(?<=[.?!])\s+/).map(s => s.trim()).filter(Boolean);
-    const filtered = parts.filter(s => {
-      const minLen = (cfg && cfg.minSentenceLen) ? cfg.minSentenceLen : 28;
-      if (s.length < minLen && userPref !== 'detailed') return false;
-      if (/^(Outline|History|See also|References|External links|Category|vte|Navigation)\b/i.test(s)) return false;
-      const nonAlphaRatio = (s.replace(/[A-Za-z0-9]/g,'').length) / Math.max(1, s.length);
-      if (nonAlphaRatio > 0.30) return false;
-      if (/^[\u2000-\u206F\u2E00-\u2E7F\W]+$/.test(s)) return false;
-      return true;
-    });
+   const filtered = parts.filter(s => {
+  // slightly relaxed minLength rule: allow short sentences for concise/normal but keep detailed rules aggressive
+  const minLen = (cfg && cfg.minSentenceLen) ? cfg.minSentenceLen : 28;
+  const effectiveMin = (userPref === 'detailed') ? Math.max(12, Math.round(minLen * 0.6)) : Math.max(8, Math.round(minLen * 0.5));
+  if (s.length < effectiveMin && userPref !== 'detailed') {
+    // allow some short sentences for concise/normal (helps selections and headlines)
+    // but we still drop extremely tiny fragments
+    if (s.length < 8) return false;
+  }
+  if (/^(Outline|History|See also|References|External links|Category|vte|Navigation)\b/i.test(s)) return false;
+  const nonAlphaRatio = (s.replace(/[A-Za-z0-9]/g,'').length) / Math.max(1, s.length);
+  // relax for short sentences (ratio is less meaningful there)
+  if (s.length >= 40 && nonAlphaRatio > 0.30) return false;
+  if (/^[\u2000-\u206F\u2E00-\u2E7F\W]+$/.test(s)) return false;
+  return true;
+});
+try { if (window.__clarity_debug_summary) safeLog('post-filter counts', { partsBefore: parts.length, partsAfter: filtered.length, userPref }); } catch(e){}
+
+
 
     // if filtering removed too many sentences, relax and use top-k scored candidates instead
     if (filtered.length < Math.max(1, Math.min(2, k))) {
@@ -2047,8 +2059,21 @@ async function summarizeCurrentPageOrSelection_AiAware() {
     }
 
     // read preference + compute sentences
-    const pref = await readSummaryPref();
-    const adaptiveMax = computeAdaptiveMax(text, pref);
+// read preference + compute sentences (use deterministic final-K so concise <= normal <= detailed)
+const pref = await readSummaryPref();
+
+// compute both values and log them for debugging
+const adaptiveMax = computeAdaptiveMax(text, pref);
+const plannedK = (typeof computeFinalKForPref === 'function')
+  ? computeFinalKForPref(text, pref)
+  : (Math.max(1, Math.round(adaptiveMax))); // fallback if computeFinalKForPref not available
+
+safeLog && safeLog('summary counts', { pref, adaptiveMax, plannedK });
+
+// pass plannedK into summarizeTextLocal so we always respect deterministic pref ordering
+// keep the variable name "adaptiveMaxForCall" so later logging still makes sense
+const adaptiveMaxForCall = Math.max(1, Math.min(25, Math.floor(plannedK)));
+
 
     // run summarizer with deterministic progress toast
     const pid = createProgressToast('Generating summary — please wait...', 60000);
@@ -2082,7 +2107,8 @@ try {
 
 
       if (typeof summarizeTextLocal === 'function') {
-        summary = summarizeTextLocal(text, adaptiveMax, pref) || summary;
+summary = summarizeTextLocal(text, adaptiveMaxForCall, pref) || summary;
+safeLog && safeLog('summarizer invoked', { usedK: adaptiveMaxForCall, pref });
       } else {
         summary = '(summarizer not available)';
       }

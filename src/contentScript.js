@@ -693,10 +693,6 @@ function extractCleanMainTextAndHtml(mainNode) {
     }
   }
 }
-
-
-
-
   // --- Overlay helper (preferred because it avoids DOM mutation issues)
   function createReaderOverlay(text) {
     removeReaderOverlay();
