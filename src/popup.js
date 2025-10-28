@@ -1461,20 +1461,26 @@ function mmrSelectLocal(candidates, scoresArr, k = 3, lambda = 0.62) {
  */
 function summarizeTextLocal(rawText, maxSentencesArg = null, userPref = 'normal') {
   if (!rawText || typeof rawText !== 'string') return '';
-  const cleaned = scrubInputForSummarizer(rawText);
+  let cleaned = scrubInputForSummarizer(rawText);
   if (!cleaned) return '';
+
+  // add a normalization pass for glued fragments BEFORE scoring
+  try {
+    cleaned = cleaned.replace(/([a-z0-9])([A-Z][a-z])/g, '$1 $2');
+    cleaned = cleaned.replace(/([^\s])By([A-Z])/g, '$1 By $2');
+    cleaned = cleaned.replace(/(Updated on|updated on)([A-Z0-9])/g, '$1 $2');
+  } catch (e) {}
 
   const cfg = summarizerConfigForPref(userPref || 'normal');
 
-  // plannedK: deterministic final count for this pref
+  // plannedK = clamp explicit arg or compute with deterministic per-pref function
   const plannedK = (typeof maxSentencesArg === 'number' && maxSentencesArg > 0)
     ? Math.min(25, Math.max(1, Math.floor(maxSentencesArg)))
     : computeFinalKForPref(cleaned, userPref);
 
-  // debugging log if you turn on debugging flag on the page
   try { if (window.__clarity_debug_summary) safeLog('summarizer config', { userPref, cfg, plannedK, rawLen: cleaned.length }); } catch(e){}
 
-  // very short fast path
+  // small fast-path unchanged but with idf/titleBoost from cfg
   if (cleaned.length < 220) {
     const sents = splitIntoSentencesLocal(cleaned);
     if (sents.length <= plannedK) return sents.join(' ');
@@ -1489,7 +1495,7 @@ function summarizeTextLocal(rawText, maxSentencesArg = null, userPref = 'normal'
     return (ordered.length ? ordered.join(' ') : chosen.join(' ')).trim();
   }
 
-  // paragraphs -> candidate extraction
+  // paragraph candidates
   const paragraphs = splitIntoParagraphsLocal(cleaned);
   const globalTF = buildTermFrequenciesLocal(cleaned);
   const firstLine = (cleaned.split('\n')[0] || '').trim();
@@ -1500,10 +1506,7 @@ function summarizeTextLocal(rawText, maxSentencesArg = null, userPref = 'normal'
     if (!p) continue;
     const sents = splitIntoSentencesLocal(p);
     if (!sents.length) continue;
-    const scored = sents.map((sen, idx) => ({
-      sentence: sen,
-      score: sentenceScoreLocal(sen, globalTF, (idx === 0 ? 1.08 : (idx === sents.length - 1 ? 1.03 : 1)), titleTokens, { idfBoost: cfg.idfBoost, titleBoost: cfg.titleBoost })
-    }));
+    const scored = sents.map((sen, idx) => ({ sentence: sen, score: sentenceScoreLocal(sen, globalTF, (idx === 0 ? 1.08 : (idx === sents.length - 1 ? 1.03 : 1)), titleTokens, { idfBoost: cfg.idfBoost, titleBoost: cfg.titleBoost }) }));
     scored.sort((a,b) => b.score - a.score);
 
     const longPara = p.length > 800;
@@ -1523,38 +1526,33 @@ function summarizeTextLocal(rawText, maxSentencesArg = null, userPref = 'normal'
     if (!allCandidates.length) allCandidates = paraSummaries.slice();
   }
 
-  const scoredCandidates = allCandidates.map((sen, idx) => ({
-    sentence: sen,
-    score: sentenceScoreLocal(sen, globalTF, (idx === 0 || idx === allCandidates.length - 1) ? 1.05 : 1, titleTokens, { idfBoost: cfg.idfBoost, titleBoost: cfg.titleBoost })
-  }));
+  const scoredCandidates = allCandidates.map((sen, idx) => ({ sentence: sen, score: sentenceScoreLocal(sen, globalTF, (idx === 0 || idx === allCandidates.length - 1) ? 1.05 : 1, titleTokens, { idfBoost: cfg.idfBoost, titleBoost: cfg.titleBoost }) }));
   scoredCandidates.sort((a,b) => b.score - a.score);
 
   const candidatesList = scoredCandidates.map(x => x.sentence);
   const scoresList = scoredCandidates.map(x => ({ sentence: x.sentence, score: x.score }));
 
-  // Use cfg.lambda and plannedK
   const lambda = (typeof cfg.lambda === 'number') ? cfg.lambda : 0.62;
   const k = Math.max(1, Math.min(plannedK, Math.max(1, candidatesList.length)));
   try { if (window.__clarity_debug_summary) safeLog('MMR input', { lambda, k, candidates: Math.min(200, candidatesList.length) }); } catch(e){}
 
   let selected = mmrSelectLocal(candidatesList, scoresList, k, lambda);
 
-  // ensure we have at most k
   if (selected.length > k) selected = selected.slice(0, k);
 
-  // fallback if broken
+  // fallback if selection is tiny or looks suspiciously like header/TOC-only
   const joinedSel = selected.join(' ');
   if (!joinedSel || (joinedSel.length / Math.max(1, cleaned.length) > 0.95) || selected.length === 0) {
     const firstSents = splitIntoSentencesLocal(cleaned).slice(0, k);
     if (firstSents && firstSents.length) return firstSents.join(' ').trim();
   }
 
-  // keep document order
+  // keep doc order
   const docSents = splitIntoSentencesLocal(cleaned);
   const orderedSelected = docSents.filter(s => selected.includes(s));
   let final = (orderedSelected.length ? orderedSelected.join(' ') : selected.join(' ')).trim();
 
-  // post-filter: use cfg.minSentenceLen; be conservative for concise/normal
+  // post-filter: prefer cfg.minSentenceLen but preserve enough sentences; relax if we end up with too few
   try {
     const parts = final.split(/(?<=[.?!])\s+/).map(s => s.trim()).filter(Boolean);
     const filtered = parts.filter(s => {
@@ -1566,18 +1564,31 @@ function summarizeTextLocal(rawText, maxSentencesArg = null, userPref = 'normal'
       if (/^[\u2000-\u206F\u2E00-\u2E7F\W]+$/.test(s)) return false;
       return true;
     });
-    if (filtered.length) final = filtered.join(' ');
+
+    // if filtering removed too many sentences, relax and use top-k scored candidates instead
+    if (filtered.length < Math.max(1, Math.min(2, k))) {
+      // take top-scored sentences and preserve document order
+      const fallbackTop = scoredCandidates.slice(0, Math.min(k, scoredCandidates.length)).map(x => x.sentence);
+      const fallbackOrdered = docSents.filter(s => fallbackTop.includes(s)).slice(0, k);
+      if (fallbackOrdered.length) {
+        final = fallbackOrdered.join(' ');
+      } else if (filtered.length) {
+        final = filtered.join(' ');
+      }
+    } else if (filtered.length) {
+      final = filtered.join(' ');
+    }
   } catch (e) {}
 
   try {
     if (!final) return cleaned.slice(0, 800);
     const finalSents = splitIntoSentencesLocal(final);
-    // Return up to plannedK (not the earlier adaptiveMax which could be different)
     return finalSents.slice(0, Math.max(1, Math.min(k, finalSents.length))).join(' ').trim();
   } catch (e) {
     return final.slice(0, 800);
   }
 }
+
 
 
 
@@ -2044,21 +2055,31 @@ async function summarizeCurrentPageOrSelection_AiAware() {
     let summary = '(no summary produced)';
     try {
       // additional pre-scrub to drop author lines / bylines that confuse scoring
-      try {
-        text = text.replace(/^\s*(By|Author:|Written by)\s+[^\n]{0,200}$/gim, ' ');
-        text = text.replace(/\b(last edited|last updated|published on|©|copyright|all rights reserved)\b[^\n]*/gi, ' ');
-        text = text.replace(/^\s*(Contact|Contact us|Subscribe|Follow (us|@)|Related articles|Read more|Advert(isement)?|Sponsored)\b[^\n]*$/gim, ' ');
-        text = text.replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, ' ');
-        text = text.replace(/\b(?:https?:\/\/|www\.)\S+\b/gi, ' ');
-        text = text.replace(/(?:\+?\d[\d() .-]{7,}\d)/g, ' ');
-        text = text.split(/\n/).filter(line => {
-          const t = line.trim();
-          if (!t) return false;
-          if (t.length < 20 && /^(Read|More|Share|Related|Jump|Contents|Table of contents|Menu|Skip to)/i.test(t)) return false;
-          if (/^(\/|#|\-|\*|:){2,}/.test(t)) return false;
-          return true;
-        }).join('\n');
-      } catch (e) { safeLog('prescrub threw', e); }
+     // ---------- stronger presc rub for bylines / glued fragments ----------
+try {
+  // insert missing spaces for glued fragments that happen in some publisher DOMs
+  text = text.replace(/([a-z0-9])([A-Z][a-z])/g, '$1 $2');
+  text = text.replace(/([^\s])By([A-Z])/g, '$1 By $2');
+  text = text.replace(/(Updated on|updated on)([A-Z0-9])/g, '$1 $2');
+
+  // original cleans that remove obvious junk
+  text = text.replace(/^\s*(By|Author:|Written by)\s+[^\n]{0,200}$/gim, ' ');
+  text = text.replace(/\b(last edited|last updated|published on|©|copyright|all rights reserved)\b[^\n]*/gi, ' ');
+  text = text.replace(/^\s*(Contact|Contact us|Subscribe|Follow (us|@)|Related articles|Read more|Advert(isement)?|Sponsored)\b[^\n]*$/gim, ' ');
+  text = text.replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, ' ');
+  text = text.replace(/\b(?:https?:\/\/|www\.)\S+\b/gi, ' ');
+  text = text.replace(/(?:\+?\d[\d() .-]{7,}\d)/g, ' ');
+
+  // drop very short nav lines
+  text = text.split(/\n/).filter(line => {
+    const t = line.trim();
+    if (!t) return false;
+    if (t.length < 20 && /^(Read|More|Share|Related|Jump|Contents|Table of contents|Menu|Skip to|Explore|Diet & Nutrition)/i.test(t)) return false;
+    if (/^(\/|#|\-|\*|:){2,}/.test(t)) return false;
+    return true;
+  }).join('\n');
+} catch (e) { safeLog('prescrub threw', e); }
+
 
       if (typeof summarizeTextLocal === 'function') {
         summary = summarizeTextLocal(text, adaptiveMax, pref) || summary;

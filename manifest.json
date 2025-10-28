@@ -30,16 +30,20 @@
     "type": "module"
   },
   "content_scripts": [
-    {
-      "matches": [
-        "http://*/*",
-        "https://*/*"
-      ],
-      "js": ["src/contentScript.js", "src/lib/Readability.js"],
-      "css": ["src/inject.css"],
-      "run_at": "document_idle"
-    }
-  ],
+  {
+    "matches": [
+      "http://*/*",
+      "https://*/*"
+    ],
+    "js": [
+      "src/lib/Readability.js",
+      "src/contentScript.js"
+    ],
+    "css": ["src/inject.css"],
+    "run_at": "document_idle"
+  }
+]
+,
   "web_accessible_resources": [
     {
       "resources": [

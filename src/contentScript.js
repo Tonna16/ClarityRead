@@ -468,54 +468,76 @@ html.readeasy-reflow h3 {
   }
 
   // --- Extraction helper: robust cleaning (site-specific heuristics + general noise filtering)
-  function extractCleanMainTextAndHtml(mainNode) {
-  try {
-    // --- Try Readability first (best-effort). ---
+function extractCleanMainTextAndHtml(mainNode) {
+  // local logger that prefers safeLog if present
+  const lg = (...args) => {
     try {
-      if (typeof Readability === 'function') {
+      if (typeof safeLog === 'function') safeLog.apply(null, args);
+      else console.log.apply(console, args);
+    } catch (e) {
+      try { console.log.apply(console, args); } catch (e2) {}
+    }
+  };
+
+  try {
+    lg('extractCleanMainTextAndHtml start', { hostname: (location && location.hostname) ? location.hostname : '' });
+
+    // --- Try Readability first (live document preferred) ---
+    try {
+      const hasRead = (typeof Readability === 'function');
+      lg('Readability available?', !!hasRead);
+      if (hasRead) {
+        // 1) Live-document parse (best for dynamically hydrated pages)
         try {
-          // Build a sanitized serialized snapshot of the document so Readability isn't confused
+          lg('Attempting Readability.parse on live document');
+          const articleLive = new Readability(document).parse();
+          lg('Readability.parse live result', { ok: !!articleLive, title: articleLive && articleLive.title, textLen: articleLive && articleLive.textContent ? (articleLive.textContent || '').length : 0 });
+          if (articleLive && articleLive.textContent && String(articleLive.textContent).trim().length > 200) {
+            let text = String(articleLive.textContent || '').replace(/\s{2,}/g, ' ').trim();
+            text = _postCleanExtractedText(text);
+            return { text, html: String(articleLive.content || '').trim(), title: (articleLive.title || document.title || '') };
+          }
+        } catch (liveErr) {
+          lg('Readability live parse threw (continuing to serialized fallback)', liveErr && (liveErr.stack || liveErr.message || liveErr));
+        }
+
+        // 2) Serialized DOM parse as fallback
+        try {
+          lg('Attempting Readability.parse on serialized DOM');
           const serialized = (document.documentElement && document.documentElement.outerHTML)
             ? document.documentElement.outerHTML
-            : document.documentElement && document.documentElement.innerHTML
-              ? document.documentElement.innerHTML
-              : document.body && document.body.outerHTML
-                ? document.body.outerHTML
-                : '';
-
+            : (document.body && document.body.outerHTML) ? document.body.outerHTML : '';
           if (serialized && serialized.length) {
             const parser = new DOMParser();
             const parsedDoc = parser.parseFromString('<!doctype html>\n' + serialized, 'text/html');
-
-            // Run Readability on the parsed document
-            try {
-              const article = new Readability(parsedDoc).parse();
-              if (article && article.textContent && String(article.textContent).trim().length > 200) {
-                return {
-                  text: String(article.textContent || '').replace(/\s{2,}/g, ' ').trim(),
-                  html: String(article.content || '').trim(),
-                  title: (article.title || document.title || '')
-                };
-              }
-              // If article is too small we fall through to the legacy extractor
-            } catch (rdErr) {
-              // Readability sometimes throws on exotic pages; ignore and continue to fallback
-              // safeLog('Readability parse failed, falling back', rdErr);
+            const article = new Readability(parsedDoc).parse();
+            lg('Readability.parse serialized result', { ok: !!article, title: article && article.title, textLen: article && article.textContent ? (article.textContent || '').length : 0 });
+            if (article && article.textContent && String(article.textContent).trim().length > 200) {
+              let text = String(article.textContent || '').replace(/\s{2,}/g, ' ').trim();
+              text = _postCleanExtractedText(text);
+              return { text, html: String(article.content || '').trim(), title: (article.title || document.title || '') };
             }
+          } else {
+            lg('Serialization produced empty string; skipping serialized Readability parse');
           }
-        } catch (e) {
-          // Readability invocation failed; fall back to legacy approach
+        } catch (serErr) {
+          lg('Readability serialized parse threw (falling back to legacy extractor)', serErr && (serErr.stack || serErr.message || serErr));
         }
       }
     } catch (e) {
-      // Readability not present or other error; continue
+      lg('Readability check threw (will use legacy extractor)', e && (e.stack || e));
     }
 
-    // --- Legacy fallback extractor (your original logic, slightly hardened) ---
-    const clone = (mainNode && typeof mainNode.cloneNode === 'function') ? mainNode.cloneNode(true) : null;
-    if (!clone) return { text: '', html: '', title: document.title || '' };
+    // --- Legacy fallback extractor (clone + prune) ---
+    lg('Using legacy extractor (clone + prune)');
 
-    // default selectors to remove
+    const clone = (mainNode && typeof mainNode.cloneNode === 'function') ? mainNode.cloneNode(true) : null;
+    if (!clone) {
+      lg('Legacy extractor: no mainNode clone available — returning empty');
+      return { text: '', html: '', title: document.title || '' };
+    }
+
+    // selectors to remove
     const toRemove = [
       'header','footer','nav','aside',
       '.navbox','.vertical-navbox','.toc','#toc',
@@ -531,69 +553,36 @@ html.readeasy-reflow h3 {
       '.breadcrumb','.breadcrumbs','.tag-list','.tags','.topics'
     ];
 
-    // site-specific extra selectors (extend as needed)
+    // site-specific extras
     const hostname = (location.hostname || '').toLowerCase();
     const siteExtras = {
-      'health.clevelandclinic.org': [
-        '.related-articles', '.related-articles-module', '.rc-article-related', '.article__related',
-        '.trending', '.more-articles', '.cc-byline', '.byline', '.author'
-      ],
-      'clevelandclinic.org': [
-        '.related-articles', '.trending', '.more-articles'
-      ],
-      'www.nytimes.com': [
-        '.meteredContent', '.css-1fanzo5', '.ad-section', '.story-footer', '.StoryBodyCompanionColumn'
-      ],
-      'nytimes.com': [
-        '.meteredContent', '.story-footer'
-      ],
-      'www.washingtonpost.com': [
-        '.paywall', '.latest', '.related-content', '.story-body__aside'
-      ],
-      'washingtonpost.com': [
-        '.paywall'
-      ],
-      // Add more hosts if needed
+      'health.clevelandclinic.org': ['.related-articles', '.related-articles-module', '.rc-article-related', '.article__related', '.trending', '.more-articles', '.cc-byline', '.byline', '.author'],
+      'clevelandclinic.org': ['.related-articles', '.trending', '.more-articles'],
+      'www.nytimes.com': ['.meteredContent', '.css-1fanzo5', '.ad-section', '.story-footer', '.StoryBodyCompanionColumn'],
+      'nytimes.com': ['.meteredContent', '.story-footer'],
+      'www.washingtonpost.com': ['.paywall', '.latest', '.related-content', '.story-body__aside'],
+      'washingtonpost.com': ['.paywall']
     };
 
     if (siteExtras[hostname] && Array.isArray(siteExtras[hostname])) {
       toRemove.push(...siteExtras[hostname]);
     } else {
-      Object.keys(siteExtras).forEach(k => {
-        if (hostname.endsWith(k)) toRemove.push(...siteExtras[k]);
-      });
+      Object.keys(siteExtras).forEach(k => { if (hostname.endsWith(k)) toRemove.push(...siteExtras[k]); });
     }
 
-    // Remove selectors (best-effort catch)
+    // remove selectors (best-effort)
     try {
       toRemove.forEach(sel => {
-        try {
-          clone.querySelectorAll(sel).forEach(n => {
-            try { n.remove(); } catch (e) {}
-          });
-        } catch (e) {}
+        try { clone.querySelectorAll(sel).forEach(n => { try { n.remove(); } catch (e){} }); } catch(e){}
       });
-    } catch (e) {}
+    } catch(e){
+      lg('Error removing toRemove selectors', e && (e.stack || e));
+    }
 
-    // Additional generic heuristic: remove nodes with noisy class/id patterns
-    try {
-      const noisyRe = /(related|promo|advert|ad-|ad_|ads|subscribe|newsletter|share|social|comments?|footer|header|cookie|breadcrumb|promo|trending|author|byline|meta|signup|cta|paywall)/i;
-      Array.from(clone.querySelectorAll('*')).forEach(el => {
-        try {
-          const idc = (el.id || '') + ' ' + (el.className || '');
-          if (noisyRe.test(idc) && (el.innerText || '').length < 600) {
-            el.remove();
-          }
-        } catch (e) {}
-      });
-    } catch (e) {}
+    // remove script/style/link/iframe etc
+    try { clone.querySelectorAll('script, style, link, iframe').forEach(n => { try { n.remove(); } catch(e){} }); } catch(e){ lg('Error removing script/style/link/iframe', e && (e.stack || e)); }
 
-    // remove script/style and sanitize attributes
-    try {
-      clone.querySelectorAll('script, style, link, iframe').forEach(n => { try { n.remove(); } catch(e){} });
-    } catch (e) {}
-
-    // remove inline event handlers / inline styles for safe html fallback
+    // sanitize attributes (inline handlers/styles)
     try {
       clone.querySelectorAll('*').forEach(el => {
         try {
@@ -606,41 +595,106 @@ html.readeasy-reflow h3 {
               try { el.removeAttribute(at.name); } catch (e) {}
             }
           }
-        } catch (e) {}
+        } catch(e){}
       });
-    } catch (e) {}
+    } catch(e){ lg('Error sanitizing attributes', e && (e.stack || e)); }
 
-    // Collect text and fallback HTML
+    // reasonable noisy-node heuristic
+    try {
+      const noisyRe = /(related|promo|advert|ad-|ad_|ads|subscribe|newsletter|share|social|comments?|footer|header|cookie|breadcrumb|promo|trending|author|byline|meta|signup|cta|paywall)/i;
+      Array.from(clone.querySelectorAll('*')).forEach(el => {
+        try {
+          const idc = (el.id || '') + ' ' + (el.className || '');
+          if (noisyRe.test(idc) && (el.innerText || '').length < 600) el.remove();
+        } catch(e){}
+      });
+    } catch(e){ lg('Error running noisy-node heuristic', e && (e.stack || e)); }
+
+    // collect text + final post-cleaning
     let text = '';
     try {
       text = clone.innerText || '';
-      // collapse whitespace
+      lg('Legacy extractor: raw clone innerText length', text.length);
       text = String(text).replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n').replace(/[ \t]{2,}/g, ' ').replace(/\s{2,}/g, ' ').trim();
-      // remove trailing nav/ref sections common in publisher dumps
+      // drop trailing nav/ref chunks
       text = text.replace(/\b(References|External links|See also|Further reading|Related articles|Related Articles|Trending|Advertisement)\b[\s\S]*/ig, '');
       // remove emails/contact lines
       text = text.replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, ' ');
       text = text.replace(/\s{2,}/g, ' ').trim();
-    } catch (e) { text = ''; }
+      // run post-cleaner
+      text = _postCleanExtractedText(text);
+      lg('Legacy extractor: cleaned text length', text.length);
+    } catch(e) {
+      lg('Legacy extractor: collecting text failed', e && (e.stack || e));
+      text = '';
+    }
 
     let html = '';
-    try {
-      html = clone.innerHTML || '';
-    } catch (e) { html = ''; }
+    try { html = clone.innerHTML || ''; } catch(e) { html = ''; }
 
-    // Final safety fallback: if text is tiny, try extracting body text (less filtered)
     if ((!text || text.length < 120) && document.body && document.body.innerText && document.body.innerText.length > 200) {
       try {
         text = String(document.body.innerText || '').replace(/\s{2,}/g, ' ').trim();
-      } catch (e) {}
+        text = _postCleanExtractedText(text);
+        lg('Fallback to document.body text used, length', text.length);
+      } catch(e) { lg('Fallback to document.body failed', e && (e.stack || e)); }
     }
 
     return { text: (text || '').trim(), html: html || '', title: document.title || '' };
+
   } catch (err) {
-    safeLog('extractCleanMainTextAndHtml error', err);
+    try {
+      if (typeof safeLog === 'function') safeLog('extractCleanMainTextAndHtml error', err && (err.stack || err));
+      else console.error('extractCleanMainTextAndHtml error', err && (err.stack || err));
+    } catch (e) { /* swallow */ }
     return { text: '', html: '', title: document.title || '' };
   }
+
+  // -------------------------
+  // helper: normalize glued fragments and strip leading header/meta noise
+  // -------------------------
+  function _postCleanExtractedText(text) {
+    try {
+      if (!text || typeof text !== 'string') return '';
+      // 1) insert spaces where words got glued (conservative)
+      text = text.replace(/([a-z0-9])([A-Z][a-z])/g, '$1 $2');
+      text = text.replace(/([^\s])By([A-Z])/g, '$1 By $2');
+      text = text.replace(/(Updated on|updated on)([A-Z0-9])/g, '$1 $2');
+
+      // split into lines and drop short top noise blocks
+      const lines = String(text).split(/\n/).map(l => l.trim()).filter(Boolean);
+      if (!lines.length) return text.trim();
+
+      // find the first "real" paragraph
+      let start = 0;
+      for (let i = 0; i < lines.length; i++) {
+        const L = lines[i];
+        if (L.length < 60 && (/^(EXPLORE|Explore|Diet & Nutrition|Healthy|Recipes|Topics?|Explore This Topic|Related|Trending|Sponsored|Advertisement)$/i.test(L) || /^[A-Z\s&]{2,50}$/.test(L))) {
+          start = i + 1;
+          continue;
+        }
+        if (L.length >= 60 || /\.\s+/.test(L) || /[a-z]\s+[A-Z][a-z]/.test(L)) {
+          start = i;
+          break;
+        }
+      }
+
+      let newLines = (start > 0) ? lines.slice(start) : lines.slice();
+
+      if (newLines.length && (/^(By\s|Updated on|By:)/i.test(newLines[0]) || newLines[0].length < 30 && /By|Updated|Author/i.test(newLines[0]))) {
+        newLines.shift();
+      }
+
+      text = newLines.join('\n\n').trim();
+      text = text.replace(/\s{2,}/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+      return text;
+    } catch (e) {
+      return String(text || '').trim();
+    }
+  }
 }
+
+
 
 
   // --- Overlay helper (preferred because it avoids DOM mutation issues)
