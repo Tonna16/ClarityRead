@@ -367,60 +367,171 @@ html.readeasy-reflow h3 {
     return String(s).replace(/\s+/g, ' ').trim();
   }
 
-  // --- Font injection for OpenDyslexic
+  // --- Enhanced Font injection for OpenDyslexic (inject into same-origin iframes & contenteditable fields)
+  // Uses packaged fonts (chrome.runtime.getURL) and robust CSS rules that apply only when html has the dys class.
+  let _dysObserver = null;
+  const CLARITY_DYS_STYLE_ID = 'clarity-dysfont-style';
+  const CLARITY_DYS_LINK_ID = 'clarity-dysfont-link';
+
+  function injectStyleIntoSameOriginIframes(styleText, linkHref, removeFlag = false) {
+    try {
+      const iframes = Array.from(document.querySelectorAll('iframe'));
+      for (const f of iframes) {
+        try {
+          const doc = f.contentDocument;
+          if (!doc) continue; // cross-origin or not available
+          // remove if requested
+          if (removeFlag) {
+            const old = doc.getElementById(CLARITY_DYS_STYLE_ID);
+            if (old) old.remove();
+            const oldLink = doc.getElementById(CLARITY_DYS_LINK_ID);
+            if (oldLink) oldLink.remove();
+            continue;
+          }
+          if (!doc.getElementById(CLARITY_DYS_STYLE_ID) && styleText) {
+            const st = doc.createElement('style');
+            st.id = CLARITY_DYS_STYLE_ID;
+            st.type = 'text/css';
+            st.textContent = styleText;
+            (doc.head || doc.documentElement).appendChild(st);
+          }
+          if (!doc.getElementById(CLARITY_DYS_LINK_ID) && linkHref) {
+            const l = doc.createElement('link');
+            l.id = CLARITY_DYS_LINK_ID;
+            l.rel = 'stylesheet';
+            l.href = linkHref;
+            (doc.head || doc.documentElement).appendChild(l);
+          }
+        } catch (e) {
+          // cross-origin iframe or injection failed — skip
+          safeLog('iframe injection skipped (cross-origin) or failed', e);
+        }
+      }
+    } catch (e) { safeLog('injectStyleIntoSameOriginIframes error', e); }
+  }
+
   function ensureDysFontInjected() {
-    if (document.getElementById(DYS_STYLE_ID)) return;
-
-    const urlWoff2 = chrome.runtime.getURL('src/fonts/OpenDyslexic-Regular.woff2');
-    const urlWoff  = chrome.runtime.getURL('src/fonts/OpenDyslexic-Regular.woff');
-
-    const style = document.createElement('style');
-    style.id = DYS_STYLE_ID;
-    style.textContent = `
-      @font-face {
-        font-family: 'OpenDyslexic';
-        src: url("${urlWoff2}") format("woff2"),
-             url("${urlWoff}") format("woff");
-        font-weight: normal;
-        font-style: normal;
-        font-display: swap;
+    try {
+      if (document.getElementById(CLARITY_DYS_STYLE_ID)) {
+        safeLog('Dys style already present');
+        return;
       }
 
-      /* only set font-family when the dyslexic class is present on the html element.
-         The contentScript toggles html.readeasy-dyslexic so this rule will apply then. */
-      html.readeasy-dyslexic, html.clarityread-dyslexic,
-      .readeasy-dyslexic, .clarityread-dyslexic {
-        font-family: 'OpenDyslexic', system-ui, Arial, sans-serif !important;
-      }
-    `;
-    try { document.head.appendChild(style); } catch(e){ safeLog('append dys style failed', e); }
+      const urlWoff2 = chrome.runtime.getURL('src/fonts/OpenDyslexic-Regular.woff2');
+      const urlWoff  = chrome.runtime.getURL('src/fonts/OpenDyslexic-Regular.woff');
 
-    if ('fonts' in document) {
-      try {
-        const ff = new FontFace('OpenDyslexic',
-          `url(${urlWoff2}) format("woff2"), url(${urlWoff}) format("woff")`,
-          { display: 'swap' });
-        ff.load().then(f => { document.fonts.add(f); safeLog('OpenDyslexic font loaded'); }).catch(()=>{ safeLog('OpenDyslexic font load failed'); });
-      } catch(e){ safeLog('FontFace load threw', e); }
+      // Create a robust style that only applies when html.readeasy-dyslexic is present;
+      // ensure inputs/contenteditable are covered and add some Google-Docs-friendly selectors.
+      const style = document.createElement('style');
+      style.id = CLARITY_DYS_STYLE_ID;
+      style.textContent = `
+@font-face {
+  font-family: 'OpenDyslexic';
+  src: url("${urlWoff2}") format("woff2"),
+       url("${urlWoff}") format("woff");
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Scoped application - only when toggled */
+html.readeasy-dyslexic, html.clarityread-dyslexic {
+  --readeasy-dys-font: 'OpenDyslexic', system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+/* apply to general text flow */
+html.readeasy-dyslexic body, html.clarityread-dyslexic body,
+html.readeasy-dyslexic p, html.clarityread-dyslexic p,
+html.readeasy-dyslexic li, html.clarityread-dyslexic li {
+  font-family: var(--readeasy-dys-font) !important;
+}
+
+/* Editable controls: inputs, textareas, and contenteditable elements */
+html.readeasy-dyslexic input, html.clarityread-dyslexic input,
+html.readeasy-dyslexic textarea, html.clarityread-dyslexic textarea,
+html.readeasy-dyslexic [contenteditable="true"], html.clarityread-dyslexic [contenteditable="true"] {
+  font-family: var(--readeasy-dys-font) !important;
+}
+
+/* Google Docs / Kix best-effort selectors (non-destructive) */
+html.readeasy-dyslexic .kix-zoomdocumentplugin-outer,
+html.readeasy-dyslexic .kix-canvas-tile-content,
+html.readeasy-dyslexic .kix-page,
+html.readeasy-dyslexic .kix-appview-outer,
+html.readeasy-dyslexic .docs-texteventtarget-iframe {
+  font-family: var(--readeasy-dys-font) !important;
+}
+
+/* placeholder fallback */
+html.readeasy-dyslexic *::placeholder { font-family: var(--readeasy-dys-font) !important; }
+`;
+      try { (document.head || document.documentElement).appendChild(style); } catch (e) { document.documentElement.appendChild(style); }
+
+      // Add FontFace load for better UX when fonts are packaged
+      if ('fonts' in document) {
+        try {
+          const ff = new FontFace('OpenDyslexic', `url(${urlWoff2}) format("woff2"), url(${urlWoff}) format("woff")`, { display: 'swap' });
+          ff.load().then(f => { document.fonts.add(f); safeLog('OpenDyslexic font loaded'); }).catch(()=>{ safeLog('OpenDyslexic font load failed'); });
+        } catch (e) { safeLog('FontFace load threw', e); }
+      }
+
+      // Also attempt to inject into same-origin iframes (best-effort)
+      const localLinkHref = null; // we rely on packaged @font-face in style above; if you host CSS externally set link href
+      injectStyleIntoSameOriginIframes(style.textContent, localLinkHref, false);
+
+      // Start a short-lived observer to re-inject if dynamic editors/iframes added
+      startDysObserver();
+
+      safeLog('ensureDysFontInjected applied');
+    } catch (e) {
+      safeLog('ensureDysFontInjected error', e);
     }
   }
 
-  function removeDysFontInjected() { 
-    try { 
-      const el = document.getElementById(DYS_STYLE_ID); 
-      if (el) el.remove(); 
-    } catch(e){ safeLog('removeDysFontInjected error', e); } 
+  function removeDysFontInjected() {
+    try {
+      const el = document.getElementById(CLARITY_DYS_STYLE_ID);
+      if (el) el.remove();
+    } catch(e){ safeLog('removeDysFontInjected error removing style', e); }
 
-    try { 
-      document.documentElement.classList.remove('readeasy-dyslexic'); 
-      document.documentElement.classList.remove('clarityread-dyslexic'); // compatibility 
-    } catch(e){} 
+    try {
+      document.documentElement.classList.remove('readeasy-dyslexic');
+      document.documentElement.classList.remove('clarityread-dyslexic'); // compatibility
+    } catch(e){}
 
-    try { 
-      const overlay = document.getElementById('readeasy-reader-overlay') || document.getElementById('clarityread-overlay'); 
+    try {
+      const overlay = document.getElementById('readeasy-reader-overlay') || document.getElementById('clarityread-overlay');
       if (overlay) { overlay.style.fontFamily = ''; }
     } catch(e){}
-  } 
+
+    try {
+      // remove injected styles from same-origin iframes
+      injectStyleIntoSameOriginIframes('', null, true);
+    } catch(e){ safeLog('removeDysFontInjected iframe cleanup failed', e); }
+
+    // disconnect short-lived observer if present
+    try { if (_dysObserver) { _dysObserver.disconnect(); _dysObserver = null; } } catch(e){}
+
+    safeLog('removeDysFontInjected completed');
+  }
+
+  function startDysObserver() {
+    try {
+      if (_dysObserver) return;
+      _dysObserver = new MutationObserver((mutations) => {
+        for (const m of mutations) {
+          if (m.addedNodes && m.addedNodes.length) {
+            // reapply style into new same-origin iframes or newly-added editors
+            const el = document.getElementById(CLARITY_DYS_STYLE_ID);
+            injectStyleIntoSameOriginIframes(el ? el.textContent : null, null, false);
+          }
+        }
+      });
+      _dysObserver.observe(document.documentElement || document.body, { childList: true, subtree: true });
+      // stop after a reasonable time to avoid long-lived observers
+      setTimeout(() => { try { if (_dysObserver) { _dysObserver.disconnect(); _dysObserver = null; } } catch(e){} }, 20000);
+    } catch (e) { safeLog('startDysObserver failed', e); }
+  }
 
   // --- Heuristics: choose main content node
   function isVisible(el) {
@@ -458,6 +569,17 @@ html.readeasy-reflow h3 {
         safeLog('getMainNode picked candidate with length', candidates[0].len);
         return candidates[0].el;
       }
+      // As an improvement: prefer large contenteditable nodes when no article-like node found
+      const editable = Array.from(document.querySelectorAll('[contenteditable="true"]')).filter(isVisible);
+      if (editable.length) {
+        // choose the largest one by innerText length
+        editable.sort((a,b) => ((b.innerText||'').length - (a.innerText||'').length));
+        if ((editable[0].innerText || '').length > 100) {
+          safeLog('getMainNode falling back to contenteditable node');
+          return editable[0];
+        }
+      }
+
       if (document.body && (document.body.innerText || '').length > 200) {
         safeLog('getMainNode falling back to document.body');
         return document.body;
@@ -534,6 +656,15 @@ function extractCleanMainTextAndHtml(mainNode) {
     const clone = (mainNode && typeof mainNode.cloneNode === 'function') ? mainNode.cloneNode(true) : null;
     if (!clone) {
       lg('Legacy extractor: no mainNode clone available — returning empty');
+      // Try fallback to contenteditable aggregation even if no clone available
+      try {
+        const ed = Array.from(document.querySelectorAll('[contenteditable="true"]')).filter(isVisible);
+        if (ed.length) {
+          const agg = ed.map(e => (e.innerText || '')).join('\n\n');
+          const cleaned = _postCleanExtractedText(String(agg || '').replace(/\s{2,}/g, ' ').trim());
+          if (cleaned && cleaned.length) return { text: cleaned, html: '', title: document.title || '' };
+        }
+      } catch(e){}
       return { text: '', html: '', title: document.title || '' };
     }
 
@@ -631,6 +762,44 @@ function extractCleanMainTextAndHtml(mainNode) {
 
     let html = '';
     try { html = clone.innerHTML || ''; } catch(e) { html = ''; }
+
+    // If we extracted very little text, try contenteditable aggregation (editors) and other heuristics
+    if ((!text || text.length < 120)) {
+      try {
+        // 1) contenteditable elements on the page (use visible ones)
+        const editables = Array.from(document.querySelectorAll('[contenteditable="true"]')).filter(isVisible);
+        if (editables.length) {
+          const agg = editables.map(e => (e.innerText || '')).join('\n\n');
+          const cleaned = _postCleanExtractedText(String(agg || '').replace(/\s{2,}/g, ' ').trim());
+          if (cleaned && cleaned.length > text.length) {
+            lg('extract fallback used contenteditable aggregation', cleaned.length);
+            text = cleaned;
+            html = ''; // best-effort - don't attempt to provide accurate html for editors
+          }
+        }
+
+        // 2) some web editors expose editor content in known selectors (e.g., Google Docs kix pages)
+        const kix = Array.from(document.querySelectorAll('.kix-page, .kix-zoomdocumentplugin-outer, .kix-canvas-tile-content')).filter(isVisible);
+        if (kix.length) {
+          const agg2 = kix.map(e => (e.innerText || '')).join('\n\n');
+          const cleaned2 = _postCleanExtractedText(String(agg2 || '').replace(/\s{2,}/g, ' ').trim());
+          if (cleaned2 && cleaned2.length > text.length) {
+            lg('extract fallback used kix selectors', cleaned2.length);
+            text = cleaned2;
+            html = '';
+          }
+        }
+
+        // 3) If still tiny and document.body is large, fall back to body text (already present earlier but re-run)
+        if ((!text || text.length < 120) && document.body && document.body.innerText && document.body.innerText.length > 200) {
+          text = String(document.body.innerText || '').replace(/\s{2,}/g, ' ').trim();
+          text = _postCleanExtractedText(text);
+          lg('Fallback to document.body text used (second chance), length', text.length);
+        }
+      } catch (e) {
+        lg('Extraction fallback attempts failed', e && (e.stack || e));
+      }
+    }
 
     if ((!text || text.length < 120) && document.body && document.body.innerText && document.body.innerText.length > 200) {
       try {
@@ -1312,14 +1481,32 @@ function extractCleanMainTextAndHtml(mainNode) {
   // --- Helpers to get page text or selection
   function getTextToRead() {
     try {
-      // Accept any explicit non-empty selection
-      const s = (window.getSelection && window.getSelection().toString()) || '';
+      // 1) Accept any explicit non-empty selection
+      const s = (window.getSelection && window.getSelection().toString) || '';
       if (s && s.trim().length > 0) {
         safeLog('getTextToRead returning selection length', s.length);
         return s.trim();
       }
+
+      // 2) Try largest contenteditable (editors) first - often provides the user-typed text
+      try {
+        const editables = Array.from(document.querySelectorAll('[contenteditable="true"]')).filter(isVisible);
+        if (editables.length) {
+          // choose largest
+          editables.sort((a,b) => ((b.innerText||'').length - (a.innerText||'').length));
+          if ((editables[0].innerText || '').trim().length >= 40) {
+            const tEd = editables[0].innerText.trim();
+            safeLog('getTextToRead using contenteditable text length', tEd.length);
+            return tEd;
+          }
+        }
+      } catch(e){ safeLog('getTextToRead contenteditable check failed', e); }
+
+      // 3) Fallback to main node extraction
       const main = getMainNode();
       let t = (main && main.innerText) ? main.innerText.trim() : (document.body && document.body.innerText ? document.body.innerText.trim() : '');
+
+      // If main came from an element that appears to be an embedded editor canvas (kix), prefer it only if substantial
       if (t && t.length > 20000) {
         safeLog('getTextToRead truncated main text to 20000 chars');
         return t.slice(0, 20000);
@@ -1626,9 +1813,35 @@ if (typeof msg.invert !== 'undefined') {
         // NEW: extraction for popup summarizer -> returns cleaned text/html/title
         case 'clarity_extract_main': {
           try {
+            // prefer an explicit selection if present (popup often tries selection first, but this is extra safe)
+            const sel = (window.getSelection && window.getSelection().toString && window.getSelection().toString()) || '';
+            if (sel && sel.trim().length > 20) {
+              const outSelText = _postCleanExtractedText(sel.trim());
+              sendResponse({ ok: true, text: outSelText, html: '', title: document.title || '' });
+              safeLog('clarity_extract_main responded with selection', { textLen: (outSelText || '').length, title: document.title });
+              return true;
+            }
+
             const main = getMainNode();
             const out = extractCleanMainTextAndHtml(main);
             // return flat shape so background/popup can use out.text/out.html
+            // If the extracted text is tiny, attempt one more contenteditable fallback (helps editors)
+            if ((!out.text || out.text.length < 120)) {
+              try {
+                const editables = Array.from(document.querySelectorAll('[contenteditable="true"]')).filter(isVisible);
+                if (editables.length) {
+                  editables.sort((a,b) => ((b.innerText||'').length - (a.innerText||'').length));
+                  const agg = editables.map(e => (e.innerText || '')).join('\n\n');
+                  const cleaned = _postCleanExtractedText(String(agg || '').replace(/\s{2,}/g, ' ').trim());
+                  if (cleaned && cleaned.length > (out.text || '').length) {
+                    sendResponse({ ok: true, text: cleaned, html: '', title: document.title || '' });
+                    safeLog('clarity_extract_main used contenteditable fallback', { textLen: cleaned.length, title: document.title });
+                    return true;
+                  }
+                }
+              } catch(e){}
+            }
+
             sendResponse({ ok: true, text: out.text || '', html: out.html || '', title: out.title || '' });
             safeLog('clarity_extract_main responded', { textLen: (out.text || '').length, title: out.title });
           } catch (e) {

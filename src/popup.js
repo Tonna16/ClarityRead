@@ -133,19 +133,6 @@ function setToStorage(obj) {
     return el;
   }
 
-  // Promise wrapper around chrome.storage.local.get/set for small prefs
-function getFromStorage(keys) {
-  return new Promise((resolve) => {
-    try { chrome.storage.local.get(keys, (res) => resolve(res || {})); }
-    catch (e) { resolve({}); }
-  });
-}
-function setToStorage(obj) {
-  return new Promise((resolve) => {
-    try { chrome.storage.local.set(obj, () => resolve()); }
-    catch (e) { resolve(); }
-  });
-}
 
 
   function show(msg, type = 'info', ttl = 3500) {
@@ -333,25 +320,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 });
 
-chrome.runtime.onMessage.addListener((msg) => {
-  try {
-    const btn = document.getElementById('focusModeBtn');
-    const textEl = btn ? btn.querySelector('.action-text') : null;
-    if (!btn) return;
-    if (msg && (msg.action === 'clarity_overlay_state')) {
-      if (msg.overlayActive) { btn.classList.add('active'); if (textEl) textEl.textContent = `Close ${_focusModeOriginalText}`; }
-      else { btn.classList.remove('active'); if (textEl) textEl.textContent = _focusModeOriginalText; }
-      return;
-    }
 
-    // fallback: any Not Reading state should un-toggle the button
-    if (msg && msg.action === 'readingStopped') {
-      btn.classList.remove('active');
-      if (textEl) textEl.textContent = _focusModeOriginalText;
-      return;
-    }
-  } catch(e) { safeLog('onMessage popup error', e); }
-});
 
 
  
@@ -1106,29 +1075,30 @@ try {
   });
 
   // ensure voices loaded
-  function ensureVoicesLoaded(timeoutMs = 500) {
-    const voices = speechSynthesis.getVoices() || [];
-    if (voices.length) { safeLog('ensureVoicesLoaded already have voices', voices.length); return Promise.resolve(voices); }
-    return new Promise(resolve => {
-      let called = false;
-      const onChange = () => {
-        if (called) return;
+function ensureVoicesLoaded(timeoutMs = 1500) {
+  const voices = speechSynthesis.getVoices() || [];
+  if (voices.length) { safeLog('ensureVoicesLoaded already have voices', voices.length); return Promise.resolve(voices); }
+  return new Promise(resolve => {
+    let called = false;
+    const onChange = () => {
+      if (called) return;
+      called = true;
+      try { speechSynthesis.removeEventListener('voiceschanged', onChange); } catch (e) {}
+      safeLog('voiceschanged event fired (ensureVoicesLoaded)');
+      resolve(speechSynthesis.getVoices() || []);
+    };
+    speechSynthesis.addEventListener('voiceschanged', onChange);
+    setTimeout(() => {
+      if (!called) {
         called = true;
-        speechSynthesis.removeEventListener('voiceschanged', onChange);
-        safeLog('voiceschanged event fired');
+        try { speechSynthesis.removeEventListener('voiceschanged', onChange); } catch (e) {}
+        safeLog('ensureVoicesLoaded timeout, returning whatever available');
         resolve(speechSynthesis.getVoices() || []);
-      };
-      speechSynthesis.addEventListener('voiceschanged', onChange);
-      setTimeout(() => {
-        if (!called) {
-          called = true;
-          speechSynthesis.removeEventListener('voiceschanged', onChange);
-          safeLog('ensureVoicesLoaded timeout, returning whatever available');
-          resolve(speechSynthesis.getVoices() || []);
-        }
-      }, timeoutMs);
-    });
-  }
+      }
+    }, timeoutMs);
+  });
+}
+
 
   function extractSelection(resRaw) {
     try {
@@ -1152,7 +1122,7 @@ try {
     if (isReading) { toast('Already reading. Pause or stop before starting a new read.', 'info'); return; }
     const settings = gatherSettingsObject();
     chrome.storage.sync.set({ voice: settings.voice, rate: settings.rate, pitch: settings.pitch, highlight: settings.highlight }, async () => {
-      const voices = await ensureVoicesLoaded(500);
+      const voices = await ensureVoicesLoaded(1500);
       safeLog('voices after ensure', voices.length);
       if (settings.voice && voices.length && !voices.find(v => v.name === settings.voice)) {
         const fallback = (voices.find(v => v.lang && v.lang.startsWith('en')) || voices[0]);
@@ -1483,19 +1453,23 @@ try {
 } catch(e){}
 
   // small fast-path unchanged but with idf/titleBoost from cfg
+    // Short-document fast-path but respect plannedK (so prefs are deterministic)
   if (cleaned.length < 220) {
     const sents = splitIntoSentencesLocal(cleaned);
-    if (sents.length <= plannedK) return sents.join(' ');
+    const k = Math.min(plannedK, sents.length);
+    if (k <= 0) return sents.join(' ');
+    if (sents.length <= k) return sents.join(' ');
     const tf = buildTermFrequenciesLocal(cleaned);
     const scored = sents.map((sen, idx) => ({
       sentence: sen,
-      score: sentenceScoreLocal(sen, tf, ((idx === 0 || idx === sents.length-1) ? 1.12 : 1), new Set(), { idfBoost: cfg.idfBoost, titleBoost: cfg.titleBoost })
+      score: sentenceScoreLocal(sen, tf, ((idx === 0 || idx === sents.length - 1) ? 1.12 : 1), new Set(), { idfBoost: cfg.idfBoost, titleBoost: cfg.titleBoost })
     }));
     scored.sort((a,b) => b.score - a.score);
-    const chosen = scored.slice(0, plannedK).map(x => x.sentence);
+    const chosen = scored.slice(0, k).map(x => x.sentence);
     const ordered = sents.filter(s => chosen.includes(s));
     return (ordered.length ? ordered.join(' ') : chosen.join(' ')).trim();
   }
+
 
   // paragraph candidates
   const paragraphs = splitIntoParagraphsLocal(cleaned);
@@ -1751,44 +1725,64 @@ async function readSummaryPref() {
   } catch (e) { return 'normal'; }
 }
 
-// returns config adjustments per preference
+// -------------------- Replace summarizerConfigForPref + computeFinalKForPref + computeAdaptiveMax --------------------
 function summarizerConfigForPref(pref = 'normal') {
+  // tweak lengthFactor so that concise <= normal <= detailed and differences are less extreme
   const cfg = {
     concise: { baseSentences: 2, lambda: 0.78, titleBoost: 1.6, minSentenceLen: 22, idfBoost: 1.0, lengthFactor: 0.6 },
     normal:  { baseSentences: 4, lambda: 0.62, titleBoost: 1.3, minSentenceLen: 28, idfBoost: 1.2, lengthFactor: 1.0 },
-    detailed:{ baseSentences: 7, lambda: 0.48, titleBoost: 1.1, minSentenceLen: 14, idfBoost: 1.5, lengthFactor: 1.6 }
+    detailed:{ baseSentences: 7, lambda: 0.48, titleBoost: 1.1, minSentenceLen: 14, idfBoost: 1.5, lengthFactor: 1.35 } // reduced from 1.6 -> 1.35
   };
   return cfg[pref] || cfg.normal;
 }
 
 /**
  * Deterministic final-k computation so concise <= normal <= detailed.
- * This uses a small multiplier (lengthFactor) per-pref and scales with document length.
+ * Uses a smaller multiplier for large docs so ordering won't invert unpredictably.
  */
 function computeFinalKForPref(text = '', pref = 'normal') {
   const words = (text || '').trim().split(/\s+/).filter(Boolean).length || 0;
   const cfg = summarizerConfigForPref(pref);
-  // base + scaled by words, then multiplied by lengthFactor so prefs always order correctly
-  const wordsBoost = Math.floor(words / 450); // 1 extra sentence ~ per ~450 words
+
+  // scale more smoothly with document length:
+  // - start with baseSentences
+  // - add one sentence per ~450 words (same as before)
+  // - then apply lengthFactor but keep monotonic ordering by clamping minimal deltas
+  const wordsBoost = Math.floor(words / 450);
   const raw = cfg.baseSentences + wordsBoost;
-  const k = Math.max(1, Math.round(raw * (cfg.lengthFactor || 1)));
-  // clamp to avoid absurd sizes
-  return Math.min(25, k);
+
+  // ensure stable monotonic scaling: compute and clamp with a small epsilon
+  const scaled = Math.max(1, Math.round(raw * (cfg.lengthFactor || 1)));
+  // small safety clamp to ensure ordering across prefs:
+  // if pref is 'concise' cap by normal-1; if 'detailed' at least normal+1
+  const normalCfg = summarizerConfigForPref('normal');
+  const normalVal = Math.max(1, Math.round((normalCfg.baseSentences + Math.floor(words / 450)) * (normalCfg.lengthFactor || 1)));
+
+  if (pref === 'concise') return Math.min(scaled, Math.max(1, normalVal - 1));
+  if (pref === 'detailed') return Math.max(scaled, Math.min(25, normalVal + 1));
+  return Math.min(25, Math.max(1, scaled));
 }
 
-
+/**
+ * computeAdaptiveMax - mostly used for UI/debugging; keep similar shape but ensure monotonic
+ */
 function computeAdaptiveMax(text = '', pref = 'normal') {
   const words = (text || '').trim().split(/\s+/).filter(Boolean).length || 0;
   const cfg = summarizerConfigForPref(pref);
-  // base scaled by words; small docs still get at least baseSentences
+
   let base = cfg.baseSentences;
-  // add ~1 sentence per 350-700 words depending on pref (detailed gets more)
   const per = (pref === 'detailed') ? 350 : (pref === 'concise' ? 700 : 500);
   base += Math.floor(words / per);
-  // clamp to 1..25 but allow larger docs more room
-  const cap = Math.min(25, Math.max(1, Math.round(base)));
-  return Math.max(1, cap);
+
+  // apply less aggressive cap so detailed is noticeably larger but not order-inverting
+  const cap = Math.min(25, Math.max(1, Math.round(base * (cfg.lengthFactor || 1))));
+  // enforce ordering safety relative to 'normal'
+  const normalCap = Math.min(25, Math.max(1, Math.round((summarizerConfigForPref('normal').baseSentences + Math.floor(words / 500)) * summarizerConfigForPref('normal').lengthFactor)));
+  if (pref === 'concise') return Math.min(cap, Math.max(1, normalCap - 1));
+  if (pref === 'detailed') return Math.max(cap, Math.min(25, normalCap + 1));
+  return cap;
 }
+
 
 
 
@@ -2163,19 +2157,6 @@ try {
   }
 } catch (e) { safeLog('hook summarize button failed', e); }
 
-
-
-
-
-// Hook up summary button: replace old handler with the local-only summarizer
-try {
-  let btn = $('summarizePageBtn');
-  if (btn) {
-    btn.replaceWith(btn.cloneNode(true));
-    const newBtn = $('summarizePageBtn');
-    if (newBtn) safeOn(newBtn, 'click', summarizeCurrentPageOrSelection_AiAware);
-  }
-} catch (e) { safeLog('hook summarize button failed', e); }
 
 
 
