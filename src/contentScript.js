@@ -1621,25 +1621,49 @@ function speakChunksSequentially(chunks, rate = 1, voiceName) {
     return lang;
   }
 
-  // --- Focus-mode toggle (uses overlay)
-  function toggleFocusMode() {
-    if (overlayActive) {
-      removeReaderOverlay();
-      clearHighlights();
-      sendState('Not Reading');
-      safeLog('toggleFocusMode: closed overlay');
-      return { ok: true, overlayActive: false, url: location.href || '' };
-    }
-    const t = getTextToRead();
-    if (!t || !t.trim()) {
-      safeLog('toggleFocusMode: no text to show in focus mode');
-      return { ok: false, error: 'no-text', url: location.href || '' };
-    }
-    createReaderOverlay(t);
-    sendState('Not Reading'); // overlay itself doesn't start reading
-    safeLog('toggleFocusMode: opened overlay');
-    return { ok: true, overlayActive: true, url: location.href || '' };
+// --- Focus-mode toggle (uses overlay)
+function toggleFocusMode() {
+  if (overlayActive) {
+    removeReaderOverlay();
+    clearHighlights();
+    sendState('Not Reading');
+    safeLog('toggleFocusMode: closed overlay');
+    return { ok: true, overlayActive: false, url: location.href || '' };
   }
+
+  // Prefer the robust extractor if available (same helper popup uses)
+  let t = '';
+  try {
+    if (typeof window.__clarity_read_extract === 'function') {
+      try {
+        const ex = window.__clarity_read_extract();
+        if (ex && typeof ex.text === 'string' && ex.text.trim().length) {
+          t = ex.text.trim();
+          safeLog('toggleFocusMode: used __clarity_read_extract text length', t.length);
+        }
+      } catch (e) {
+        safeLog('toggleFocusMode: __clarity_read_extract threw', e);
+      }
+    }
+  } catch(e) { safeLog('toggleFocusMode extractor check failed', e); }
+
+  // fallback to simpler heuristic if extractor not present or returned nothing
+  if (!t) {
+    t = getTextToRead();
+    safeLog('toggleFocusMode: fallback getTextToRead length', (t && t.length) || 0);
+  }
+
+  if (!t || !t.trim()) {
+    safeLog('toggleFocusMode: no text to show in focus mode');
+    return { ok: false, error: 'no-text', url: location.href || '' };
+  }
+
+  createReaderOverlay(t);
+  sendState('Not Reading'); // overlay itself doesn't start reading
+  safeLog('toggleFocusMode: opened overlay');
+  return { ok: true, overlayActive: true, url: location.href || '' };
+}
+
   /// --- Contrast / Invert runtime style injection (more resilient)
 const CLARITY_CONTRAST_STYLE_ID = 'clarity-contrast-style';
 const CLARITY_INVERT_STYLE_ID = 'clarity-invert-style';
