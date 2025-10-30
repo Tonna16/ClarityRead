@@ -862,6 +862,24 @@ function extractCleanMainTextAndHtml(mainNode) {
     }
   }
 }
+
+// Expose a small helper so popup can call extraction via scripting.executeScript
+// Example: chrome.scripting.executeScript(..., func: () => window.__clarity_read_extract && window.__clarity_read_extract())
+window.__clarity_read_extract = function() {
+  try {
+    const main = (typeof getMainNode === 'function') ? getMainNode() : (document.body || document.documentElement);
+    const out = (typeof extractCleanMainTextAndHtml === 'function') ? extractCleanMainTextAndHtml(main) : { text: (document.body && document.body.innerText) ? document.body.innerText : '', html: '', title: document.title || '' };
+    return { ok: true, text: out.text || '', html: out.html || '', title: out.title || '', url: location.href || '' };
+  } catch (e) {
+    try {
+      const fallbackText = document.body && document.body.innerText ? document.body.innerText : '';
+      return { ok: true, text: String(fallbackText || '').trim(), html: '', title: document.title || '', url: location.href || '' };
+    } catch (ee) {
+      return { ok: false, error: String(ee), url: location.href || '' };
+    }
+  }
+};
+
   // --- Overlay helper (preferred because it avoids DOM mutation issues)
   function createReaderOverlay(text) {
     removeReaderOverlay();
@@ -1263,7 +1281,7 @@ function speakText(fullText, { voiceName, rate = 1, pitch = 1, highlight = false
   }
 
   fullText = sanitizeForTTS(fullText || '');
-  if (!fullText) { safeLog('No text to read'); return { ok: false, error: 'no-text' }; }
+  if (!fullText) { safeLog('No text to read'); return { ok: false, error: 'no-text', url: location.href || ''}; }
 
   // New session
   sessionId += 1;
@@ -1563,6 +1581,12 @@ function speakChunksSequentially(chunks, rate = 1, voiceName) {
         safeLog('getTextToRead returning selection length', s.length);
         return s.trim();
       }
+      safeLog('getTextToRead start heuristics', {
+  selectionLen: (window.getSelection && window.getSelection().toString && window.getSelection().toString().length) || 0,
+  activeElementTag: (document.activeElement && document.activeElement.tagName) ? document.activeElement.tagName : null,
+  docBodyLen: (document.body && document.body.innerText) ? document.body.innerText.length : 0
+});
+
 
       // 2) Try largest contenteditable (editors) first - often provides the user-typed text
       try {
@@ -1604,17 +1628,17 @@ function speakChunksSequentially(chunks, rate = 1, voiceName) {
       clearHighlights();
       sendState('Not Reading');
       safeLog('toggleFocusMode: closed overlay');
-      return { ok: true, overlayActive: false };
+      return { ok: true, overlayActive: false, url: location.href || '' };
     }
     const t = getTextToRead();
     if (!t || !t.trim()) {
       safeLog('toggleFocusMode: no text to show in focus mode');
-      return { ok: false, error: 'no-text' };
+      return { ok: false, error: 'no-text', url: location.href || '' };
     }
     createReaderOverlay(t);
     sendState('Not Reading'); // overlay itself doesn't start reading
     safeLog('toggleFocusMode: opened overlay');
-    return { ok: true, overlayActive: true };
+    return { ok: true, overlayActive: true, url: location.href || '' };
   }
   /// --- Contrast / Invert runtime style injection (more resilient)
 const CLARITY_CONTRAST_STYLE_ID = 'clarity-contrast-style';
@@ -1888,44 +1912,44 @@ if (typeof msg.invert !== 'undefined') {
 
         // NEW: extraction for popup summarizer -> returns cleaned text/html/title
         case 'clarity_extract_main': {
-          try {
-            // prefer an explicit selection if present (popup often tries selection first, but this is extra safe)
-            const sel = (window.getSelection && window.getSelection().toString && window.getSelection().toString()) || '';
-            if (sel && sel.trim().length > 20) {
-              const outSelText = _postCleanExtractedText(sel.trim());
-              sendResponse({ ok: true, text: outSelText, html: '', title: document.title || '' });
-              safeLog('clarity_extract_main responded with selection', { textLen: (outSelText || '').length, title: document.title });
-              return true;
-            }
+  try {
+    // prefer an explicit selection if present
+    const sel = (window.getSelection && window.getSelection().toString && window.getSelection().toString()) || '';
+    if (sel && sel.trim().length > 20) {
+      const outSelText = _postCleanExtractedText(sel.trim());
+      sendResponse({ ok: true, text: outSelText, html: '', title: document.title || '', url: location.href || '' });
+      safeLog('clarity_extract_main responded with selection', { textLen: (outSelText || '').length, title: document.title, url: location.href });
+      return true;
+    }
 
-            const main = getMainNode();
-            const out = extractCleanMainTextAndHtml(main);
-            // return flat shape so background/popup can use out.text/out.html
-            // If the extracted text is tiny, attempt one more contenteditable fallback (helps editors)
-            if ((!out.text || out.text.length < 120)) {
-              try {
-                const editables = Array.from(document.querySelectorAll('[contenteditable="true"]')).filter(isVisible);
-                if (editables.length) {
-                  editables.sort((a,b) => ((b.innerText||'').length - (a.innerText||'').length));
-                  const agg = editables.map(e => (e.innerText || '')).join('\n\n');
-                  const cleaned = _postCleanExtractedText(String(agg || '').replace(/\s{2,}/g, ' ').trim());
-                  if (cleaned && cleaned.length > (out.text || '').length) {
-                    sendResponse({ ok: true, text: cleaned, html: '', title: document.title || '' });
-                    safeLog('clarity_extract_main used contenteditable fallback', { textLen: cleaned.length, title: document.title });
-                    return true;
-                  }
-                }
-              } catch(e){}
-            }
-
-            sendResponse({ ok: true, text: out.text || '', html: out.html || '', title: out.title || '' });
-            safeLog('clarity_extract_main responded', { textLen: (out.text || '').length, title: out.title });
-          } catch (e) {
-            safeLog('clarity_extract_main failed', e);
-            try { sendResponse({ ok: false, error: String(e) }); } catch(e2) {}
+    const main = getMainNode();
+    const out = extractCleanMainTextAndHtml(main);
+    // if tiny, attempt contenteditable fallback
+    if ((!out.text || out.text.length < 120)) {
+      try {
+        const editables = Array.from(document.querySelectorAll('[contenteditable="true"]')).filter(isVisible);
+        if (editables.length) {
+          editables.sort((a,b) => ((b.innerText||'').length - (a.innerText||'').length));
+          const agg = editables.map(e => (e.innerText || '')).join('\n\n');
+          const cleaned = _postCleanExtractedText(String(agg || '').replace(/\s{2,}/g, ' ').trim());
+          if (cleaned && cleaned.length > (out.text || '').length) {
+            sendResponse({ ok: true, text: cleaned, html: '', title: document.title || '', url: location.href || '' });
+            safeLog('clarity_extract_main used contenteditable fallback', { textLen: cleaned.length, title: document.title, url: location.href });
+            return true;
           }
-          break;
         }
+      } catch(e){}
+    }
+
+    sendResponse({ ok: true, text: out.text || '', html: out.html || '', title: out.title || '', url: location.href || '' });
+    safeLog('clarity_extract_main responded', { textLen: (out.text || '').length, title: out.title, url: location.href });
+  } catch (e) {
+    safeLog('clarity_extract_main failed', e);
+    try { sendResponse({ ok: false, error: String(e), url: location.href || '' }); } catch(e2) {}
+  }
+  break;
+}
+
 
         case 'readAloud': {
           chrome.storage.sync.get(['voice','rate','pitch','highlight'], (res) => {
@@ -1999,8 +2023,8 @@ if (typeof msg.invert !== 'undefined') {
           try {
             const selText = window.getSelection ? window.getSelection().toString().trim() : '';
             const resp = { ok: true, selection: { text: selText || '', title: document.title || '', url: location.href || '' } };
-            // Return flat shape { ok, selection } so background/popup can rely on response.selection
-            sendResponse(resp);
+sendResponse(resp);
+
             safeLog('getSelection responded', { textLen: (selText||'').length, title: document.title });
           } catch (e) {
             safeLog('getSelection failed', e);

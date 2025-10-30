@@ -1885,10 +1885,12 @@ async function fetchCleanPageText(tabId, tabUrl) {
             safeLog('background extract lastError', chrome.runtime.lastError && chrome.runtime.lastError.message);
             return resolve({ ok: false, reason: 'runtime-lastError', detail: chrome.runtime.lastError && chrome.runtime.lastError.message });
           }
-          if (resp && resp.ok && (resp.text || resp.html)) {
-            return resolve({ ok: true, text: (resp.text || '').toString(), html: resp.html || '', title: resp.title || '' });
+          // normalize the shape (some backgrounds wrap)
+          const r = normalizeBgResponse(resp) || resp;
+          if (r && r.ok && (r.text || r.html)) {
+            return resolve({ ok: true, text: (r.text || '').toString(), html: r.html || '', title: r.title || '', url: r.url || '' });
           }
-          resolve({ ok: false, reason: 'bg-no-data', detail: resp || null });
+          resolve({ ok: false, reason: 'bg-no-data', detail: r || resp || null });
         });
       } catch (e) {
         safeLog('tryBackgroundExtract threw', e);
@@ -1901,42 +1903,34 @@ async function fetchCleanPageText(tabId, tabUrl) {
     return new Promise((resolve) => {
       try {
         chrome.scripting.executeScript({
-          target: { tabId: tabId },
+          target: { tabId: tabId, allFrames: true },
           func: () => {
-            function getMainNodeLocal() {
-              try {
-                const prefer = ['article', 'main', '[role="main"]', '#content', '#primary', '.post', '.article', '#mw-content-text', '.mw-parser-output'];
-                for (const s of prefer) {
-                  const el = document.querySelector(s);
-                  if (el && el.innerText && el.innerText.length > 200) return el;
-                }
-                const candidates = Array.from(document.querySelectorAll('article, main, section, div, p'))
-                  .filter(el => el && el.innerText && el.innerText.trim().length > 200)
-                  .map(el => ({ el, len: (el.innerText||'').trim().length }));
-                if (candidates.length) {
-                  candidates.sort((a,b) => b.len - a.len);
-                  return candidates[0].el;
-                }
-                if (document.body && document.body.innerText && document.body.innerText.length > 200) return document.body;
-              } catch (e) {}
-              return document.documentElement || document.body;
-            }
-
             try {
-              const main = getMainNodeLocal();
-              if (!main) return { text: '', title: document.title || '' };
-              const clone = main.cloneNode(true);
-              const rm = ['script','style','iframe','picture','svg','video','form','input','button','aside','nav','footer','header','table'];
-              rm.forEach(s => {
-                try { clone.querySelectorAll(s).forEach(n => { try { n.remove(); } catch(e){} }); } catch(e) {}
-              });
-              const noisy = ['.related','.related-articles','.advert','.ads','.share','.social','.newsletter','.subscribe','.promo'];
-              noisy.forEach(s => { try { clone.querySelectorAll(s).forEach(n => { try { n.remove(); } catch(e){} }); } catch(e){} });
-              let text = clone.innerText || '';
-              text = text.replace(/\[\d+\]/g, ' ').replace(/\s{2,}/g, ' ').trim();
-              return { text: text, title: document.title || '' };
+              // Try the exported helper if available
+              if (window.__clarity_read_extract && typeof window.__clarity_read_extract === 'function') {
+                const r = window.__clarity_read_extract();
+                return { ok: !!r && !!r.text, text: (r && r.text) ? String(r.text) : '', title: (r && r.title) ? r.title : document.title || '', url: location.href || '' };
+              }
+
+              // Otherwise do a small conservative extraction
+              const prefer = ['article', 'main', '[role="main"]', '#content', '#primary', '.post', '.article', '#mw-content-text'];
+              for (const s of prefer) {
+                const el = document.querySelector(s);
+                if (el && el.innerText && el.innerText.length > 120) {
+                  const clone = el.cloneNode(true);
+                  ['script','style','iframe','picture','svg','video','form','input','button','aside','nav','footer','header','table'].forEach(sel => {
+                    try { clone.querySelectorAll(sel).forEach(n => n.remove()); } catch(e){}
+                  });
+                  const txt = (clone.innerText || '').replace(/\[\d+\]/g,' ').replace(/\s{2,}/g,' ').trim();
+                  return { ok: true, text: txt, title: document.title || '', url: location.href || '' };
+                }
+              }
+
+              // fallback to body
+              const bodyText = (document.body && document.body.innerText) ? String(document.body.innerText).replace(/\s{2,}/g,' ').trim() : '';
+              return { ok: !!bodyText, text: bodyText || '', title: document.title || '', url: location.href || '' };
             } catch (ex) {
-              return { text: '', title: document.title || '' };
+              return { ok: false, error: String(ex), url: location.href || '' };
             }
           }
         }, (res) => {
@@ -1944,11 +1938,18 @@ async function fetchCleanPageText(tabId, tabUrl) {
             return resolve({ ok: false, reason: 'exec-failed', detail: chrome.runtime.lastError.message });
           }
           try {
-            if (Array.isArray(res) && res.length && res[0] && res[0].result) {
-              const r = res[0].result;
-              return resolve({ ok: true, text: String(r.text || r || '').trim(), title: r.title || '' });
+            // `res` is array of frame results
+            if (!Array.isArray(res) || !res.length) return resolve({ ok: false, reason: 'exec-no-result', detail: res });
+            // pick the result with the longest text
+            let best = null;
+            for (const entry of res) {
+              if (!entry || !entry.result) continue;
+              const rr = entry.result;
+              const txtLen = (rr && rr.text) ? String(rr.text).length : 0;
+              if (!best || txtLen > (best.text || '').length) best = rr;
             }
-            return resolve({ ok: false, reason: 'exec-no-result', detail: res });
+            if (best && (best.text || '').trim()) return resolve({ ok: true, text: String(best.text).trim(), title: best.title || '', url: best.url || '' });
+            return resolve({ ok: false, reason: 'exec-empty', detail: res });
           } catch (e) {
             return resolve({ ok: false, reason: 'exec-exception', detail: String(e) });
           }
@@ -1960,13 +1961,36 @@ async function fetchCleanPageText(tabId, tabUrl) {
     });
   }
 
+  // Try background (content script via background forward)
   const bgRes = await tryBackgroundExtract();
-  if (bgRes.ok) return bgRes;
+  // if bg succeeded, but contains url that differs from requested tabUrl, do not trust it blindly — prefer exec
+  if (bgRes.ok) {
+    safeLog('fetchCleanPageText bgRes', { requestedTabUrl: tabUrl, extractedUrl: bgRes.url, textPreview: (bgRes.text || '').slice(0,200) });
+    try {
+      const normalizedRequested = (tabUrl || '').split('#')[0];
+      const normalizedExtracted = (bgRes.url || '').split('#')[0];
+      if (normalizedExtracted && normalizedRequested && normalizedExtracted !== normalizedRequested) {
+        safeLog('fetchCleanPageText: background extracted url differs from tab.url — running frame-exec to confirm', { requested: normalizedRequested, extracted: normalizedExtracted });
+        const execResConfirm = await tryExecuteScriptExtract();
+        if (execResConfirm.ok) return execResConfirm;
+        // if exec didn't help, return bgRes but include both details
+        return { ok: true, text: bgRes.text, html: bgRes.html || '', title: bgRes.title || '', url: bgRes.url || '' };
+      }
+    } catch (e) {
+      safeLog('fetchCleanPageText verification error', e);
+    }
+    return bgRes;
+  }
 
+  // bg failed -> run exec across frames
   const execRes = await tryExecuteScriptExtract();
-  if (execRes.ok) return execRes;
+  if (execRes.ok) {
+    safeLog('fetchCleanPageText execRes', { requestedTabUrl: tabUrl, extractedUrl: execRes.url, textPreview: (execRes.text || '').slice(0,200) });
+    return execRes;
+  }
 
-  const maybeNeedPermissionErrors = ['must request permission', 'cannot access contents of the page', 'has no access to', 'exec-failed', 'exec-throw'];
+  // last-ditch: if exec failed and bg failed, check if permission flow may help (existing logic)
+  const maybeNeedPermissionErrors = ['must request permission', 'cannot access contents of the page', 'has no access to', 'exec-failed', 'exec-throw', 'exec-empty'];
   const low = String(execRes.detail || '').toLowerCase();
   if (tabUrl && maybeNeedPermissionErrors.some(s => low.includes(s))) {
     try {
@@ -1991,6 +2015,7 @@ async function fetchCleanPageText(tabId, tabUrl) {
 
   return { ok: false, reason: 'all-failed', detail: { bg: bgRes, exec: execRes } };
 }
+
 
 async function summarizeCurrentPageOrSelection_AiAware() {
   safeLog('summarizeCurrentPageOrSelection_AiAware (local-only) start');
@@ -2107,6 +2132,9 @@ async function summarizeCurrentPageOrSelection_AiAware() {
         return;
       }
     }
+    safeLog('summarize: target tab', { id: tab.id, tabUrl: tab.url });
+safeLog('summarize: fetched result url/preview', { fetchedUrl: fetched && fetched.url, preview: (fetched && fetched.text) ? (fetched.text||'').slice(0,200) : '' });
+
 
     if (!text || !text.trim()) {
       toast('No text to summarize — select text on the page or ensure the page has readable content.', 'info');
