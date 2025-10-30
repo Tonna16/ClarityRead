@@ -1208,68 +1208,123 @@ function extractCleanMainTextAndHtml(mainNode) {
   }
 
   // --- Speech: robust speakText() with auto-chunking and session guard
-  function speakText(fullText, { voiceName, rate = 1, pitch = 1, highlight = false } = {}) {
-    safeLog('speakText called len=', (fullText || '').length, { voiceName, rate, pitch, highlight });
+  // ======= Add this helper near other utilities (e.g., next to clamp/safeLog) =======
+/**
+ * resolveVoices(cb, opts)
+ * - Calls cb(voicesArray) once voice list is available OR after timeout.
+ * - If voices available immediately calls cb synchronously.
+ * - opts.timeout default 600ms.
+ */
+function resolveVoices(cb, opts) {
+  opts = opts || {};
+  const timeout = Number(opts.timeout || 600);
 
+  try {
     if (!('speechSynthesis' in window)) {
-      safeLog('TTS not supported here.');
-      sendState('Not Reading');
-      return { ok: false, error: 'no-tts' };
+      return cb([]);
     }
 
-    fullText = sanitizeForTTS(fullText || '');
-    if (!fullText) { safeLog('No text to read'); return { ok: false, error: 'no-text' }; }
-
-    // New session
-    sessionId += 1;
-    const mySessionId = sessionId;
-    stoppedAlready = false;
-
-    rate = clamp(rate, 0.5, 1.6);
-    pitch = clamp(pitch, 0.5, 2);
-
-    // Cancel any prior speak to avoid race where stop→start toggles incorrectly
-    try { window.speechSynthesis.cancel(); } catch(e){}
-    clearHighlights();
-    errorFallbackAttempted = false;
-
-    // prepare highlighting (overlay)
-    let utterText = fullText;
-    if (highlight) {
-      try {
-        const prep = prepareSpansForHighlighting(fullText);
-        safeLog('speakText prepareSpans result', prep);
-        if (prep && prep.mode === 'overlay') {
-          utterText = prep.overlayText || overlayTextSplice || fullText.slice(0, MAX_OVERLAY_CHARS);
-        } else {
-          // fallback to reading full text
-          utterText = fullText;
-        }
-      } catch (e) { safeLog('prepareSpans call failed', e); utterText = fullText; }
+    let voices = (window.speechSynthesis.getVoices && window.speechSynthesis.getVoices()) || [];
+    if (voices && voices.length) {
+      return cb(voices);
     }
 
-    const CHUNK_SIZE = 1800;
-    const chunks = [];
-    let pos = 0;
-    while (pos < utterText.length) {
-      chunks.push(utterText.slice(pos, pos + CHUNK_SIZE));
-      pos += CHUNK_SIZE;
-    }
-    safeLog('speakText created chunks', chunks.length, 'sessionId', mySessionId);
+    // If empty, wait for voiceschanged or timeout
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      try { window.speechSynthesis.removeEventListener('voiceschanged', onVoicesChanged); } catch(e){}
+      const v = (window.speechSynthesis.getVoices && window.speechSynthesis.getVoices()) || [];
+      cb(v);
+    };
 
-    const voices = window.speechSynthesis.getVoices() || [];
+    const onVoicesChanged = () => { finish(); };
+    try {
+      window.speechSynthesis.addEventListener('voiceschanged', onVoicesChanged);
+    } catch (e) {
+      // addEventListener may not exist in some old contexts — ignore
+    }
+
+    setTimeout(finish, timeout);
+  } catch (e) {
+    try { cb([]); } catch (_) {}
+  }
+}
+
+// ======= Replace speakText(...) with this version =======
+function speakText(fullText, { voiceName, rate = 1, pitch = 1, highlight = false } = {}) {
+  safeLog('speakText called len=', (fullText || '').length, { voiceName, rate, pitch, highlight });
+
+  if (!('speechSynthesis' in window)) {
+    safeLog('TTS not supported here.');
+    sendState('Not Reading');
+    return { ok: false, error: 'no-tts' };
+  }
+
+  fullText = sanitizeForTTS(fullText || '');
+  if (!fullText) { safeLog('No text to read'); return { ok: false, error: 'no-text' }; }
+
+  // New session
+  sessionId += 1;
+  const mySessionId = sessionId;
+  stoppedAlready = false;
+
+  rate = clamp(rate, 0.5, 1.6);
+  pitch = clamp(pitch, 0.5, 2);
+
+  // Cancel any prior speak to avoid race where stop→start toggles incorrectly
+  try { window.speechSynthesis.cancel(); } catch(e){}
+  clearHighlights();
+  errorFallbackAttempted = false;
+
+  // prepare highlighting (overlay)
+  let utterText = fullText;
+  if (highlight) {
+    try {
+      const prep = prepareSpansForHighlighting(fullText);
+      safeLog('speakText prepareSpans result', prep);
+      if (prep && prep.mode === 'overlay') {
+        utterText = prep.overlayText || overlayTextSplice || fullText.slice(0, MAX_OVERLAY_CHARS);
+      } else {
+        utterText = fullText;
+      }
+    } catch (e) { safeLog('prepareSpans call failed', e); utterText = fullText; }
+  }
+
+  const CHUNK_SIZE = 1800;
+  const chunks = [];
+  let pos = 0;
+  while (pos < utterText.length) {
+    chunks.push(utterText.slice(pos, pos + CHUNK_SIZE));
+    pos += CHUNK_SIZE;
+  }
+  safeLog('speakText created chunks', chunks.length, 'sessionId', mySessionId);
+
+  // Start timers / stats immediately (these are UI-level concerns)
+  readStartTs = Date.now();
+  accumulatedElapsed = 0;
+  pendingSecondsForSend = 0;
+  lastStatsSendTs = Date.now();
+  startAutoStatsTimer();
+
+  // Wait for voices if necessary then start speaking the chunks
+  resolveVoices(function(voices) {
+    if (mySessionId !== sessionId) { safeLog('voice resolution aborted due session change', mySessionId, sessionId); return; }
+
+    // choose voice: prefer voiceName, then language-match, then first available
     let chosen = null;
-    if (voiceName) chosen = voices.find(v => v.name === voiceName) || null;
-    if (!chosen) chosen = voices.find(v => v.lang && v.lang.startsWith((document.documentElement.lang || navigator.language || 'en').split('-')[0])) || voices[0] || null;
+    try {
+      if (voiceName) chosen = voices.find(v => v.name === voiceName) || null;
+      if (!chosen) {
+        const docLang = (document.documentElement.lang || navigator.language || 'en').split('-')[0];
+        chosen = voices.find(v => v.lang && v.lang.toLowerCase().startsWith(docLang)) || voices[0] || null;
+      }
+    } catch (e) {
+      chosen = (voices && voices[0]) || null;
+    }
 
     safeLog('speakText chosen voice', chosen && chosen.name);
-
-    // timers / stats
-    readStartTs = Date.now();
-    accumulatedElapsed = 0;
-    pendingSecondsForSend = 0;
-    lastStatsSendTs = Date.now();
-    startAutoStatsTimer();
 
     let chunkIndex = 0;
     let charsSpokenBefore = 0;
@@ -1290,7 +1345,9 @@ function extractCleanMainTextAndHtml(mainNode) {
       utter._chunkBase = charsSpokenBefore;
       charsSpokenBefore += text.length;
 
-      if (chosen) utter.voice = chosen;
+      if (chosen) {
+        try { utter.voice = chosen; } catch(e){} // defensive
+      }
       utter.rate = clamp((Number(rate) || 1) * RATE_SCALE, 0.5, 1.6);
       utter.pitch = pitch;
       currentUtterance = utter;
@@ -1306,7 +1363,7 @@ function extractCleanMainTextAndHtml(mainNode) {
         }, 50);
       };
 
-      // onerror fallback at chunk-level
+      // onerror fallback at chunk-level (keep your existing logic)
       utter.onerror = (err) => {
         if (mySessionId !== sessionId) { safeLog('chunk onerror ignored due to session mismatch', mySessionId, sessionId); return; }
         let m = '';
@@ -1332,27 +1389,37 @@ function extractCleanMainTextAndHtml(mainNode) {
     // start
     sendState('Reading...');
     speakNext();
-    return { ok: true };
-  }
+  }, { timeout: 800 });
 
-  // --- Speed-read
-  function splitIntoChunks(text, chunkSize = 3) {
-    const words = (text || '').trim().split(/\s+/).filter(Boolean);
-    const chunks = [];
-    for (let i = 0; i < words.length; i += chunkSize) chunks.push(words.slice(i, i + chunkSize).join(' '));
-    return chunks;
-  }
+  return { ok: true };
+}
 
-  function speakChunksSequentially(chunks, rate = 1, voiceName) {
-    safeLog('speakChunksSequentially called', chunks.length, { rate, voiceName });
-    if (!chunks || !chunks.length) { safeLog('no chunks'); return { ok: false, error: 'no-chunks' }; }
-    rate = clamp(rate, 0.5, 1.6);
-    speedChunks = chunks; speedIndex = 0; speedActive = true;
-    sessionId += 1;
-    const mySessionId = sessionId;
-    try { window.speechSynthesis.cancel(); } catch(e){}
-    clearHighlights();
-    readStartTs = Date.now(); accumulatedElapsed = 0; pendingSecondsForSend = 0; lastStatsSendTs = Date.now(); startAutoStatsTimer();
+// ======= Replace speakChunksSequentially(...) with this version =======
+function speakChunksSequentially(chunks, rate = 1, voiceName) {
+  safeLog('speakChunksSequentially called', chunks.length, { rate, voiceName });
+  if (!chunks || !chunks.length) { safeLog('no chunks'); return { ok: false, error: 'no-chunks' }; }
+  rate = clamp(rate, 0.5, 1.6);
+  speedChunks = chunks; speedIndex = 0; speedActive = true;
+  sessionId += 1;
+  const mySessionId = sessionId;
+  try { window.speechSynthesis.cancel(); } catch(e){}
+  clearHighlights();
+  readStartTs = Date.now(); accumulatedElapsed = 0; pendingSecondsForSend = 0; lastStatsSendTs = Date.now(); startAutoStatsTimer();
+
+  // Resolve voices first
+  resolveVoices(function(voices) {
+    if (mySessionId !== sessionId) { safeLog('speed speak aborted due session change during voice resolution', mySessionId, sessionId); return; }
+
+    let chosen = null;
+    try {
+      if (voiceName) chosen = voices.find(v => v.name === voiceName) || null;
+      if (!chosen) {
+        const lang = (document.documentElement.lang || navigator.language || 'en').split('-')[0];
+        chosen = voices.find(v => v.lang && v.lang.toLowerCase().startsWith(lang)) || voices[0] || null;
+      }
+    } catch (e) {
+      chosen = (voices && voices[0]) || null;
+    }
 
     const speakNext = () => {
       if (mySessionId !== sessionId) { safeLog('speed speakNext aborted session mismatch', mySessionId, sessionId); return; }
@@ -1360,11 +1427,7 @@ function extractCleanMainTextAndHtml(mainNode) {
       const chunkText = sanitizeForTTS(speedChunks[speedIndex++] || '');
       if (!chunkText) { setTimeout(speakNext, 0); return; }
       const u = new SpeechSynthesisUtterance(chunkText);
-      const voices = window.speechSynthesis.getVoices() || [];
-      let chosen = null;
-      if (voiceName) chosen = voices.find(v => v.name === voiceName) || null;
-      if (!chosen) chosen = voices.find(v => v.lang && v.lang.startsWith((document.documentElement.lang || navigator.language || 'en').split('-')[0])) || voices[0] || null;
-      if (chosen) u.voice = chosen;
+      if (chosen) try { u.voice = chosen; } catch(e){}
       u.rate = clamp(rate * RATE_SCALE, 0.5, 1.6);
       u.pitch = 1;
 
@@ -1389,7 +1452,7 @@ function extractCleanMainTextAndHtml(mainNode) {
           safeLog('Retrying speed chunk with reduced rate', reducedRate);
           try {
             const retryU = new SpeechSynthesisUtterance(chunkText);
-            if (chosen) retryU.voice = chosen;
+            if (chosen) try { retryU.voice = chosen; } catch(e){}
             retryU.rate = reducedRate;
             retryU.pitch = 1;
             retryU.onend = () => setTimeout(() => speakNext(), Math.max(60, Math.round(200 / Math.max(0.1, retryU.rate))));
@@ -1417,9 +1480,22 @@ function extractCleanMainTextAndHtml(mainNode) {
 
       try { window.speechSynthesis.speak(u); sendState('Reading...'); } catch (e) { safeLog('speak chunk failed', e); speedActive = false; sendState('Not Reading'); finalizeStatsAndSend(); }
     };
+    // kick off
     speakNext();
-    return { ok: true };
+  }, { timeout: 800 });
+
+  return { ok: true };
+}
+
+
+  // --- Speed-read
+  function splitIntoChunks(text, chunkSize = 3) {
+    const words = (text || '').trim().split(/\s+/).filter(Boolean);
+    const chunks = [];
+    for (let i = 0; i < words.length; i += chunkSize) chunks.push(words.slice(i, i + chunkSize).join(' '));
+    return chunks;
   }
+
   function stopSpeedRead() { speedActive = false; speedChunks = null; speedIndex = 0; try { window.speechSynthesis.cancel(); } catch(e){} finalizeStatsAndSend(); sendState('Not Reading'); safeLog('stopSpeedRead called'); }
 
   // --- Pause / resume / stop (use speechSynthesis state and sendState)

@@ -1094,89 +1094,250 @@ function ensureVoicesLoaded(timeoutMs = 1500) {
     }
   });
 
-  safeOn(focusModeBtn, 'click', async () => {
+   safeOn(focusModeBtn, 'click', async () => {
     safeLog('focusModeBtn clicked');
     focusModeBtn.disabled = true;
-    const res = await sendMessageToActiveTabWithInject({ action: 'toggleFocusMode' });
-    focusModeBtn.disabled = false;
+
+    // prefer using background path first
+    const res = await sendMessageToActiveTabWithInject({ action: 'toggleFocusMode' }).catch(e => ({ ok: false, error: String(e) }));
     safeLog('toggleFocusMode response', res);
+
     const r = normalizeBgResponse(res);
     const textEl = focusModeBtn ? focusModeBtn.querySelector('.action-text') : null;
+
+    if (r && r.ok) {
+      // normal happy path
+      if (textEl) textEl.textContent = (r.overlayActive ? `Close ${_focusModeOriginalText}` : _focusModeOriginalText);
+      else focusModeBtn.textContent = (r.overlayActive ? `Close ${_focusModeOriginalText}` : _focusModeOriginalText);
+      toast(r.overlayActive ? 'Focus mode opened.' : 'Focus mode closed.', 'success', 1400);
+      safeLog('focusModeBtn UI updated (bg)', focusModeBtn.textContent);
+      focusModeBtn.disabled = false;
+      return;
+    }
+
+    // If background says no-text (extractor couldn't find main content),
+    // fall back to a minimal injected overlay so the user still gets focus mode.
+    if (r && r.error === 'no-text') {
+      safeLog('toggleFocusMode reported no-text — attempting inline fallback overlay');
+      try {
+        // get best web tab id (same helper you use elsewhere)
+        const tab = await findBestWebTab();
+        if (!tab || !tab.id) throw new Error('no-target-tab-for-fallback');
+
+        const fallbackRes = await new Promise(resolve => {
+          try {
+            chrome.scripting.executeScript({
+              target: { tabId: tab.id },
+              func: () => {
+                try {
+                  // minimal toggle overlay (id: clarityread-fallback-overlay)
+                  const ID = 'clarityread-fallback-overlay';
+                  let el = document.getElementById(ID);
+                  if (el) {
+                    // toggle off
+                    el.remove();
+                    return { ok: true, overlayActive: false };
+                  }
+                  el = document.createElement('div');
+                  el.id = ID;
+                  el.style.position = 'fixed';
+                  el.style.zIndex = 2147483646;
+                  el.style.left = '0';
+                  el.style.top = '0';
+                  el.style.right = '0';
+                  el.style.bottom = '0';
+                  el.style.background = 'rgba(0,0,0,0.65)';
+                  el.style.color = '#fff';
+                  el.style.display = 'flex';
+                  el.style.alignItems = 'center';
+                  el.style.justifyContent = 'center';
+                  el.style.fontSize = '18px';
+                  el.style.fontFamily = 'sans-serif';
+                  el.style.padding = '20px';
+                  el.style.backdropFilter = 'blur(4px)';
+                  el.textContent = 'Focus mode — press Esc or click this overlay to close.';
+                  el.addEventListener('click', () => el.remove());
+                  // allow Esc to close
+                  const onKey = (ev) => { if (ev.key === 'Escape') { try { el.remove(); window.removeEventListener('keydown', onKey); } catch(e){} } };
+                  window.addEventListener('keydown', onKey);
+                  document.body.appendChild(el);
+                  return { ok: true, overlayActive: true };
+                } catch (e) { return { ok: false, error: String(e) }; }
+              }
+            }, (results) => {
+              if (chrome.runtime.lastError) {
+                resolve({ ok: false, error: chrome.runtime.lastError.message });
+              } else if (Array.isArray(results) && results[0] && results[0].result) {
+                resolve(results[0].result);
+              } else resolve({ ok: false, error: 'no-result' });
+            });
+          } catch (ee) { resolve({ ok: false, error: String(ee) }); }
+        });
+
+        const fallbackNorm = normalizeBgResponse(fallbackRes);
+        if (fallbackNorm && fallbackNorm.ok) {
+          if (textEl) textEl.textContent = (fallbackNorm.overlayActive ? `Close ${_focusModeOriginalText}` : _focusModeOriginalText);
+          toast(fallbackNorm.overlayActive ? 'Focus mode opened (fallback).' : 'Focus mode closed (fallback).', 'success', 1600);
+          safeLog('focusModeBtn UI updated (fallback)', fallbackNorm);
+        } else {
+          toast('Failed to show focus mode (fallback).' , 'error', 4500);
+          safeLog('fallback overlay failed', fallbackNorm);
+        }
+      } catch (err) {
+        safeLog('focus mode fallback threw', err);
+        toast('Failed to toggle focus mode.', 'error', 4500);
+      } finally {
+        focusModeBtn.disabled = false;
+      }
+      return;
+    }
+
+    // Generic failures
     if (!r || !r.ok) {
       if (r && r.error === 'no-host-permission') toast('Permission required to show focus mode for this site.', 'error', 6000);
       else if (r && r.error === 'tab-discarded') toast('The target tab is suspended. Reload the page and try again.', 'error', 5000);
       else toast('Failed to toggle focus mode.', 'error', 4500);
-    } else {
-      if (textEl) {
-        textEl.textContent = (r.overlayActive ? `Close ${_focusModeOriginalText}` : _focusModeOriginalText);
-      } else {
-        focusModeBtn.textContent = (r.overlayActive ? `Close ${_focusModeOriginalText}` : _focusModeOriginalText);
-      }
-      toast(r.overlayActive ? 'Focus mode opened.' : 'Focus mode closed.', 'success', 1400);
-      safeLog('focusModeBtn UI updated', focusModeBtn.textContent);
     }
+
+    focusModeBtn.disabled = false;
   });
+
 
 // ========== IMPROVED SUMMARIZER FUNCTIONS START ==========
 
+// ======= Summarizer + IDF loader (copy-paste ready) =======
+
 let IDF_MAP = Object.create(null);
 
+/**
+ * Load idf.json from the extension bundle if it exists.
+ * - IDF_FILENAME should be defined elsewhere in your code; if not, we skip.
+ * - Uses AbortController when available to avoid hanging fetches (safe fallback if not available).
+ */
 (async function loadIdfFromExtension() {
   try {
-    const url = chrome && chrome.runtime ? chrome.runtime.getURL(IDF_FILENAME) : IDF_FILENAME;
-    const resp = await fetch(url);
-    if (!resp.ok) {
-      console.info('No idf.json found in extension bundle (ok if intentional).');
+    if (typeof IDF_FILENAME === 'undefined' || !IDF_FILENAME) {
+      safeLog && safeLog('IDF_FILENAME not defined; skipping idf load.');
       IDF_MAP = Object.create(null);
       return;
     }
-    const parsed = await resp.json();
+
+    const url = (chrome && chrome.runtime && chrome.runtime.getURL) ? chrome.runtime.getURL(IDF_FILENAME) : IDF_FILENAME;
+
+    // short guarded fetch with AbortController if present
+    let controller = null;
+    let signal = undefined;
+    try { if (typeof AbortController !== 'undefined') { controller = new AbortController(); signal = controller.signal; setTimeout(() => controller.abort(), 4000); } } catch (e) {}
+    const resp = await fetch(url, { cache: 'no-cache', signal }).catch((err) => {
+      // fetch aborted or network error - treat like missing idf
+      safeLog && safeLog('fetch idf failed', err && (err.message || err));
+      return null;
+    });
+
+    if (!resp || !resp.ok) {
+      safeLog && safeLog('No idf.json found in extension bundle (ok if intentional).', { url, status: resp && resp.status });
+      IDF_MAP = Object.create(null);
+      return;
+    }
+
+    const parsed = await resp.json().catch(e => {
+      safeLog && safeLog('idf.json parse failed', e && (e.stack || e));
+      return null;
+    });
+
+    if (!parsed || typeof parsed !== 'object') {
+      IDF_MAP = Object.create(null);
+      return;
+    }
+
     const m = Object.create(null);
-    for (const k of Object.keys(parsed || {})) m[k.toLowerCase()] = Number(parsed[k]) || 0;
+    for (const k of Object.keys(parsed || {})) {
+      try {
+        if (!k) continue;
+        m[String(k).toLowerCase()] = Number(parsed[k]) || 0;
+      } catch (e) { /* ignore malformed entries */ }
+    }
     IDF_MAP = m;
-    safeLog('Loaded idf.json into popup', { entries: Object.keys(IDF_MAP).length });
+    safeLog && safeLog('Loaded idf.json into popup', { entries: Object.keys(IDF_MAP).length });
   } catch (e) {
-    safeLog('loadIdfFromExtension failed (continuing without idf)', e && (e.stack || e));
+    safeLog && safeLog('loadIdfFromExtension failed (continuing without idf)', e && (e.stack || e));
     IDF_MAP = Object.create(null);
   }
 })();
 
+// -------------------- Basic cleaners / tokenizers --------------------
+
 function cleanTextLocal(input) {
-  if (!input) return '';
-  let t = input.replace(/\[\d+\]/g, ' ')
-               .replace(/\(\d+\)/g, ' ')
-               .replace(/\s+/g, ' ')
-               .replace(/ {2,}/g, ' ')
-               .trim();
-  t = t.replace(/\b(References|External links|See also|Further reading)\b[\s\S]*$/i, '');
-  return t;
+  if (!input || typeof input !== 'string') return '';
+  try {
+    let t = input.replace(/\[\d+\]/g, ' ')
+                 .replace(/\(\d+\)/g, ' ')
+                 .replace(/\s+/g, ' ')
+                 .replace(/ {2,}/g, ' ')
+                 .trim();
+    t = t.replace(/\b(References|External links|See also|Further reading)\b[\s\S]*$/i, '');
+    return t.trim();
+  } catch (e) {
+    return String(input || '').trim();
+  }
 }
 
+/**
+ * Sentence splitter that's permissive and avoids fragile lookbehind.
+ * It extracts sentence-like chunks ending with . ? or ! together with trailing quotes/parens.
+ * Falls back to splitting on newlines or periods if the matcher yields nothing.
+ */
 function splitIntoSentencesLocal(text) {
-  if (!text) return [];
-  const s = text.replace(/\n+/g, ' ');
-  const raw = s.split(/(?<=[.?!])\s+(?=[A-Z0-9"'""''])/g).map(x => x.trim()).filter(Boolean);
-  if (raw.length <= 1) return s.split(/(?<=[.?!])/g).map(x => x.trim()).filter(Boolean);
-  return raw;
+  if (!text || typeof text !== 'string') return [];
+  const s = text.replace(/\r\n/g, '\n').replace(/\n+/g, ' ').trim();
+  if (!s) return [];
+  const re = /([^.!?]+[.!?]["')\]]*\s*)/g;
+  const arr = [];
+  try {
+    let m;
+    re.lastIndex = 0;
+    while ((m = re.exec(s)) !== null) {
+      const piece = (m[1] || '').trim();
+      if (piece) arr.push(piece);
+      // safety break to avoid infinite loops
+      if (re.lastIndex >= s.length) break;
+    }
+  } catch (e) { /* ignore */ }
+
+  if (!arr.length) {
+    // fallback: split on punctuation boundaries
+    const fallback = s.split(/(?<=[.?!])\s+/).map(x => x.trim()).filter(Boolean);
+    if (fallback.length) return fallback;
+    // last-chance fallback: split words into pseudo-sentences
+    return s.match(/.{1,200}/g) || [s];
+  }
+
+  return arr;
 }
 
 function splitIntoParagraphsLocal(text) {
-  if (!text) return [];
+  if (!text || typeof text !== 'string') return [];
   const parts = text.split(/\n{2,}/g).map(p => p.trim()).filter(Boolean);
   return parts.length ? parts : [text.trim()];
 }
 
-const STOPWORDS_LOCAL = new Set(['the','is','in','and','a','an','to','of','that','it','on','for','with','as','was','were','this','by','are','or','be','from','at','which','but','not','have','has','had','they','you','i','their','its','we','our','us','will','can','may','also']);
+const STOPWORDS_LOCAL = new Set([
+  'the','is','in','and','a','an','to','of','that','it','on','for','with','as','was','were',
+  'this','by','are','or','be','from','at','which','but','not','have','has','had','they',
+  'you','i','their','its','we','our','us','will','can','may','also'
+]);
 
 function tokenizeLocal(sentence) {
-  if (!sentence) return [];
+  if (!sentence || typeof sentence !== 'string') return [];
   return (sentence.toLowerCase().match(/\b[^\d\W]+\b/g) || []).filter(w => !STOPWORDS_LOCAL.has(w));
 }
 
 function buildTermFrequenciesLocal(text) {
+  if (!text || typeof text !== 'string') return Object.create(null);
   const words = (text || '').toLowerCase().match(/\b[^\d\W]+\b/g) || [];
   const tf = Object.create(null);
   for (const w of words) {
+    if (!w) continue;
     if (STOPWORDS_LOCAL.has(w)) continue;
     tf[w] = (tf[w] || 0) + 1;
   }
@@ -1185,246 +1346,258 @@ function buildTermFrequenciesLocal(text) {
 
 function sentenceSimilarityLocal(a, b) {
   if (!a || !b) return 0;
-  const ta = new Set(tokenizeLocal(a));
-  const tb = new Set(tokenizeLocal(b));
-  if (!ta.size || !tb.size) return 0;
-  let inter = 0;
-  for (const w of ta) if (tb.has(w)) inter++;
-  const uni = new Set([...ta, ...tb]).size || 1;
-  return inter / uni;
+  try {
+    const ta = new Set(tokenizeLocal(a));
+    const tb = new Set(tokenizeLocal(b));
+    if (!ta.size || !tb.size) return 0;
+    let inter = 0;
+    for (const w of ta) if (tb.has(w)) inter++;
+    const uni = new Set([...ta, ...tb]).size || 1;
+    return inter / uni;
+  } catch (e) { return 0; }
 }
 
 function scrubInputForSummarizer(raw) {
   if (!raw || typeof raw !== 'string') return '';
-  let t = raw;
-  t = t.replace(/<style[\s\S]*?<\/style>/gi, ' ');
-  t = t.replace(/<script[\s\S]*?<\/script>/gi, ' ');
-  t = t.replace(/\[[^\]]{1,80}\]/g, ' ');
-  t = t.replace(/\{[\s\S]*?\}/g, ' ');
-  t = t.replace(/(References|External links|See also|Further reading|Navigation|Contents|Categories|vte)\b[\s\S]*/ig, ' ');
-  t = t.replace(/\.mw-parser-output[\s\S]{0,8000}\}/gi, ' ');
-  t = t.replace(/<\/?[^>]+>/g, ' ');
-  t = t.replace(/\s{2,}/g, ' ').trim();
-  return t;
+  try {
+    let t = raw;
+    t = t.replace(/<style[\s\S]*?<\/style>/gi, ' ');
+    t = t.replace(/<script[\s\S]*?<\/script>/gi, ' ');
+    t = t.replace(/\[[^\]]{1,80}\]/g, ' ');
+    t = t.replace(/\{[\s\S]*?\}/g, ' ');
+    t = t.replace(/(References|External links|See also|Further reading|Navigation|Contents|Categories|vte)\b[\s\S]*/ig, ' ');
+    t = t.replace(/\.mw-parser-output[\s\S]{0,8000}\}/gi, ' ');
+    t = t.replace(/<\/?[^>]+>/g, ' ');
+    t = t.replace(/\s{2,}/g, ' ').trim();
+    return t;
+  } catch (e) {
+    return String(raw || '').replace(/<\/?[^>]+>/g, ' ').replace(/\s{2,}/g, ' ').trim();
+  }
 }
 
 function tokenizeForScoring(sentence) {
-  if (!sentence) return [];
+  if (!sentence || typeof sentence !== 'string') return [];
   return (sentence.toLowerCase().match(/\b[^\d\W]+\b/g) || []).filter(w => !STOPWORDS_LOCAL.has(w) && w.length > 1);
 }
 
+// -------------------- Sentence scoring --------------------
+
 function sentenceScoreLocal(sentence, tfGlobal, positionWeight = 1, titleTokens = new Set(), opts = {}) {
-  const tokens = tokenizeForScoring(sentence);
-  if (!tokens.length) return 0;
-  let score = 0;
+  if (!sentence || typeof sentence !== 'string') return 0;
+  try {
+    const tokens = tokenizeForScoring(sentence);
+    if (!tokens.length) return 0;
+    let score = 0;
 
-  const idfBoost = (typeof opts.idfBoost === 'number') ? opts.idfBoost : 0.7;
-  const titleBoost = (typeof opts.titleBoost === 'number') ? opts.titleBoost : 1.2;
+    const idfBoost = (typeof opts.idfBoost === 'number') ? opts.idfBoost : 0.7;
+    const titleBoost = (typeof opts.titleBoost === 'number') ? opts.titleBoost : 1.2;
 
-  for (const t of tokens) {
-    const tf = tfGlobal[t] || 0;
-    const idf = (IDF_MAP && typeof IDF_MAP[t] !== 'undefined') ? IDF_MAP[t] : 1;
-    score += tf * (1 + idfBoost * idf);
+    for (const t of tokens) {
+      const tf = (tfGlobal && tfGlobal[t]) ? tfGlobal[t] : 0;
+      const idf = (IDF_MAP && typeof IDF_MAP[t] !== 'undefined') ? IDF_MAP[t] : 1;
+      score += tf * (1 + idfBoost * idf);
+    }
+
+    score = score / Math.sqrt(Math.max(1, tokens.length));
+
+    let titleOverlap = 0;
+    for (const t of tokens) if (titleTokens && titleTokens.has(t)) titleOverlap++;
+    score += titleOverlap * titleBoost;
+
+    // heuristics
+    try { if (/\b(18|19|20)\d{2}\b/.test(sentence)) score *= 1.08; } catch (e) {}
+    try { if (/[€$\£¥¢%]/.test(sentence)) score *= 1.06; } catch (e) {}
+    try { if (/\b[A-Z][a-z]{2,}\s+[A-Z][a-z]{2,}\b/.test(sentence)) score *= 1.05; } catch (e) {}
+
+    const nonAlphaRatio = (sentence.replace(/[A-Za-z0-9]/g,'').length) / Math.max(1, sentence.length);
+    if (nonAlphaRatio > 0.25) score *= 0.7;
+    if (/^[A-Z0-9\W]{5,40}$/.test(sentence) && sentence === sentence.toUpperCase()) score *= 0.6;
+    if (sentence.length < 18) score *= 0.7;
+
+    score *= positionWeight;
+    return score;
+  } catch (e) {
+    return 0;
   }
-
-  score = score / Math.sqrt(Math.max(1, tokens.length));
-
-  let titleOverlap = 0;
-  for (const t of tokens) if (titleTokens.has(t)) titleOverlap++;
-  score += titleOverlap * titleBoost;
-
-  if (/\b(18|19|20)\d{2}\b/.test(sentence)) score *= 1.08;
-  if (/[€$\£¥¢%]/.test(sentence)) score *= 1.06;
-  if (/\b[A-Z][a-z]{2,}\s+[A-Z][a-z]{2,}\b/.test(sentence)) score *= 1.05;
-
-  const nonAlphaRatio = (sentence.replace(/[A-Za-z0-9]/g,'').length) / Math.max(1, sentence.length);
-  if (nonAlphaRatio > 0.25) score *= 0.7;
-  if (/^[A-Z0-9\W]{5,40}$/.test(sentence) && sentence === sentence.toUpperCase()) score *= 0.6;
-  if (sentence.length < 18) score *= 0.7;
-
-  score *= positionWeight;
-  return score;
 }
 
 function mmrSelectLocal(candidates, scoresArr, k = 3, lambda = 0.62) {
-  const selected = [];
-  const used = new Set();
-  const candArr = candidates.map((s, i) => ({ sentence: s, score: (scoresArr[i] && scoresArr[i].score) || 0 }));
-  candArr.sort((a,b) => b.score - a.score);
+  try {
+    const selected = [];
+    const used = new Set();
+    const candArr = candidates.map((s, i) => ({ sentence: s, score: (scoresArr[i] && scoresArr[i].score) || 0 }));
+    candArr.sort((a,b) => b.score - a.score);
 
-  const adaptLambda = (candidates.join(' ').length > 8000) ? Math.max(0.40, lambda - 0.18) : lambda;
+    const adaptLambda = (candidates.join(' ').length > 8000) ? Math.max(0.40, lambda - 0.18) : lambda;
 
-  while (selected.length < k && candArr.length) {
-    let bestIdx = -1, bestVal = -Infinity;
-    for (let i = 0; i < candArr.length; i++) {
-      const c = candArr[i];
-      if (used.has(c.sentence)) continue;
-      let novelty = 0;
-      for (const s of selected) novelty = Math.max(novelty, sentenceSimilarityLocal(c.sentence, s));
-      const mmr = (adaptLambda * c.score) - ((1 - adaptLambda) * novelty);
-      if (mmr > bestVal) { bestVal = mmr; bestIdx = i; }
+    while (selected.length < k && candArr.length) {
+      let bestIdx = -1, bestVal = -Infinity;
+      for (let i = 0; i < candArr.length; i++) {
+        const c = candArr[i];
+        if (used.has(c.sentence)) continue;
+        let novelty = 0;
+        for (const s of selected) novelty = Math.max(novelty, sentenceSimilarityLocal(c.sentence, s));
+        const mmr = (adaptLambda * c.score) - ((1 - adaptLambda) * novelty);
+        if (mmr > bestVal) { bestVal = mmr; bestIdx = i; }
+      }
+      if (bestIdx === -1) break;
+      selected.push(candArr[bestIdx].sentence);
+      used.add(candArr[bestIdx].sentence);
+      candArr.splice(bestIdx, 1);
     }
-    if (bestIdx === -1) break;
-    selected.push(candArr[bestIdx].sentence);
-    used.add(candArr[bestIdx].sentence);
-    candArr.splice(bestIdx, 1);
+    return selected;
+  } catch (e) {
+    return candidates.slice(0, Math.max(1, Math.min(k, candidates.length)));
   }
-  return selected;
 }
 
 // ========== IMPROVED CONFIG AND K COMPUTATION ==========
 
 function summarizerConfigForPref(pref = 'normal') {
   const cfg = {
-    concise: { 
-      lambda: 0.78,          // Higher relevance focus
-      titleBoost: 2.0,       // Strong title emphasis
-      minSentenceLen: 15,    // More permissive
+    concise: {
+      lambda: 0.78,
+      titleBoost: 2.0,
+      minSentenceLen: 15,
       idfBoost: 0.8,
-      wordScaleFactor: 0.015 // Sentences per 100 words
+      wordScaleFactor: 0.015
     },
-    normal: { 
-      lambda: 0.60,          // Balanced
+    normal: {
+      lambda: 0.60,
       titleBoost: 1.4,
-      minSentenceLen: 12,    // Permissive
+      minSentenceLen: 12,
       idfBoost: 1.1,
-      wordScaleFactor: 0.025 // More sentences per 100 words
+      wordScaleFactor: 0.025
     },
-    detailed: { 
-      lambda: 0.45,          // More diversity
-      titleBoost: 1.0,       // Less title bias
-      minSentenceLen: 8,     // Very permissive
+    detailed: {
+      lambda: 0.45,
+      titleBoost: 1.0,
+      minSentenceLen: 8,
       idfBoost: 1.4,
-      wordScaleFactor: 0.040 // Much more sentences per 100 words
+      wordScaleFactor: 0.040
     }
   };
   return cfg[pref] || cfg.normal;
 }
 
-function computeFinalKForPref(text = '', pref = 'normal') {
+/**
+ * compute base target without monotonic adjustments (helper for computeFinalKForPref)
+ */
+function computeFinalKBase(text = '', pref = 'normal') {
   const words = (text || '').trim().split(/\s+/).filter(Boolean).length || 0;
-  
+
   if (words < 50) {
-    // Very short text: return 1-3 sentences regardless of preference
     return pref === 'concise' ? 1 : (pref === 'detailed' ? 3 : 2);
   }
-  
+
   const cfg = summarizerConfigForPref(pref);
-  
-  // Base sentences + scaled by word count
+
+  // The original formula used wordScaleFactor / 100; preserve that behavior.
   const scaledSentences = Math.floor(words * cfg.wordScaleFactor / 100);
-  
-  // Apply preference-specific minimums and caps
+
   let target;
   if (pref === 'concise') {
     target = Math.max(2, Math.min(8, 2 + scaledSentences));
   } else if (pref === 'normal') {
     target = Math.max(4, Math.min(18, 4 + scaledSentences));
-  } else { // detailed
+  } else {
     target = Math.max(7, Math.min(30, 7 + scaledSentences));
   }
-  
-  // Ensure monotonic progression: concise < normal < detailed
-  if (pref === 'normal') {
-    const conciseEquiv = computeFinalKForPref(text, 'concise');
-    target = Math.max(target, conciseEquiv + 2);
-  } else if (pref === 'detailed') {
-    const normalEquiv = computeFinalKForPref(text, 'normal');
-    target = Math.max(target, normalEquiv + 3);
-  }
-  
-  safeLog && safeLog(`computeFinalKForPref: pref__=${pref}, words=${words}, target=${target}`);
+
   return target;
+}
+
+function computeFinalKForPref(text = '', pref = 'normal') {
+  try {
+    // compute base for requested pref and ensure monotonic progression by computing the lower-tier targets directly
+    const base = computeFinalKBase(text, pref);
+
+    if (pref === 'normal') {
+      const conciseEquiv = computeFinalKBase(text, 'concise');
+      return Math.max(base, conciseEquiv + 2);
+    } else if (pref === 'detailed') {
+      const normalEquiv = computeFinalKBase(text, 'normal');
+      return Math.max(base, normalEquiv + 3);
+    }
+    return base;
+  } catch (e) {
+    safeLog && safeLog('computeFinalKForPref error', e && (e.stack || e));
+    return 3;
+  }
 }
 
 function isQualitySentence(sentence, minLen = 10, pref = 'normal') {
   const s = (sentence || '').trim();
   if (!s || s.length < minLen) return false;
-  
-  // Must have some alphabetic content
   if (!/[a-z]/i.test(s)) return false;
-  
-  // Drop obvious navigation junk
+
   const junkPatterns = [
     /^(Outline|History|See also|References|External links|Category|Navigation|Contents|Table of|Menu|Skip to|Related|Trending|Advertisement|Sponsored|Click here|Read more|Subscribe|Share|Follow us)$/i,
     /^(By |Author:|Written by|Updated on|Last edited|Copyright|©)/i,
-    /^\d{1,2}\/\d{1,2}\/\d{2,4}$/, // Pure dates
-    /^[\d\s\-\(\)]+$/, // Phone numbers
+    /^\d{1,2}\/\d{1,2}\/\d{2,4}$/,
+    /^[\d\s\-\(\)]+$/
   ];
   if (junkPatterns.some(re => re.test(s))) return false;
-  
-  // Drop sentences that are mostly symbols/punctuation
+
   const alphaCount = (s.match(/[a-zA-Z]/g) || []).length;
   const totalCount = s.length;
   if (alphaCount / totalCount < 0.50) return false;
-  
-  // For detailed mode, be VERY permissive
+
   if (pref === 'detailed') {
     return s.length >= 8 && alphaCount >= 5;
   }
-  
-  // For normal/concise: needs decent length OR proper ending
+
   if (s.length >= 20 || /[.?!]$/.test(s)) return true;
-  
-  // Short sentences need to have substance (multiple words)
+
   const wordCount = (s.match(/\b[a-z]{2,}\b/gi) || []).length;
   return wordCount >= 4;
 }
 
+// ===================== Main summarizer =====================
+
 function summarizeTextLocal(rawText, maxSentencesArg = null, userPref = 'normal') {
   if (!rawText || typeof rawText !== 'string') return '';
-  
+
   let cleaned = scrubInputForSummarizer(rawText);
   if (!cleaned) return '';
 
-  // Normalize glued fragments
   try {
     cleaned = cleaned.replace(/([a-z0-9])([A-Z][a-z])/g, '$1 $2');
     cleaned = cleaned.replace(/([^\s])By([A-Z])/g, '$1 By $2');
     cleaned = cleaned.replace(/(Updated on|updated on)([A-Z0-9])/g, '$1 $2');
-  } catch (e) {}
+  } catch (e) { /* ignore */ }
 
   const cfg = summarizerConfigForPref(userPref || 'normal');
 
-  // Compute target sentence count
   const plannedK = (typeof maxSentencesArg === 'number' && maxSentencesArg > 0)
     ? Math.min(30, Math.max(1, Math.floor(maxSentencesArg)))
     : computeFinalKForPref(cleaned, userPref);
 
   try {
     if (window.__clarity_debug_summary) {
-      safeLog('summarizer config', { 
-        userPref, 
-        plannedK, 
-        rawLen: cleaned.length, 
-        cfg: cfg 
-      });
+      safeLog && safeLog('summarizer config', { userPref, plannedK, rawLen: cleaned.length, cfg });
     }
-  } catch(e){}
+  } catch (e) {}
 
-  // Short document fast path
+  // Short document fast path (by character length)
   if (cleaned.length < 300) {
     const sents = splitIntoSentencesLocal(cleaned);
     const k = Math.min(plannedK, sents.length);
     if (k <= 0 || sents.length <= k) return sents.join(' ').trim();
-    
+
     const tf = buildTermFrequenciesLocal(cleaned);
     const scored = sents.map((sen, idx) => ({
       sentence: sen,
-      score: sentenceScoreLocal(sen, tf, 1.0, new Set(), { 
-        idfBoost: cfg.idfBoost, 
-        titleBoost: cfg.titleBoost 
-      })
+      score: sentenceScoreLocal(sen, tf, 1.0, new Set(), { idfBoost: cfg.idfBoost, titleBoost: cfg.titleBoost })
     }));
     scored.sort((a,b) => b.score - a.score);
-    
-    // Take top K, reorder by document position
+
     const chosen = scored.slice(0, k).map(x => x.sentence);
     const ordered = sents.filter(s => chosen.includes(s));
     return ordered.join(' ').trim();
   }
 
-  // Full document: extract per-paragraph then aggregate
+  // Full document: per-paragraph aggregation
   const paragraphs = splitIntoParagraphsLocal(cleaned);
   const globalTF = buildTermFrequenciesLocal(cleaned);
   const firstLine = (cleaned.split('\n')[0] || '').trim();
@@ -1435,132 +1608,92 @@ function summarizeTextLocal(rawText, maxSentencesArg = null, userPref = 'normal'
     if (!p) continue;
     const sents = splitIntoSentencesLocal(p);
     if (!sents.length) continue;
-    
-    const scored = sents.map((sen, idx) => ({ 
-      sentence: sen, 
-      score: sentenceScoreLocal(
-        sen, 
-        globalTF, 
-        (idx === 0 ? 1.05 : 1.0), 
-        titleTokens, 
-        { idfBoost: cfg.idfBoost, titleBoost: cfg.titleBoost }
-      ) 
+
+    const scored = sents.map((sen, idx) => ({
+      sentence: sen,
+      score: sentenceScoreLocal(sen, globalTF, (idx === 0 ? 1.05 : 1.0), titleTokens, { idfBoost: cfg.idfBoost, titleBoost: cfg.titleBoost })
     }));
     scored.sort((a,b) => b.score - a.score);
 
-    // Take top sentences from each paragraph (adaptive based on para length)
     const topCount = Math.max(1, Math.min(4, Math.ceil(scored.length * 0.35)));
     for (let i = 0; i < Math.min(topCount, scored.length); i++) {
       paraSummaries.push(scored[i].sentence);
     }
-    
-    // Stop if we have enough candidates
+
     if (paraSummaries.length > plannedK * 3) break;
   }
 
-  // Score all candidates globally
   let allCandidates = paraSummaries.length ? paraSummaries : splitIntoSentencesLocal(cleaned);
-  
-  const scoredCandidates = allCandidates.map((sen, idx) => ({ 
-    sentence: sen, 
-    score: sentenceScoreLocal(
-      sen, 
-      globalTF, 
-      1.0, 
-      titleTokens, 
-      { idfBoost: cfg.idfBoost, titleBoost: cfg.titleBoost }
-    ) 
+
+  const scoredCandidates = allCandidates.map((sen, idx) => ({
+    sentence: sen,
+    score: sentenceScoreLocal(sen, globalTF, 1.0, titleTokens, { idfBoost: cfg.idfBoost, titleBoost: cfg.titleBoost })
   }));
   scoredCandidates.sort((a,b) => b.score - a.score);
 
   const candidatesList = scoredCandidates.map(x => x.sentence);
   const scoresList = scoredCandidates.map(x => ({ sentence: x.sentence, score: x.score }));
 
-  // Apply MMR for diversity
   const lambda = cfg.lambda;
   const k = Math.min(plannedK, candidatesList.length);
-  
+
   let selected = mmrSelectLocal(candidatesList, scoresList, k, lambda);
 
-  // Restore document order
+  // Restore order
   const docSents = splitIntoSentencesLocal(cleaned);
   const orderedSelected = docSents.filter(s => selected.includes(s));
   let final = orderedSelected.join(' ').trim();
 
-  // ========== IMPROVED QUALITY FILTER (VERY PERMISSIVE) ==========
+  // Improved quality filter (permissive)
   try {
     const parts = final.split(/(?<=[.?!])\s+/).map(s => s.trim()).filter(Boolean);
-    
-    // Filter with preference-specific thresholds
     const minLen = cfg.minSentenceLen;
     const quality = parts.filter(s => isQualitySentence(s, minLen, userPref));
-    
-    // If we have enough quality sentences, use them
+
     if (quality.length >= plannedK) {
       final = quality.slice(0, plannedK).join(' ').trim();
     } else if (quality.length >= Math.floor(plannedK * 0.7)) {
-      // We have most of what we need, pad with best remaining
       const remaining = parts.filter(s => !quality.includes(s));
       const needed = plannedK - quality.length;
-      
-      // Score remaining by length * word count
       remaining.sort((a, b) => {
         const scoreA = a.length * (a.match(/\b\w+\b/g) || []).length;
         const scoreB = b.length * (b.match(/\b\w+\b/g) || []).length;
         return scoreB - scoreA;
       });
-      
       const padding = remaining.slice(0, needed).filter(s => s.length >= 8);
       final = [...quality, ...padding].join(' ').trim();
-      
     } else {
-      // Quality filter removed too much - use top scored sentences directly
       safeLog && safeLog('Quality filter too aggressive, using top scored', { quality: quality.length, need: plannedK });
-      const topScored = scoredCandidates
-        .slice(0, plannedK * 2) // Take 2x to have room
-        .map(x => x.sentence)
-        .filter(s => s.length >= 10 && /[a-z]/i.test(s)); // Minimal filter
-      
+      const topScored = scoredCandidates.slice(0, plannedK * 2).map(x => x.sentence).filter(s => s.length >= 10 && /[a-z]/i.test(s));
       const ordered = docSents.filter(s => topScored.includes(s));
       final = ordered.slice(0, plannedK).join(' ').trim();
     }
-
   } catch (e) {
-    safeLog && safeLog('Post-filter threw, using unfiltered', e);
+    safeLog && safeLog('Post-filter threw, using unfiltered', e && (e.stack || e));
   }
 
-  // Final trimming: ensure we return exactly K sentences
+  // Final trimming/padding to ensure exactly K sentences if possible
   try {
-    const finalSents = final.split(/(?<=[.?!])\s+/).map(s => s.trim()).filter(s => s.length > 0);
-    
+    let finalSents = final.split(/(?<=[.?!])\s+/).map(s => s.trim()).filter(s => s.length > 0);
     if (finalSents.length < plannedK) {
-      // Still short - grab best scored until we hit target
-      safeLog && safeLog('Final padding needed', { have: finalSents.length, need: plannedK });
       const needed = plannedK - finalSents.length;
-      const available = scoredCandidates
-        .map(x => x.sentence)
-        .filter(s => !finalSents.includes(s) && s.length >= 10)
-        .slice(0, needed);
-      
+      const available = scoredCandidates.map(x => x.sentence).filter(s => !finalSents.includes(s) && s.length >= 10).slice(0, needed);
       if (available.length) {
         const combined = [...finalSents, ...available];
         const reordered = docSents.filter(s => combined.includes(s));
         return reordered.join(' ').trim();
       }
     }
-    
-    // Trim if over target
     if (finalSents.length > plannedK) {
       return finalSents.slice(0, plannedK).join(' ').trim();
     }
-    
     return finalSents.join(' ').trim();
-    
   } catch (e) {
-    safeLog && safeLog('Final trimming failed', e);
+    safeLog && safeLog('Final trimming failed', e && (e.stack || e));
     return final.trim();
   }
 }
+
 
 
 
@@ -1861,65 +1994,107 @@ async function fetchCleanPageText(tabId, tabUrl) {
 
 async function summarizeCurrentPageOrSelection_AiAware() {
   safeLog('summarizeCurrentPageOrSelection_AiAware (local-only) start');
-  if (!summarizePageBtn) { safeLog('summarizePageBtn missing'); return; }
+
+  if (!summarizePageBtn) {
+    safeLog('summarizePageBtn missing');
+    return;
+  }
   summarizePageBtn.disabled = true;
 
   try {
     let text = '';
     let usedSelection = false;
 
+    // find a sensible web tab to target
     const tab = await findBestWebTab();
-    if (!tab || !tab.id || !tab.url || tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://')) {
+    if (!tab || !tab.id || !tab.url || tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://') || !/^https?:\/\//i.test(tab.url)) {
       toast('Cannot summarize internal or extension pages.', 'error');
-      summarizePageBtn.disabled = false;
       return;
     }
 
+    // ----- SELECTION HANDLING (NEW, early) -----
+    // Try to read *current* window selection first. Only if the user actually has
+    // a selection do we offer to summarize the selection. If not, always summarize full page.
     try {
-      const stored = await new Promise(resolve => chrome.storage.local.get(['clarity_last_selection'], r => resolve(r && r.clarity_last_selection)));
-      if (stored && stored.text && stored.ts && ((Date.now() - stored.ts) < 20000) && stored.url && stored.url.split('#')[0] === (tab.url || '').split('#')[0]) {
-        const wantSelection = confirm('Summarize selected text? Click OK to summarize selection, Cancel to summarize full page.');
-        if (wantSelection) { text = stored.text; usedSelection = true; }
-      }
-    } catch (e) { safeLog('reading stored selection failed', e); }
-
-    if (!text) {
-      try {
-        const pageSelResult = await new Promise(resolve => {
+      const pageSelResult = await new Promise(resolve => {
+        try {
           chrome.scripting.executeScript({
-            target: { tabId: tab.id },
+            target: { tabId: tab.id, allFrames: false },
             func: () => {
               try {
                 const s = (window.getSelection && window.getSelection().toString && window.getSelection().toString()) || '';
                 if ((!s || !s.trim()) && document.activeElement) {
                   const ae = document.activeElement;
-                  if ((ae.tagName === 'TEXTAREA' || (ae.tagName === 'INPUT' && ae.type === 'text')) && typeof ae.selectionStart === 'number') {
+                  const tag = (ae && ae.tagName) ? ae.tagName.toUpperCase() : '';
+                  if ((tag === 'TEXTAREA' || (tag === 'INPUT' && ae.type && ae.type.toLowerCase() === 'text')) && typeof ae.selectionStart === 'number') {
                     const start = ae.selectionStart, end = ae.selectionEnd;
                     if (end > start) return ae.value.slice(start, end);
                   }
                 }
                 return s || '';
-              } catch (e) { return ''; }
+              } catch (e) {
+                return '';
+              }
             }
           }, (res) => resolve(res));
-        });
-
-        let selText = '';
-        if (Array.isArray(pageSelResult) && pageSelResult.length && pageSelResult[0]) {
-          const r0 = pageSelResult[0];
-          if (typeof r0.result === 'string') selText = r0.result;
-          else if (r0 && r0.result && typeof r0.result.text === 'string') selText = r0.result.text;
-        } else if (typeof pageSelResult === 'string') selText = pageSelResult;
-        else if (pageSelResult && typeof pageSelResult.result === 'string') selText = pageSelResult.result;
-
-        if (selText && selText.trim()) {
-          const wantSelection = confirm('Summarize selected text? Click OK to summarize selection, Cancel to summarize full page.');
-          if (wantSelection) { text = selText.trim(); usedSelection = true; }
+        } catch (ex) {
+          safeLog('executeScript threw while checking selection', ex);
+          resolve(null);
         }
-      } catch (e) { safeLog('page selection execScript failed', e); }
-    }
+      });
 
-    if (!text) {
+      // Normalize the returned shape: chrome.scripting returns an array of results for frames
+      let selText = '';
+      try {
+        if (Array.isArray(pageSelResult) && pageSelResult.length) {
+          // take first non-empty result
+          for (const entry of pageSelResult) {
+            if (!entry) continue;
+            if (typeof entry.result === 'string' && entry.result.trim()) {
+              selText = entry.result.trim();
+              break;
+            }
+            if (entry && entry.result && typeof entry.result.text === 'string' && entry.result.text.trim()) {
+              selText = entry.result.text.trim();
+              break;
+            }
+          }
+        } else if (pageSelResult && typeof pageSelResult.result === 'string') {
+          selText = pageSelResult.result.trim();
+        } else if (typeof pageSelResult === 'string') {
+          selText = pageSelResult.trim();
+        }
+      } catch (e) {
+        safeLog('selection normalization failed', e);
+        selText = '';
+      }
+
+      if (selText) {
+        // user currently has selection — ask whether to summarize it
+        const wantSelection = confirm('Summarize selected text? Click OK to summarize selection, Cancel to summarize full page.');
+        if (wantSelection) {
+          text = selText;
+          usedSelection = true;
+        } else {
+          // user chose full page; continue to full-page fetch
+          text = '';
+          usedSelection = false;
+        }
+      } else {
+        // No active selection — do NOT use stored selection prompt; summarize full page.
+        usedSelection = false;
+        text = '';
+      }
+    } catch (e) {
+      safeLog('early selection detection failed (continuing to full page)', e && (e.stack || e));
+      text = '';
+      usedSelection = false;
+    }
+    // ----- end selection handling -----
+
+    // If selection chosen, skip fetching page
+    if (!usedSelection) {
+      // FALLBACK: full page extraction (may need host permission)
       const fetched = await fetchCleanPageText(tab.id, tab.url);
       if (fetched && fetched.ok && fetched.text) {
         text = String(fetched.text || '').trim();
@@ -1929,25 +2104,25 @@ async function summarizeCurrentPageOrSelection_AiAware() {
         } else {
           toast('Unable to access page content. Give ClarityRead permission for this site and try again.', 'error', 6000);
         }
-        summarizePageBtn.disabled = false;
         return;
       }
     }
 
     if (!text || !text.trim()) {
       toast('No text to summarize — select text on the page or ensure the page has readable content.', 'info');
-      summarizePageBtn.disabled = false;
       return;
     }
 
+    // choose preference and planned K
     const pref = await readSummaryPref();
     const plannedK = computeFinalKForPref(text, pref);
-
     safeLog && safeLog('summary counts', { pref, plannedK });
 
     const pid = createProgressToast('Generating summary — please wait...', 60000);
     let summary = '(no summary produced)';
+
     try {
+      // Pre-scrub / heuristics similar to what you had; non-destructive
       try {
         text = text.replace(/([a-z0-9])([A-Z][a-z])/g, '$1 $2');
         text = text.replace(/([^\s])By([A-Z])/g, '$1 By $2');
@@ -1960,6 +2135,7 @@ async function summarizeCurrentPageOrSelection_AiAware() {
         text = text.replace(/\b(?:https?:\/\/|www\.)\S+\b/gi, ' ');
         text = text.replace(/(?:\+?\d[\d() .-]{7,}\d)/g, ' ');
 
+        // remove trivial short nav lines
         text = text.split(/\n/).filter(line => {
           const t = line.trim();
           if (!t) return false;
@@ -1967,7 +2143,9 @@ async function summarizeCurrentPageOrSelection_AiAware() {
           if (/^(\/|#|\-|\*|:){2,}/.test(t)) return false;
           return true;
         }).join('\n');
-      } catch (e) { safeLog('prescrub threw', e); }
+      } catch (e) {
+        safeLog('prescrub threw', e && (e.stack || e));
+      }
 
       if (typeof summarizeTextLocal === 'function') {
         summary = summarizeTextLocal(text, plannedK, pref) || summary;
@@ -1976,13 +2154,14 @@ async function summarizeCurrentPageOrSelection_AiAware() {
         summary = '(summarizer not available)';
       }
     } catch (e) {
-      safeLog('summarizer error', e);
+      safeLog('summarizer error', e && (e.stack || e));
     } finally {
       clearProgressToast();
     }
 
+    // Post-filter the summary to drop junk fragments
     try {
-      const parts = summary.split(/(?<=[.?!])\s+/).map(s => s.trim()).filter(Boolean);
+      const parts = (summary || '').split(/(?<=[.?!])\s+/).map(s => s.trim()).filter(Boolean);
       const filtered = parts.filter(s => {
         if (s.length < 30 && (pref !== 'detailed')) return false;
         if (/^(Outline|History|See also|References|External links|Category|vte)\b/i.test(s)) return false;
@@ -1991,32 +2170,50 @@ async function summarizeCurrentPageOrSelection_AiAware() {
         return true;
       });
       if (filtered.length) summary = filtered.join(' ');
-    } catch (e) { safeLog('post-filter threw', e); }
+    } catch (e) {
+      safeLog('post-filter threw', e && (e.stack || e));
+    }
 
-// present modal with adaptive header
-const modeSubtitle = usedSelection ? 'Selection' : 'Full page';
+    // present modal with adaptive header
+    const modeSubtitle = usedSelection ? 'Selection' : 'Full page';
 
-// Count sentences accurately (split on sentence endings)
-const actualSentences = (summary || '')
-  .split(/(?<=[.?!])\s+/)
-  .map(s => s.trim())
-  .filter(s => s.length > 0 && /[.?!]$/.test(s))
-  .length;
+    // Count sentences robustly (prefers sentences that end with .?!, otherwise counts fragments)
+    let actualSentences = 0;
+    try {
+      const parts = (summary || '').split(/(?<=[.?!])\s+/).map(s => s.trim()).filter(Boolean);
+      // Count ones that look like full sentences (end with punctuation)
+      const punctCount = parts.filter(s => /[.?!]$/.test(s)).length;
+      if (punctCount > 0) {
+        actualSentences = punctCount;
+      } else {
+        // If no punctuation-delimited sentences found, fall back to counting reasonable fragments
+        actualSentences = parts.filter(s => s.length > 10).length || (summary.trim() ? 1 : 0);
+      }
+    } catch (e) {
+      // Very defensive fallback
+      actualSentences = ((summary || '').match(/[.?!]+/g) || []).length || ((summary && summary.trim()) ? 1 : 0);
+    }
 
-const headerTitle = `Page Summary — ${actualSentences} sentence${actualSentences === 1 ? '' : 's'} (${modeSubtitle}, ${pref})`;
-createSummaryModal(headerTitle, summary);
+    const headerTitle = `Page Summary — ${actualSentences} sentence${actualSentences === 1 ? '' : 's'} (${modeSubtitle}, ${pref})`;
+    createSummaryModal(headerTitle, summary);
 
     toast('Summary ready', 'success', 3000);
 
   } catch (err) {
     safeLog('summarize error', err && (err.stack || err));
     clearProgressToast();
-    clearToastsLocal();
+    clearToastsLocal && clearToastsLocal();
     toast('Failed to summarize (see console).', 'error', 6000);
+
+    // attempt a local fallback summary if you have last text cached
     try {
-      const fallback = summarizeTextLocal(window.__clarity_last_text || '', 3);
-      createSummaryModal('Page Summary (Local fallback)', fallback);
-    } catch (e) { safeLog('fallback also failed', e); }
+      if (typeof summarizeTextLocal === 'function') {
+        const fallback = summarizeTextLocal(window.__clarity_last_text || '', 3);
+        createSummaryModal('Page Summary (Local fallback)', fallback);
+      }
+    } catch (e) {
+      safeLog('fallback also failed', e && (e.stack || e));
+    }
   } finally {
     summarizePageBtn.disabled = false;
   }
