@@ -1866,7 +1866,7 @@ async function fetchCleanPageText(tabId, tabUrl) {
   }
 
   // Execute in-page script fallback if bg path fails
-  function tryExecuteScriptExtract() {
+ function tryExecuteScriptExtract() {
   return new Promise(async (resolve) => {
     try {
       // 1) try top frame only first (safe, avoids iframe side-effects)
@@ -1904,8 +1904,7 @@ async function fetchCleanPageText(tabId, tabUrl) {
             if (r0 && r0.text && r0.text.trim()) return resolve({ ok: true, text: String(r0.text).trim(), title: r0.title || '', url: r0.url || '' });
             // top frame didn't return good content -> fall through to all-frames
           } catch (e) {
-            // fallthrough to all-frames attempt
-            safeLog('top-frame exec parse error, falling back to frames', e);
+            safeLog && safeLog('top-frame exec parse error, falling back to frames', e);
           }
 
           // 2) fallback: run across frames if top-frame extraction didn't succeed
@@ -1913,7 +1912,6 @@ async function fetchCleanPageText(tabId, tabUrl) {
             chrome.scripting.executeScript({
               target: { tabId: tabId, allFrames: true },
               func: () => {
-                // same safe read-only extractor as above (kept minimal)
                 function getMainNodeLocal() {
                   try {
                     const prefer = ['article','main','[role="main"]','#content','#primary','.post','.article','#mw-content-text','.mw-parser-output'];
@@ -1947,16 +1945,96 @@ async function fetchCleanPageText(tabId, tabUrl) {
               if (chrome.runtime.lastError) return resolve({ ok: false, reason: 'exec-frames-failed', detail: chrome.runtime.lastError.message });
               try {
                 if (!Array.isArray(res2) || !res2.length) return resolve({ ok: false, reason: 'exec-frames-no-result', detail: res2 });
-                // pick the frame result with longest text
-                let best = null;
-                for (const entry of res2) {
-                  if (!entry || !entry.result) continue;
-                  const rr = entry.result;
-                  const txtLen = (rr && rr.text) ? String(rr.text).length : 0;
-                  if (!best || txtLen > (best.text || '').length) best = rr;
+
+                // ---------------- safer frame-selection logic ----------------
+                try {
+                  // normalize results (each entry may be like {frameId, result:{text,title,url}})
+                  const frameEntries = res2.map(e => {
+                    try {
+                      const frameId = (e && typeof e.frameId !== 'undefined') ? e.frameId : null;
+                      const r = (e && e.result) ? e.result : null;
+                      return { frameId, result: r };
+                    } catch (ex) { return null; }
+                  }).filter(Boolean);
+
+                  // debug: surface a compact map of frame results so you can inspect in logs
+                  try {
+                    const dbg = frameEntries.map(fe => ({
+                      frameId: fe.frameId,
+                      url: (fe.result && fe.result.url) ? fe.result.url : '(no-url)',
+                      title: (fe.result && fe.result.title) ? fe.result.title : '(no-title)',
+                      textLen: (fe.result && fe.result.text) ? String(fe.result.text).length : 0
+                    }));
+                    safeLog && safeLog('exec-frames-debug', dbg);
+                  } catch(e){}
+
+                  // helper to safely get text length
+                  const txtLenOf = (r) => (r && r.text) ? String(r.text).length : 0;
+                  // helper to get text string
+                  const txtStr = (r) => (r && r.text) ? String(r.text).trim() : '';
+
+                  // normalize tabUrl (strip fragment)
+                  let normTabUrl = null;
+                  try { normTabUrl = (new URL(tabUrl || '')).origin + (new URL(tabUrl || '')).pathname; } catch (e) { normTabUrl = null; }
+
+                  // 1) prefer exact URL match to tab URL (ignoring fragment/hash and query)
+                  if (normTabUrl) {
+                    for (const fe of frameEntries) {
+                      try {
+                        if (!fe.result || !fe.result.url) continue;
+                        const u = new URL(fe.result.url);
+                        const candidateUrl = u.origin + u.pathname;
+                        if (candidateUrl === normTabUrl && txtStr(fe.result)) {
+                          return resolve({ ok: true, text: txtStr(fe.result), title: fe.result.title || '', url: fe.result.url || '' });
+                        }
+                      } catch (e) { /* ignore */ }
+                    }
+                  }
+
+                  // 2) prefer same-origin frames (longest among them)
+                  let topOrigin = null;
+                  try { topOrigin = (new URL(tabUrl || '')).origin; } catch (e) { topOrigin = null; }
+                  if (topOrigin) {
+                    let sameOriginBest = null;
+                    for (const fe of frameEntries) {
+                      const r = fe.result;
+                      if (!r || !r.url) continue;
+                      try {
+                        const origin = (new URL(r.url)).origin;
+                        if (origin === topOrigin) {
+                          if (!sameOriginBest || txtLenOf(r) > txtLenOf(sameOriginBest)) sameOriginBest = r;
+                        }
+                      } catch (e) { /* ignore */ }
+                    }
+                    if (sameOriginBest && txtStr(sameOriginBest)) {
+                      return resolve({ ok: true, text: txtStr(sameOriginBest), title: sameOriginBest.title || '', url: sameOriginBest.url || '' });
+                    }
+                  }
+
+                  // 3) prefer the explicit top-frame result if present (frameId === 0)
+                  try {
+                    for (const fe of frameEntries) {
+                      if (fe.frameId === 0 && fe.result && txtStr(fe.result)) {
+                        return resolve({ ok: true, text: txtStr(fe.result), title: fe.result.title || '', url: fe.result.url || '' });
+                      }
+                    }
+                  } catch (e) { /* ignore */ }
+
+                  // 4) last resort: longest text across frames
+                  let best = null;
+                  for (const fe of frameEntries) {
+                    const r = fe.result;
+                    if (!r) continue;
+                    if (!best || txtLenOf(r) > txtLenOf(best)) best = r;
+                  }
+                  if (best && txtStr(best)) return resolve({ ok: true, text: txtStr(best), title: best.title || '', url: best.url || '' });
+
+                  // nothing useful found
+                  return resolve({ ok: false, reason: 'exec-frames-empty', detail: frameEntries.map(f => ({ frameId: f.frameId, url: f.result && f.result.url, len: txtLenOf(f.result) })) });
+                } catch (e) {
+                  safeLog && safeLog('frame selection logic failed', e);
+                  return resolve({ ok: false, reason: 'exec-frames-selection-exception', detail: String(e) });
                 }
-                if (best && (best.text || '').trim()) return resolve({ ok: true, text: String(best.text).trim(), title: best.title || '', url: best.url || '' });
-                return resolve({ ok: false, reason: 'exec-frames-empty', detail: res2 });
               } catch (e) { return resolve({ ok: false, reason: 'exec-frames-exception', detail: String(e) }); }
             });
           } catch (e) {
@@ -1967,11 +2045,12 @@ async function fetchCleanPageText(tabId, tabUrl) {
         return resolve({ ok: false, reason: 'exec-top-throw', detail: String(e) });
       }
     } catch (e) {
-      safeLog('tryExecuteScriptExtract threw (outer)', e);
+      safeLog && safeLog('tryExecuteScriptExtract threw (outer)', e);
       resolve({ ok: false, reason: 'exec-throw', detail: String(e) });
     }
   });
 }
+
 
 
   // If we have a tabUrl and it is a web url, attempt bg extract first.
