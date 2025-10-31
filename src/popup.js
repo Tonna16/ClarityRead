@@ -289,48 +289,7 @@ function clearToastsLocal() { Toasts.clearAll(); }
 // ---------------- Toast cleanup helper ---------------
 // keep focusModeBtn in sync with overlay state messages from content script
 // ---------- runtime -> popup sync (overlay + reading state) ----------
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  try {
-    // Normalize quick access to the focusMode button text element
-    const btn = document.getElementById('focusModeBtn');
-    const textEl = btn ? btn.querySelector('.action-text') : null;
 
-    // Primary overlay message (content script explicitly notifies overlay open/close)
-    if (msg && msg.action === 'clarity_overlay_state') {
-      if (!btn) return;
-      if (msg.overlayActive) {
-        btn.classList.add('active');
-        if (textEl) textEl.textContent = `Close ${_focusModeOriginalText}`;
-      } else {
-        btn.classList.remove('active');
-        if (textEl) textEl.textContent = _focusModeOriginalText;
-      }
-      return;
-    }
-
-    // Fallback messages: some code paths may send readingStopped/readingResumed
-    if (msg && (msg.action === 'readingStopped' || msg.action === 'readingPaused')) {
-      // If we receive stopped/paused, ensure UI reflects overlay closed (safe)
-      if (btn && textEl) {
-        btn.classList.remove('active');
-        textEl.textContent = _focusModeOriginalText;
-      }
-      return;
-    }
-
-    if (msg && msg.action === 'readingResumed') {
-      // reading resumed elsewhere — keep button in "Close" state to reflect active focus/read
-      if (btn && textEl) {
-        btn.classList.add('active');
-        textEl.textContent = `Close ${_focusModeOriginalText}`;
-      }
-      return;
-    }
-
-  } catch (e) {
-    safeLog('runtime.onMessage popup handler error', e);
-  }
-});
 
 chrome.runtime.onMessage.addListener((msg) => {
   try {
