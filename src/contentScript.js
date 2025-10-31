@@ -1206,29 +1206,15 @@ window.__clarity_read_extract = function() {
     }
   }
 
-  // --- Speech: robust speakText() with auto-chunking and session guard
-  // ======= Add this helper near other utilities (e.g., next to clamp/safeLog) =======
-/**
- * resolveVoices(cb, opts)
- * - Calls cb(voicesArray) once voice list is available OR after timeout.
- * - If voices available immediately calls cb synchronously.
- * - opts.timeout default 600ms.
- */
 function resolveVoices(cb, opts) {
   opts = opts || {};
-  const timeout = Number(opts.timeout || 600);
+  const timeout = Number(opts.timeout || 2000); // increased from 600 to 2000ms
 
   try {
-    if (!('speechSynthesis' in window)) {
-      return cb([]);
-    }
-
+    if (!('speechSynthesis' in window)) { cb([]); return; }
     let voices = (window.speechSynthesis.getVoices && window.speechSynthesis.getVoices()) || [];
-    if (voices && voices.length) {
-      return cb(voices);
-    }
+    if (voices && voices.length) { cb(voices); return; }
 
-    // If empty, wait for voiceschanged or timeout
     let done = false;
     const finish = () => {
       if (done) return;
@@ -1239,17 +1225,34 @@ function resolveVoices(cb, opts) {
     };
 
     const onVoicesChanged = () => { finish(); };
-    try {
-      window.speechSynthesis.addEventListener('voiceschanged', onVoicesChanged);
-    } catch (e) {
-      // addEventListener may not exist in some old contexts — ignore
-    }
 
-    setTimeout(finish, timeout);
-  } catch (e) {
-    try { cb([]); } catch (_) {}
-  }
+    try { window.speechSynthesis.addEventListener('voiceschanged', onVoicesChanged); } catch(e){}
+
+    // polling fallback in case voiceschanged doesn't fire quickly
+    const pollInterval = 200;
+    let polled = 0;
+    const pollMax = Math.ceil(timeout / pollInterval);
+    const poller = setInterval(() => {
+      try {
+        const vs = (window.speechSynthesis.getVoices && window.speechSynthesis.getVoices()) || [];
+        if (vs && vs.length) {
+          clearInterval(poller);
+          finish();
+        } else if (++polled >= pollMax) {
+          clearInterval(poller);
+          finish();
+        }
+      } catch(e) {
+        clearInterval(poller);
+        finish();
+      }
+    }, pollInterval);
+
+    // safety net
+    setTimeout(() => { finish(); }, timeout + 200);
+  } catch (e) { try { cb([]); } catch(_){} }
 }
+
 
 // ======= Replace speakText(...) with this version =======
 function speakText(fullText, { voiceName, rate = 1, pitch = 1, highlight = false } = {}) {
