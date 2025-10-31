@@ -269,6 +269,36 @@ html.readeasy-reflow h3 {
   let fallbackTickerRunning = false;
   let overlayActive = false;
   let overlayTextSplice = null;
+  // --- Defensive backup/restore for main content
+let __clarityread_backup_main = null;
+function __clarityread_backupMain() {
+  try {
+    const main = (typeof getMainNode === 'function') ? getMainNode() : (document.body || document.documentElement);
+    if (main && (main.innerHTML || '').length > 500) {
+      __clarityread_backup_main = { html: main.innerHTML, ts: Date.now() };
+      safeLog('backupMain: saved main html length', __clarityread_backup_main.html.length);
+    }
+  } catch (e) { safeLog('backupMain error', e); }
+}
+function __clarityread_restoreMainIfTruncated() {
+  try {
+    // if body text is suspiciously small (page truncated) and we have a backup, restore it
+    const bodyLen = (document.body && document.body.innerText) ? String(document.body.innerText).trim().length : 0;
+    if (__clarityread_backup_main && bodyLen < 500) {
+      const main = (typeof getMainNode === 'function') ? getMainNode() : (document.body || document.documentElement);
+      if (main && __clarityread_backup_main.html) {
+        try {
+          main.innerHTML = __clarityread_backup_main.html;
+          safeLog('restoreMainIfTruncated: restored main from backup (bodyLen was', bodyLen, ')');
+        } catch (e) {
+          safeLog('restoreMainIfTruncated restore failed', e);
+        }
+      }
+      __clarityread_backup_main = null;
+    }
+  } catch (e) { safeLog('restoreMainIfTruncated error', e); }
+}
+
   let errorFallbackAttempted = false;
   let stoppedAlready = false;
   let speedChunks = null;
@@ -871,6 +901,13 @@ window.__clarity_read_extract = function() {
   function createReaderOverlay(text) {
     removeReaderOverlay();
     const overlay = document.createElement('div');
+        // debug trace so we can see what code path caused overlay creation
+    try { console.trace('[ClarityRead contentScript] createReaderOverlay call stack'); } catch(e){}
+        try {
+      console.warn('[ClarityRead contentScript] createReaderOverlay called; overlay disable flag =', !!window.__clarityread_disable_overlay);
+      console.trace('[ClarityRead contentScript] createReaderOverlay stack');
+    } catch(e){}
+
     overlay.id = 'readeasy-reader-overlay';
     overlay.setAttribute('role','dialog');
     overlay.setAttribute('aria-label','Reader overlay');
@@ -964,14 +1001,38 @@ window.__clarity_read_extract = function() {
 
     return overlay;
   }
-  function removeReaderOverlay() {
-    const old = document.getElementById('readeasy-reader-overlay');
-    if (old) try { old.remove(); } catch(e){}
-    overlayActive = false;
-    overlayTextSplice = null;
-    safeLog('removeReaderOverlay executed');
+    function removeReaderOverlay() {
+    try {
+      // Remove known IDs
+      const ids = ['readeasy-reader-overlay', 'clarityread-overlay'];
+      for (const id of ids) {
+        const el = document.getElementById(id);
+        if (el) {
+          try { el.remove(); } catch(e) { safeLog('removeReaderOverlay failed to remove', id, e); }
+        }
+      }
 
-    try { notifyOverlayState(false); } catch(e){ safeLog('notify overlay remove failed', e); }
+      // also remove any node that looks like our overlay (defensive)
+      try {
+        const suspects = Array.from(document.querySelectorAll('div')).filter(d => {
+          try {
+            return d && d.id && (d.id.indexOf('readeasy-reader-overlay') >= 0 || d.id.indexOf('clarityread-overlay') >= 0);
+          } catch(e) { return false; }
+        });
+        suspects.forEach(s => { try { s.remove(); } catch(e){} });
+      } catch(e) {}
+
+      overlayActive = false;
+      overlayTextSplice = null;
+      safeLog('removeReaderOverlay executed (defensive)');
+
+      try { notifyOverlayState(false); } catch(e){ safeLog('notify overlay remove failed', e); }
+    } catch(e) {
+      safeLog('removeReaderOverlay outer error', e);
+      overlayActive = false;
+      overlayTextSplice = null;
+      try { notifyOverlayState(false); } catch(_) {}
+    }
   }
 
   function clearHighlights() {
@@ -1073,6 +1134,11 @@ window.__clarity_read_extract = function() {
       overlayTextSplice = null;
 
       const text = String(fullText || '').slice(0, MAX_OVERLAY_CHARS);
+          try {
+      console.warn('[ClarityRead contentScript] prepareSpansForHighlighting called; disable_overlay=', !!window.__clarityread_disable_overlay);
+      console.trace('[ClarityRead contentScript] prepareSpansForHighlighting stack');
+    } catch(e){}
+
       // Create overlay for highlighting — safer across many sites
       createReaderOverlay(text);
       if (highlightSpans && highlightSpans.length) {
@@ -1257,6 +1323,44 @@ function resolveVoices(cb, opts) {
 // ======= Replace speakText(...) with this version =======
 function speakText(fullText, { voiceName, rate = 1, pitch = 1, highlight = false } = {}) {
   safeLog('speakText called len=', (fullText || '').length, { voiceName, rate, pitch, highlight });
+  // --- Defensive backup/restore for main content
+let __clarityread_backup_main = null;
+function __clarityread_backupMain() {
+  try {
+    const main = (typeof getMainNode === 'function') ? getMainNode() : (document.body || document.documentElement);
+    if (main && (main.innerHTML || '').length > 500) {
+      __clarityread_backup_main = { html: main.innerHTML, ts: Date.now() };
+      safeLog('backupMain: saved main html length', __clarityread_backup_main.html.length);
+    }
+  } catch (e) { safeLog('backupMain error', e); }
+}
+function __clarityread_restoreMainIfTruncated() {
+  try {
+    // if body text is suspiciously small (page truncated) and we have a backup, restore it
+    const bodyLen = (document.body && document.body.innerText) ? String(document.body.innerText).trim().length : 0;
+    if (__clarityread_backup_main && bodyLen < 500) {
+      const main = (typeof getMainNode === 'function') ? getMainNode() : (document.body || document.documentElement);
+      if (main && __clarityread_backup_main.html) {
+        try {
+          main.innerHTML = __clarityread_backup_main.html;
+          safeLog('restoreMainIfTruncated: restored main from backup (bodyLen was', bodyLen, ')');
+        } catch (e) {
+          safeLog('restoreMainIfTruncated restore failed', e);
+        }
+      }
+      __clarityread_backup_main = null;
+    }
+  } catch (e) { safeLog('restoreMainIfTruncated error', e); }
+}
+
+    // --- Safety: temporarily disable overlay creation for non-highlight sessions
+  // This ensures a plain read-aloud run cannot accidentally create a blocking overlay.
+  try {
+    // global flag used by createReaderOverlay to short-circuit overlay creation
+    window.__clarityread_disable_overlay = !highlight;
+    safeLog('speakText: __clarityread_disable_overlay set to', !!window.__clarityread_disable_overlay);
+  } catch (e) { safeLog('speakText: failed to set disable flag', e); }
+
 
   if (!('speechSynthesis' in window)) {
     safeLog('TTS not supported here.');
@@ -1275,24 +1379,43 @@ function speakText(fullText, { voiceName, rate = 1, pitch = 1, highlight = false
   rate = clamp(rate, 0.5, 1.6);
   pitch = clamp(pitch, 0.5, 2);
 
-  // Cancel any prior speak to avoid race where stop→start toggles incorrectly
+   // Cancel any prior speak to avoid race where stop→start toggles incorrectly
   try { window.speechSynthesis.cancel(); } catch(e){}
-  clearHighlights();
+
+  // Only clear highlights if overlay is active (we created one previously)
+  // or if this run is going to highlight (we will create new spans).
+  // This avoids accidentally removing / replacing page DOM when not needed.
+  try {
+    if (overlayActive || highlight) {
+      clearHighlights();
+    } else {
+      safeLog('speakText: skipping clearHighlights (no overlayActive && highlight=false)');
+    }
+  } catch(e) { safeLog('guarded clearHighlights failed', e); }
+
   errorFallbackAttempted = false;
 
-  // prepare highlighting (overlay)
+
+    // prepare highlighting (overlay) — only when highlight === true AND overlay not already active
   let utterText = fullText;
   if (highlight) {
     try {
-      const prep = prepareSpansForHighlighting(fullText);
-      safeLog('speakText prepareSpans result', prep);
-      if (prep && prep.mode === 'overlay') {
-        utterText = prep.overlayText || overlayTextSplice || fullText.slice(0, MAX_OVERLAY_CHARS);
+      // don't re-create overlay if one already exists
+      if (!overlayActive && !document.getElementById('readeasy-reader-overlay') && !document.getElementById('clarityread-overlay')) {
+        const prep = prepareSpansForHighlighting(fullText);
+        safeLog('speakText prepareSpans result', prep);
+        if (prep && prep.mode === 'overlay') {
+          utterText = prep.overlayText || overlayTextSplice || fullText.slice(0, MAX_OVERLAY_CHARS);
+        } else {
+          utterText = fullText;
+        }
       } else {
+        safeLog('speakText: overlay already present, skipping prepareSpans');
         utterText = fullText;
       }
     } catch (e) { safeLog('prepareSpans call failed', e); utterText = fullText; }
   }
+
 
   const CHUNK_SIZE = 1800;
   const chunks = [];
@@ -1334,7 +1457,9 @@ function speakText(fullText, { voiceName, rate = 1, pitch = 1, highlight = false
     function speakNext() {
       if (mySessionId !== sessionId) { safeLog('speakNext aborted due session change', mySessionId, sessionId); return; }
       if (stoppedAlready) { safeLog('speakNext aborted because stoppedAlready', mySessionId); return; }
-      if (chunkIndex >= chunks.length) {
+           if (chunkIndex >= chunks.length) {
+        // ensure overlay disable flag is cleared for subsequent actions
+        try { window.__clarityread_disable_overlay = false; } catch(e){}
         removeReaderOverlay();
         clearHighlights();
         sendState('Not Reading');
@@ -1342,6 +1467,7 @@ function speakText(fullText, { voiceName, rate = 1, pitch = 1, highlight = false
         safeLog('speakText finished all chunks', 'sessionId', mySessionId);
         return;
       }
+
       const text = chunks[chunkIndex++];
       const utter = new SpeechSynthesisUtterance(text);
       utter._chunkBase = charsSpokenBefore;
@@ -1537,6 +1663,8 @@ function speakChunksSequentially(chunks, rate = 1, voiceName) {
       // mark session changed so any pending utterances stop continuing
       sessionId += 1;
       stoppedAlready = true;
+          try { window.__clarityread_disable_overlay = false; } catch(e){}
+
       try { window.speechSynthesis.cancel(); } catch(e){}
       if (readStartTs) { accumulatedElapsed += (Date.now() - readStartTs) / 1000; readStartTs = null; }
       if (readTimer) { clearInterval(readTimer); readTimer = null; }
@@ -1607,6 +1735,11 @@ function speakChunksSequentially(chunks, rate = 1, voiceName) {
 
 // --- Focus-mode toggle (uses overlay)
 function toggleFocusMode() {
+    try {
+    console.warn('[ClarityRead contentScript] toggleFocusMode called; overlayActive=', overlayActive);
+    console.trace('[ClarityRead contentScript] toggleFocusMode stack');
+  } catch(e){}
+
   if (overlayActive) {
     removeReaderOverlay();
     clearHighlights();
@@ -2036,6 +2169,10 @@ case 'readAloud': {
     const rate = (typeof msg.rate !== 'undefined' ? msg.rate : (res.rate || 1));
     const pitch = (typeof msg.pitch !== 'undefined' ? msg.pitch : (res.pitch || 1));
     const highlight = (typeof msg.highlight !== 'undefined' ? !!msg.highlight : !!res.highlight);
+      try {
+      console.warn('[ClarityRead contentScript] readAloud handler invoked. incoming msg:', msg);
+      console.trace('[ClarityRead contentScript] readAloud handler stack');
+    } catch(e){}
 
     function attemptOnce(cb) {
       const saved = msg._savedText || '';
