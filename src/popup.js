@@ -134,7 +134,6 @@ function setToStorage(obj) {
     return el;
   }
 
-  // Promise wrapper around chrome.storage.local.get/set for small prefs
 function getFromStorage(keys) {
   return new Promise((resolve) => {
     try { chrome.storage.local.get(keys, (res) => resolve(res || {})); }
@@ -151,7 +150,6 @@ function setToStorage(obj) {
 
   function show(msg, type = 'info', ttl = 3500) {
     try {
-      // dedupe identical messages within 1500ms
       const now = Date.now();
       const last = recent.get(msg) || 0;
       if (now - last < 1500) return null;
@@ -1460,12 +1458,13 @@ function mmrSelectLocal(candidates, scoresArr, k = 3, lambda = 0.62) {
  *  maxSentencesArg: if number>0, will be used (but still clamped).
  *  userPref: 'concise'|'normal'|'detailed' - affects adaptive decisions and post-filtering.
  */
+
 function summarizeTextLocal(rawText, maxSentencesArg = null, userPref = 'normal') {
   if (!rawText || typeof rawText !== 'string') return '';
   let cleaned = scrubInputForSummarizer(rawText);
   if (!cleaned) return '';
 
-  // add a normalization pass for glued fragments BEFORE scoring
+  // Normalize glued fragments BEFORE scoring
   try {
     cleaned = cleaned.replace(/([a-z0-9])([A-Z][a-z])/g, '$1 $2');
     cleaned = cleaned.replace(/([^\s])By([A-Z])/g, '$1 By $2');
@@ -1474,16 +1473,14 @@ function summarizeTextLocal(rawText, maxSentencesArg = null, userPref = 'normal'
 
   const cfg = summarizerConfigForPref(userPref || 'normal');
 
-  // plannedK = clamp explicit arg or compute with deterministic per-pref function
+  // Compute final sentence count (deterministic scaling)
   const plannedK = (typeof maxSentencesArg === 'number' && maxSentencesArg > 0)
     ? Math.min(25, Math.max(1, Math.floor(maxSentencesArg)))
     : computeFinalKForPref(cleaned, userPref);
 
-try {
-  if (window.__clarity_debug_summary) safeLog('summarizer config', { userPref, cfg, plannedK, rawLen: cleaned.length, candidatesHeuristic: computeAdaptiveMax ? computeAdaptiveMax(cleaned, userPref) : null });
-} catch(e){}
+  safeLog && safeLog('summarizeTextLocal', { userPref, plannedK, rawLen: cleaned.length });
 
-  // small fast-path unchanged but with idf/titleBoost from cfg
+  // Fast path for very short text
   if (cleaned.length < 220) {
     const sents = splitIntoSentencesLocal(cleaned);
     if (sents.length <= plannedK) return sents.join(' ');
@@ -1498,7 +1495,7 @@ try {
     return (ordered.length ? ordered.join(' ') : chosen.join(' ')).trim();
   }
 
-  // paragraph candidates
+  // Main extraction logic
   const paragraphs = splitIntoParagraphsLocal(cleaned);
   const globalTF = buildTermFrequenciesLocal(cleaned);
   const firstLine = (cleaned.split('\n')[0] || '').trim();
@@ -1509,7 +1506,10 @@ try {
     if (!p) continue;
     const sents = splitIntoSentencesLocal(p);
     if (!sents.length) continue;
-    const scored = sents.map((sen, idx) => ({ sentence: sen, score: sentenceScoreLocal(sen, globalTF, (idx === 0 ? 1.08 : (idx === sents.length - 1 ? 1.03 : 1)), titleTokens, { idfBoost: cfg.idfBoost, titleBoost: cfg.titleBoost }) }));
+    const scored = sents.map((sen, idx) => ({ 
+      sentence: sen, 
+      score: sentenceScoreLocal(sen, globalTF, (idx === 0 ? 1.08 : (idx === sents.length - 1 ? 1.03 : 1)), titleTokens, { idfBoost: cfg.idfBoost, titleBoost: cfg.titleBoost }) 
+    }));
     scored.sort((a,b) => b.score - a.score);
 
     const longPara = p.length > 800;
@@ -1529,7 +1529,10 @@ try {
     if (!allCandidates.length) allCandidates = paraSummaries.slice();
   }
 
-  const scoredCandidates = allCandidates.map((sen, idx) => ({ sentence: sen, score: sentenceScoreLocal(sen, globalTF, (idx === 0 || idx === allCandidates.length - 1) ? 1.05 : 1, titleTokens, { idfBoost: cfg.idfBoost, titleBoost: cfg.titleBoost }) }));
+  const scoredCandidates = allCandidates.map((sen, idx) => ({ 
+    sentence: sen, 
+    score: sentenceScoreLocal(sen, globalTF, (idx === 0 || idx === allCandidates.length - 1) ? 1.05 : 1, titleTokens, { idfBoost: cfg.idfBoost, titleBoost: cfg.titleBoost }) 
+  }));
   scoredCandidates.sort((a,b) => b.score - a.score);
 
   const candidatesList = scoredCandidates.map(x => x.sentence);
@@ -1537,64 +1540,38 @@ try {
 
   const lambda = (typeof cfg.lambda === 'number') ? cfg.lambda : 0.62;
   const k = Math.max(1, Math.min(plannedK, Math.max(1, candidatesList.length)));
-  try { if (window.__clarity_debug_summary) safeLog('MMR input', { lambda, k, candidates: Math.min(200, candidatesList.length) }); } catch(e){}
 
   let selected = mmrSelectLocal(candidatesList, scoresList, k, lambda);
-
   if (selected.length > k) selected = selected.slice(0, k);
 
-  // fallback if selection is tiny or looks suspiciously like header/TOC-only
+  // Fallback if selection is tiny
   const joinedSel = selected.join(' ');
   if (!joinedSel || (joinedSel.length / Math.max(1, cleaned.length) > 0.95) || selected.length === 0) {
     const firstSents = splitIntoSentencesLocal(cleaned).slice(0, k);
     if (firstSents && firstSents.length) return firstSents.join(' ').trim();
   }
 
-  // keep doc order
   const docSents = splitIntoSentencesLocal(cleaned);
   const orderedSelected = docSents.filter(s => selected.includes(s));
   let final = (orderedSelected.length ? orderedSelected.join(' ') : selected.join(' ')).trim();
 
-  // post-filter: prefer cfg.minSentenceLen but preserve enough sentences; relax if we end up with too few
   try {
     const parts = final.split(/(?<=[.?!])\s+/).map(s => s.trim()).filter(Boolean);
-   const filtered = parts.filter(s => {
-  // slightly relaxed minLength rule: allow short sentences for concise/normal but keep detailed rules aggressive
-  const minLen = (cfg && cfg.minSentenceLen) ? cfg.minSentenceLen : 28;
-  const effectiveMin = (userPref === 'detailed') ? Math.max(12, Math.round(minLen * 0.6)) : Math.max(8, Math.round(minLen * 0.5));
-  if (s.length < effectiveMin && userPref !== 'detailed') {
-    // allow some short sentences for concise/normal (helps selections and headlines)
-    // but we still drop extremely tiny fragments
-    if (s.length < 8) return false;
-  }
-  if (/^(Outline|History|See also|References|External links|Category|vte|Navigation)\b/i.test(s)) return false;
-  const nonAlphaRatio = (s.replace(/[A-Za-z0-9]/g,'').length) / Math.max(1, s.length);
-  // relax for short sentences (ratio is less meaningful there)
-  if (s.length >= 40 && nonAlphaRatio > 0.30) return false;
-  if (/^[\u2000-\u206F\u2E00-\u2E7F\W]+$/.test(s)) return false;
-  return true;
-});
-try { if (window.__clarity_debug_summary) safeLog('post-filter counts', { partsBefore: parts.length, partsAfter: filtered.length, userPref }); } catch(e){}
-
-
-
-    // if filtering removed too many sentences, relax and use top-k scored candidates instead
-    if (filtered.length < Math.max(1, Math.min(2, k))) {
-      // take top-scored sentences and preserve document order
-      const fallbackTop = scoredCandidates.slice(0, Math.min(k, scoredCandidates.length)).map(x => x.sentence);
-      const fallbackOrdered = docSents.filter(s => fallbackTop.includes(s)).slice(0, k);
-      if (fallbackOrdered.length) {
-        final = fallbackOrdered.join(' ');
-      } else if (filtered.length) {
-        final = filtered.join(' ');
-      }
-    } else if (filtered.length) {
+    const filtered = parts.filter(s => {
+      if (s.length < 12) return false;
+      if (/^(Outline|History|See also|References|External links|Category|vte|Navigation|Contents|Jump to)\b/i.test(s)) return false;
+      const nonAlphaRatio = (s.replace(/[A-Za-z0-9]/g,'').length) / Math.max(1, s.length);
+      if (s.length >= 30 && nonAlphaRatio > 0.35) return false;
+      if (/^[\u2000-\u206F\u2E00-\u2E7F\W]+$/.test(s)) return false;
+      return true;
+    });
+    
+    if (filtered.length >= Math.max(1, Math.floor(plannedK * 0.6))) {
       final = filtered.join(' ');
     }
-  } catch (e) {}
+  } catch (e) { safeLog && safeLog('post-filter threw', e); }
 
   try {
-    if (!final) return cleaned.slice(0, 800);
     const finalSents = splitIntoSentencesLocal(final);
     return finalSents.slice(0, Math.max(1, Math.min(k, finalSents.length))).join(' ').trim();
   } catch (e) {
@@ -1602,13 +1579,6 @@ try { if (window.__clarity_debug_summary) safeLog('post-filter counts', { partsB
   }
 }
 
-
-
-
-
-
-
-// ---------------- Toast cleanup helper ----------------
 function clearToastsLocal() {
   try {
     const selectors = ['.toast', '.toaster', '.cr-toast', '.notification', '[data-toast]'];
@@ -1617,14 +1587,12 @@ function clearToastsLocal() {
     safeLog('clearToastsLocal executed');
   } catch (e) { safeLog('clearToastsLocal error', e); }
 }
-// Minimal createSummaryModal (used by summarizer). Put this above summarizeCurrentPageOrSelection_AiAware.
-// Minimal createSummaryModal (used by summarizer) - theme-aware
+
 function createSummaryModal(title = 'Summary', content = '') {
   try {
     const old = document.getElementById('clarityread-summary-modal');
     if (old) old.remove();
 
-    // compute theme colors from page so modal text is readable in dark mode
     let bg = '#fff', fg = '#111', border = '#e6e6e6';
     try {
       const cs = window.getComputedStyle(document.body || document.documentElement);
@@ -1632,7 +1600,6 @@ function createSummaryModal(title = 'Summary', content = '') {
       const bodyColor = cs && cs.color ? cs.color : '';
       if (bodyBg) bg = bodyBg;
       if (bodyColor) fg = bodyColor;
-      // pick border with some transparency of fg
       border = (typeof fg === 'string') ? fg : border;
     } catch (e) { /* ignore */ }
 
@@ -1665,7 +1632,6 @@ function createSummaryModal(title = 'Summary', content = '') {
     h.textContent = title;
     hLeft.appendChild(h);
 
-    // show sentence count / small subtitle if available in title already
     hdr.appendChild(hLeft);
 
     const actions = document.createElement('div');
@@ -1717,7 +1683,6 @@ function createSummaryModal(title = 'Summary', content = '') {
     modal.appendChild(contentDiv);
 
     document.body.appendChild(modal);
-    // focus for easy keyboard close
     modal.tabIndex = -1;
     modal.focus();
 
@@ -1728,9 +1693,6 @@ function createSummaryModal(title = 'Summary', content = '') {
   }
 }
 
-
-// ---------------- Replacement: summarizeCurrentPageOrSelection_AiAware (local-only) ----------------
-// ----------------- Summarizer helpers -----------------
 function stripCssLikeFragments(raw) {
   try {
     if (!raw || typeof raw !== 'string') return raw || '';
@@ -1745,36 +1707,56 @@ function stripCssLikeFragments(raw) {
   } catch (e) { return raw || ''; }
 }
 
-// preference read
 async function readSummaryPref() {
   try {
     return await new Promise(resolve => chrome.storage.local.get(['summaryDetail'], r => resolve((r && r.summaryDetail) || 'normal')));
   } catch (e) { return 'normal'; }
 }
 
-// returns config adjustments per preference
 function summarizerConfigForPref(pref = 'normal') {
   const cfg = {
-    concise: { baseSentences: 2, lambda: 0.78, titleBoost: 1.6, minSentenceLen: 22, idfBoost: 1.0, lengthFactor: 0.6 },
-    normal:  { baseSentences: 4, lambda: 0.62, titleBoost: 1.3, minSentenceLen: 28, idfBoost: 1.2, lengthFactor: 1.0 },
-    detailed:{ baseSentences: 7, lambda: 0.48, titleBoost: 1.1, minSentenceLen: 14, idfBoost: 1.5, lengthFactor: 1.6 }
+    concise: { 
+      baseSentences: 2,  
+      lambda: 0.72,      
+      titleBoost: 1.5, 
+      minSentenceLen: 20,  // relaxed from 22
+      idfBoost: 1.0
+    },
+    normal: { 
+      baseSentences: 4, 
+      lambda: 0.62, 
+      titleBoost: 1.3, 
+      minSentenceLen: 18,  // relaxed from 28
+      idfBoost: 1.2
+    },
+    detailed: { 
+      baseSentences: 7, 
+      lambda: 0.52,      // more diversity for detailed
+      titleBoost: 1.1, 
+      minSentenceLen: 12,  // relaxed from 14
+      idfBoost: 1.5
+    }
   };
   return cfg[pref] || cfg.normal;
 }
 
-/**
- * Deterministic final-k computation so concise <= normal <= detailed.
- * This uses a small multiplier (lengthFactor) per-pref and scales with document length.
- */
+
+
 function computeFinalKForPref(text = '', pref = 'normal') {
   const words = (text || '').trim().split(/\s+/).filter(Boolean).length || 0;
   const cfg = summarizerConfigForPref(pref);
-  // base + scaled by words, then multiplied by lengthFactor so prefs always order correctly
-  const wordsBoost = Math.floor(words / 450); // 1 extra sentence ~ per ~450 words
-  const raw = cfg.baseSentences + wordsBoost;
-  const k = Math.max(1, Math.round(raw * (cfg.lengthFactor || 1)));
-  // clamp to avoid absurd sizes
-  return Math.min(25, k);
+  
+  // More aggressive scaling: roughly 1 sentence per X words
+  let wordsPerSentence = 150; // normal
+  if (pref === 'concise') wordsPerSentence = 250;  // fewer sentences
+  else if (pref === 'detailed') wordsPerSentence = 100; // more sentences
+  
+  // Calculate: minimum is baseSentences, but scale up with doc length
+  const calculated = Math.round(words / wordsPerSentence);
+  const k = Math.max(cfg.baseSentences, calculated);
+  
+  // Clamp to reasonable bounds (1-25)
+  return Math.min(25, Math.max(1, k));
 }
 
 
@@ -1783,7 +1765,6 @@ function computeAdaptiveMax(text = '', pref = 'normal') {
   const cfg = summarizerConfigForPref(pref);
   // base scaled by words; small docs still get at least baseSentences
   let base = cfg.baseSentences;
-  // add ~1 sentence per 350-700 words depending on pref (detailed gets more)
   const per = (pref === 'detailed') ? 350 : (pref === 'concise' ? 700 : 500);
   base += Math.floor(words / per);
   // clamp to 1..25 but allow larger docs more room
@@ -1794,7 +1775,6 @@ function computeAdaptiveMax(text = '', pref = 'normal') {
 
 
 
-// deterministic progress toast helpers (if you already have similar ones, this will be compatible)
 const _PROG_ID = 'clarityread-progress-toast-v1';
 function createProgressToast(msg = 'Generating summary — please wait...', ttl = 60000) {
   try {
@@ -1839,11 +1819,7 @@ function clearProgressToast() {
   } catch (e) { safeLog && safeLog('clearProgressToast error', e); }
 }
 
-// ----------------- Summarizer main function -----------------
-// ---------- Helper to fetch cleaned page text (tries background -> contentScript, falls back to executeScript) ----------
-// ---------- Helper to fetch cleaned page text (tries background -> contentScript, falls back to executeScript) ----------
 async function fetchCleanPageText(tabId, tabUrl) {
-  // Try background-forwarded extraction first (non-blocking failover)
   function tryBackgroundExtract() {
     return new Promise((resolve) => {
       try {
@@ -1855,7 +1831,6 @@ async function fetchCleanPageText(tabId, tabUrl) {
           if (resp && resp.ok && (resp.text || resp.html)) {
             return resolve({ ok: true, text: (resp.text || '').toString(), html: resp.html || '', title: resp.title || '' });
           }
-          // not available / unknown-action / forwarded but failed
           resolve({ ok: false, reason: 'bg-no-data', detail: resp || null });
         });
       } catch (e) {
@@ -1865,11 +1840,9 @@ async function fetchCleanPageText(tabId, tabUrl) {
     });
   }
 
-  // Execute in-page script fallback if bg path fails
  function tryExecuteScriptExtract() {
   return new Promise(async (resolve) => {
     try {
-      // 1) try top frame only first (safe, avoids iframe side-effects)
       try {
         chrome.scripting.executeScript({
           target: { tabId: tabId }, // no allFrames
@@ -1879,7 +1852,6 @@ async function fetchCleanPageText(tabId, tabUrl) {
                 const r = window.__clarity_read_extract();
                 return { ok: !!r && !!r.text, text: (r && r.text) ? String(r.text) : '', title: (r && r.title) ? r.title : document.title || '', url: location.href || '' };
               }
-              // conservative extraction
               const prefer = ['article','main','[role="main"]','#content','#primary','.post','.article','#mw-content-text'];
               for (const s of prefer) {
                 const el = document.querySelector(s);
@@ -1899,7 +1871,6 @@ async function fetchCleanPageText(tabId, tabUrl) {
         }, (res) => {
           if (chrome.runtime.lastError) return resolve({ ok: false, reason: 'exec-failed', detail: chrome.runtime.lastError.message });
           try {
-            // result normalized for top-frame
             const r0 = Array.isArray(res) && res[0] && res[0].result ? res[0].result : (res && res.result ? res.result : null);
             if (r0 && r0.text && r0.text.trim()) return resolve({ ok: true, text: String(r0.text).trim(), title: r0.title || '', url: r0.url || '' });
             // top frame didn't return good content -> fall through to all-frames
@@ -1907,7 +1878,6 @@ async function fetchCleanPageText(tabId, tabUrl) {
             safeLog && safeLog('top-frame exec parse error, falling back to frames', e);
           }
 
-          // 2) fallback: run across frames if top-frame extraction didn't succeed
           try {
             chrome.scripting.executeScript({
               target: { tabId: tabId, allFrames: true },
@@ -1946,7 +1916,6 @@ async function fetchCleanPageText(tabId, tabUrl) {
               try {
                 if (!Array.isArray(res2) || !res2.length) return resolve({ ok: false, reason: 'exec-frames-no-result', detail: res2 });
 
-                // ---------------- safer frame-selection logic ----------------
                 try {
                   // normalize results (each entry may be like {frameId, result:{text,title,url}})
                   const frameEntries = res2.map(e => {
@@ -1957,7 +1926,6 @@ async function fetchCleanPageText(tabId, tabUrl) {
                     } catch (ex) { return null; }
                   }).filter(Boolean);
 
-                  // debug: surface a compact map of frame results so you can inspect in logs
                   try {
                     const dbg = frameEntries.map(fe => ({
                       frameId: fe.frameId,
@@ -1968,16 +1936,12 @@ async function fetchCleanPageText(tabId, tabUrl) {
                     safeLog && safeLog('exec-frames-debug', dbg);
                   } catch(e){}
 
-                  // helper to safely get text length
                   const txtLenOf = (r) => (r && r.text) ? String(r.text).length : 0;
-                  // helper to get text string
                   const txtStr = (r) => (r && r.text) ? String(r.text).trim() : '';
 
-                  // normalize tabUrl (strip fragment)
                   let normTabUrl = null;
                   try { normTabUrl = (new URL(tabUrl || '')).origin + (new URL(tabUrl || '')).pathname; } catch (e) { normTabUrl = null; }
 
-                  // 1) prefer exact URL match to tab URL (ignoring fragment/hash and query)
                   if (normTabUrl) {
                     for (const fe of frameEntries) {
                       try {
@@ -1991,7 +1955,6 @@ async function fetchCleanPageText(tabId, tabUrl) {
                     }
                   }
 
-                  // 2) prefer same-origin frames (longest among them)
                   let topOrigin = null;
                   try { topOrigin = (new URL(tabUrl || '')).origin; } catch (e) { topOrigin = null; }
                   if (topOrigin) {
@@ -2011,7 +1974,6 @@ async function fetchCleanPageText(tabId, tabUrl) {
                     }
                   }
 
-                  // 3) prefer the explicit top-frame result if present (frameId === 0)
                   try {
                     for (const fe of frameEntries) {
                       if (fe.frameId === 0 && fe.result && txtStr(fe.result)) {
@@ -2020,7 +1982,6 @@ async function fetchCleanPageText(tabId, tabUrl) {
                     }
                   } catch (e) { /* ignore */ }
 
-                  // 4) last resort: longest text across frames
                   let best = null;
                   for (const fe of frameEntries) {
                     const r = fe.result;
@@ -2029,7 +1990,6 @@ async function fetchCleanPageText(tabId, tabUrl) {
                   }
                   if (best && txtStr(best)) return resolve({ ok: true, text: txtStr(best), title: best.title || '', url: best.url || '' });
 
-                  // nothing useful found
                   return resolve({ ok: false, reason: 'exec-frames-empty', detail: frameEntries.map(f => ({ frameId: f.frameId, url: f.result && f.result.url, len: txtLenOf(f.result) })) });
                 } catch (e) {
                   safeLog && safeLog('frame selection logic failed', e);
@@ -2053,7 +2013,6 @@ async function fetchCleanPageText(tabId, tabUrl) {
 
 
 
-  // If we have a tabUrl and it is a web url, attempt bg extract first.
   const bgRes = await tryBackgroundExtract();
   if (bgRes.ok) return bgRes;
 
@@ -2061,12 +2020,10 @@ async function fetchCleanPageText(tabId, tabUrl) {
   const execRes = await tryExecuteScriptExtract();
   if (execRes.ok) return execRes;
 
-  // If executeScript failed and indicates host permission required -> request via background internal helper
   const maybeNeedPermissionErrors = ['must request permission', 'cannot access contents of the page', 'has no access to', 'exec-failed', 'exec-throw'];
   const low = String(execRes.detail || '').toLowerCase();
   if (tabUrl && maybeNeedPermissionErrors.some(s => low.includes(s))) {
     try {
-      // ask background to prompt for permission
       const permRes = await new Promise(resolve => {
         try {
           chrome.runtime.sendMessage({ __internal: 'requestHostPermission', url: tabUrl }, (r) => {
@@ -2075,7 +2032,6 @@ async function fetchCleanPageText(tabId, tabUrl) {
           });
         } catch (e) { resolve({ ok: false, error: 'perm-exception', detail: String(e) }); }
       });
-      // if permission granted, retry executeScript once
       if (permRes && permRes.ok) {
         const retry = await tryExecuteScriptExtract();
         if (retry.ok) return retry;
@@ -2092,7 +2048,6 @@ async function fetchCleanPageText(tabId, tabUrl) {
 
 
 
-// ----------------- Summarizer main function (replacement) -----------------
 async function summarizeCurrentPageOrSelection_AiAware() {
   safeLog('summarizeCurrentPageOrSelection_AiAware (local-only) start');
   if (!summarizePageBtn) { safeLog('summarizePageBtn missing'); return; }
@@ -2110,129 +2065,83 @@ async function summarizeCurrentPageOrSelection_AiAware() {
       return;
     }
 
-   // ----- SELECTION HANDLING (improved) -----
-// 1) Try to verify a stored selection (content script writes clarity_last_selection).
-//    Only offer the prompt if the selection is still present *in the page*.
 try {
   const stored = await new Promise(resolve => chrome.storage.local.get(['clarity_last_selection'], r => resolve(r && r.clarity_last_selection)));
-  if (stored && stored.text && stored.ts && ((Date.now() - stored.ts) < 20000)
+  if (stored && stored.text && stored.ts && ((Date.now() - stored.ts) < 120000) // allow 2 minutes freshness
       && stored.url && stored.url.split('#')[0] === (tab.url || '').split('#')[0]) {
-
-    // Double-check that there's a live selection in the page (avoid prompting for stale selection)
     let liveSel = '';
     try {
       const execRes = await new Promise(res => {
         chrome.scripting.executeScript({
           target: { tabId: tab.id },
           func: () => {
-            try {
-              // read selection or focused text input selection (safe readOnly)
-              const s = (window.getSelection && window.getSelection().toString && window.getSelection().toString()) || '';
-              if (s && s.trim()) return s;
-              const ae = document.activeElement;
-              if (ae && (ae.tagName === 'TEXTAREA' || (ae.tagName === 'INPUT' && ae.type === 'text')) && typeof ae.selectionStart === 'number') {
-                const start = ae.selectionStart, end = ae.selectionEnd;
-                if (end > start) return ae.value.slice(start, end);
-              }
-              return '';
-            } catch (e) { return ''; }
+            try { return (window.getSelection && window.getSelection().toString && window.getSelection().toString()) || ''; }
+            catch (e) { return ''; }
           }
         }, (r) => res(r));
       });
-
       if (Array.isArray(execRes) && execRes[0] && typeof execRes[0].result === 'string') liveSel = execRes[0].result;
       else if (typeof execRes === 'string') liveSel = execRes;
       else if (execRes && execRes.result && typeof execRes.result === 'string') liveSel = execRes.result;
     } catch (e) { safeLog('verify live selection failed', e); }
 
-    // If no live selection, remove stale stored selection
-    if (!liveSel || !liveSel.trim()) {
-      try { chrome.storage.local.remove('clarity_last_selection'); } catch(e) { safeLog('remove clarity_last_selection failed', e); }
+    if (liveSel && liveSel.trim()) {
+      text = stored.text || liveSel.trim();
+      usedSelection = true;
+      try { chrome.storage.local.remove('clarity_last_selection'); } catch (e) { /* ignore */ }
     } else {
-      // Prompt only if the selection is still present
-      const wantSelection = confirm('Summarize selected text? Click OK to summarize selection, Cancel to summarize full page.');
-      if (wantSelection) {
-        text = stored.text || liveSel.trim();
-        usedSelection = true;
-        // clear stored selection now that we've used it (prevents repeated prompts)
-        try { chrome.storage.local.remove('clarity_last_selection'); } catch(e) { safeLog('clear stored selection failed', e); }
-      }
+      try { chrome.storage.local.remove('clarity_last_selection'); } catch (e) {}
     }
   }
-} catch (e) { safeLog('reading stored selection failed', e); }
 
-// If we still don't have text, try a direct page selection read as before (and clear stored if used)
-if (!text) {
-  try {
-    const pageSelResult = await new Promise(resolve => {
-      chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        func: () => {
-          try {
-            const s = (window.getSelection && window.getSelection().toString && window.getSelection().toString()) || '';
-            if ((!s || !s.trim()) && document.activeElement) {
-              const ae = document.activeElement;
-              if ((ae.tagName === 'TEXTAREA' || (ae.tagName === 'INPUT' && ae.type === 'text')) && typeof ae.selectionStart === 'number') {
-                const start = ae.selectionStart, end = ae.selectionEnd;
-                if (end > start) return ae.value.slice(start, end);
-              }
-            }
-            return s || '';
-          } catch (e) { return ''; }
-        }
-      }, (res) => resolve(res));
-    });
+  if (!text) {
+    try {
+      const pageSelResult = await new Promise(resolve => {
+        chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: () => {
+            try { return (window.getSelection && window.getSelection().toString && window.getSelection().toString()) || ''; }
+            catch (e) { return ''; }
+          }
+        }, (res) => resolve(res));
+      });
 
-    let selText = '';
-    if (Array.isArray(pageSelResult) && pageSelResult.length && pageSelResult[0]) {
-      const r0 = pageSelResult[0];
-      if (typeof r0.result === 'string') selText = r0.result;
-      else if (r0 && r0.result && typeof r0.result.text === 'string') selText = r0.result.text;
-    } else if (typeof pageSelResult === 'string') selText = pageSelResult;
-    else if (pageSelResult && typeof pageSelResult.result === 'string') selText = pageSelResult.result;
+      let selText = '';
+      if (Array.isArray(pageSelResult) && pageSelResult.length && pageSelResult[0]) {
+        const r0 = pageSelResult[0];
+        if (typeof r0.result === 'string') selText = r0.result;
+        else if (r0 && r0.result && typeof r0.result.text === 'string') selText = r0.result.text;
+      } else if (typeof pageSelResult === 'string') selText = pageSelResult;
+      else if (pageSelResult && typeof pageSelResult.result === 'string') selText = pageSelResult.result;
 
-    if (selText && selText.trim()) {
-      const wantSelection = confirm('Summarize selected text? Click OK to summarize selection, Cancel to summarize full page.');
-      if (wantSelection) {
+      if (selText && selText.trim()) {
         text = selText.trim();
         usedSelection = true;
-        // clear stored selection to avoid future stale prompts
-        try { chrome.storage.local.remove('clarity_last_selection'); } catch(e) { safeLog('clear stored selection failed', e); }
+        try { chrome.storage.local.remove('clarity_last_selection'); } catch (e) {}
       }
-    }
-  } catch (e) { safeLog('page selection execScript failed', e); }
+    } catch (e) { safeLog('page selection execScript failed', e); }
+  }
+} catch (e) {
+  safeLog('selection handling failed', e);
+}
+
+if (!text || !text.trim()) {
+  try {
+    toast('Please select the text you want summarized, then click Summarize — selecting a paragraph or more works best.', 'info', 7000);
+  } catch (e) { safeLog('notify no-selection failed', e); }
+  summarizePageBtn.disabled = false;
+  return;
 }
 
 
-    // 4) if still nothing, extract main page content via fetchCleanPageText helper
-    if (!text) {
-      const fetched = await fetchCleanPageText(tab.id, tab.url);
-      if (fetched && fetched.ok && fetched.text) {
-        text = String(fetched.text || '').trim();
-      } else {
-        // Show friendly message if permission required
-        if (fetched && fetched.reason === 'permission-not-granted') {
-          toast('Permission required to read this page. Please grant site permission and try again.', 'error', 8000);
-        } else {
-          toast('Unable to access page content. Give ClarityRead permission for this site and try again.', 'error', 6000);
-        }
-        summarizePageBtn.disabled = false;
-        return;
-      }
-    }
-
-    // guard
     if (!text || !text.trim()) {
       toast('No text to summarize — select text on the page or ensure the page has readable content.', 'info');
       summarizePageBtn.disabled = false;
       return;
     }
 
-    // read preference + compute sentences
-// read preference + compute sentences (use deterministic final-K so concise <= normal <= detailed)
 const pref = await readSummaryPref();
 
-// compute both values and log them for debugging
 const adaptiveMax = computeAdaptiveMax(text, pref);
 const plannedK = (typeof computeFinalKForPref === 'function')
   ? computeFinalKForPref(text, pref)
@@ -2240,24 +2149,17 @@ const plannedK = (typeof computeFinalKForPref === 'function')
 
 safeLog && safeLog('summary counts', { pref, adaptiveMax, plannedK });
 
-// pass plannedK into summarizeTextLocal so we always respect deterministic pref ordering
-// keep the variable name "adaptiveMaxForCall" so later logging still makes sense
 const adaptiveMaxForCall = Math.max(1, Math.min(25, Math.floor(plannedK)));
 
 
-    // run summarizer with deterministic progress toast
     const pid = createProgressToast('Generating summary — please wait...', 60000);
     let summary = '(no summary produced)';
     try {
-      // additional pre-scrub to drop author lines / bylines that confuse scoring
-     // ---------- stronger presc rub for bylines / glued fragments ----------
 try {
-  // insert missing spaces for glued fragments that happen in some publisher DOMs
   text = text.replace(/([a-z0-9])([A-Z][a-z])/g, '$1 $2');
   text = text.replace(/([^\s])By([A-Z])/g, '$1 By $2');
   text = text.replace(/(Updated on|updated on)([A-Z0-9])/g, '$1 $2');
 
-  // original cleans that remove obvious junk
   text = text.replace(/^\s*(By|Author:|Written by)\s+[^\n]{0,200}$/gim, ' ');
   text = text.replace(/\b(last edited|last updated|published on|©|copyright|all rights reserved)\b[^\n]*/gi, ' ');
   text = text.replace(/^\s*(Contact|Contact us|Subscribe|Follow (us|@)|Related articles|Read more|Advert(isement)?|Sponsored)\b[^\n]*$/gim, ' ');
@@ -2288,20 +2190,26 @@ safeLog && safeLog('summarizer invoked', { usedK: adaptiveMaxForCall, pref });
       clearProgressToast();
     }
 
-    // lightweight post-filter to remove TOC-like garbage
-    try {
-      const parts = summary.split(/(?<=[.?!])\s+/).map(s => s.trim()).filter(Boolean);
-      const filtered = parts.filter(s => {
-        if (s.length < 30 && (pref !== 'detailed')) return false;
-        if (/^(Outline|History|See also|References|External links|Category|vte)\b/i.test(s)) return false;
-        const nonAlphaRatio = (s.replace(/[A-Za-z0-9]/g,'').length) / Math.max(1, s.length);
-        if (nonAlphaRatio > 0.20) return false;
-        return true;
-      });
-      if (filtered.length) summary = filtered.join(' ');
-    } catch (e) { safeLog('post-filter threw', e); }
-
-    // present modal with adaptive header
+try {
+  const parts = final.split(/(?<=[.?!])\s+/).map(s => s.trim()).filter(Boolean);
+  const filtered = parts.filter(s => {
+    if (s.length < 12) return false;  // only drop very tiny fragments
+    
+   if (/^(Outline|History|See also|References|External links|Category|vte|Navigation|Contents|Jump to)\b/i.test(s)) return false;
+    
+    const nonAlphaRatio = (s.replace(/[A-Za-z0-9]/g,'').length) / Math.max(1, s.length);
+    if (s.length >= 30 && nonAlphaRatio > 0.35) return false;
+    
+    if (/^[\u2000-\u206F\u2E00-\u2E7F\W]+$/.test(s)) return false;
+    
+    return true;
+  });
+  
+  if (filtered.length >= Math.max(1, Math.floor(plannedK * 0.6))) {
+    final = filtered.join(' ');
+  }
+} catch (e) { safeLog('post-filter threw', e); }
+   
     const modeSubtitle = usedSelection ? 'Selection' : 'Full page';
     const actualSentences = (summary || '').split(/(?<=[.?!])\s+/).map(s => s.trim()).filter(Boolean).length || 0;
     const headerTitle = `Page Summary — ${actualSentences} sentence${actualSentences === 1 ? '' : 's'} (${modeSubtitle})`;
@@ -2323,7 +2231,6 @@ safeLog && safeLog('summarizer invoked', { usedK: adaptiveMaxForCall, pref });
   }
 }
 
-// Hook up summary button: replace old handler with the local-only summarizer
 try {
   let btn = $('summarizePageBtn');
   if (btn) {
@@ -2337,21 +2244,6 @@ try {
 
 
 
-// Hook up summary button: replace old handler with the local-only summarizer
-try {
-  let btn = $('summarizePageBtn');
-  if (btn) {
-    btn.replaceWith(btn.cloneNode(true));
-    const newBtn = $('summarizePageBtn');
-    if (newBtn) safeOn(newBtn, 'click', summarizeCurrentPageOrSelection_AiAware);
-  }
-} catch (e) { safeLog('hook summarize button failed', e); }
-
-
-
-
-
-  // ---------- Profiles and saved reads ----------
   function updateProfileDropdown(profiles = {}, selectedName = '') { if (!profileSelect) return; profileSelect.innerHTML = '<option value="">Select profile</option>'; for (const name in profiles) { const opt=document.createElement('option'); opt.value=name; opt.textContent=name; profileSelect.appendChild(opt);} if (selectedName) profileSelect.value = selectedName; }
   function saveProfile(name, profile) { chrome.storage.local.get(['profiles'], (res) => { const profiles = res.profiles || {}; profiles[name] = profile; chrome.storage.local.set({ profiles }, () => { chrome.storage.sync.set({ profiles }, () => { toast('Profile saved.', 'success'); updateProfileDropdown(profiles, name); safeLog('profile saved', name, profile); }); }); }); }
   chrome.storage.local.get(['profiles'], (res) => { safeLog('loaded profiles', Object.keys(res.profiles||{})); updateProfileDropdown(res.profiles || {}); });
@@ -2362,10 +2254,8 @@ try {
 
   safeOn(exportProfilesBtn, 'click', () => { chrome.storage.local.get(['profiles'], (res) => { const dataStr = JSON.stringify(res.profiles || {}); const blob = new Blob([dataStr], { type: "application/json" }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'ClarityReadProfiles.json'; a.click(); URL.revokeObjectURL(url); toast('Profiles exported.', 'success'); safeLog('exported profiles'); }); });
 
-// Try to find/reuse existing "Export Settings" button in DOM (avoid duplicate buttons)
 let exportSettingsBtn = document.getElementById('exportSettingsBtn') || null;
 
-// prefer to reuse it but keep its id consistent for future checks
 if (!exportSettingsBtn) {
   const candidate = document.getElementById('exportProfilesBtn');
   if (candidate && /export\s*settings/i.test((candidate.textContent||'').trim())) {
@@ -2380,7 +2270,6 @@ if (!exportSettingsBtn) {
   exportSettingsBtn.id = 'exportSettingsBtn';
   exportSettingsBtn.className = 'ghost';
   exportSettingsBtn.textContent = 'Export Settings';
-  // attach to UI near profiles export if possible
   if (exportProfilesBtn && exportProfilesBtn.parentNode) exportProfilesBtn.parentNode.insertBefore(exportSettingsBtn, exportProfilesBtn.nextSibling);
   else document.body.appendChild(exportSettingsBtn);
 }
@@ -2399,7 +2288,6 @@ exportSettingsBtn.addEventListener('click', () => {
   toast('Settings exported.', 'success');
 });
 
-// Import settings - reuse existing input/button if present, else create
 let importSettingsInput = document.getElementById('importSettingsInput') || null;
 let importSettingsBtn = document.getElementById('importSettingsBtn') || null;
 
@@ -2413,7 +2301,6 @@ if (!importSettingsInput) {
 }
 
 if (!importSettingsBtn) {
-  // try to reuse importProfilesBtn if it looks like a general Import button
   const candidateImport = document.getElementById('importProfilesBtn');
   if (candidateImport && /import/i.test((candidateImport.textContent||'').trim()) && !document.getElementById('importSettingsBtn')) {
     importSettingsBtn = candidateImport;
@@ -2428,10 +2315,8 @@ if (!importSettingsBtn) {
   }
 }
 
-// wire import button to hidden input
 importSettingsBtn.addEventListener('click', () => importSettingsInput.click());
 
-// import input handler (apply imported settings gracefully)
 importSettingsInput.addEventListener('change', (ev) => {
   const file = ev.target.files && ev.target.files[0];
   if (!file) { importSettingsInput.value = ''; return; }
@@ -2443,15 +2328,12 @@ importSettingsInput.addEventListener('change', (ev) => {
       const valid = keys.some(k => k in imported);
       if (!valid) { toast('Invalid settings file.', 'error'); importSettingsInput.value = ''; return; }
 
-      // Build an object with only the known keys (graceful apply)
       const toApply = {};
       keys.forEach(k => { if (k in imported) toApply[k] = imported[k]; });
 
-      // Apply to UI
       const merged = Object.assign({}, gatherSettingsObject(), toApply);
       setUI(merged);
 
-      // Persist globally: merge into existing sync keys (don't wipe unrelated keys)
       chrome.storage.sync.get(null, (cur) => {
         const newSync = Object.assign({}, cur, toApply);
         chrome.storage.sync.set(newSync, () => {
@@ -2472,9 +2354,7 @@ importSettingsInput.addEventListener('change', (ev) => {
 
   safeOn(resetStatsBtn, 'click', () => { if (!confirm('Reset all reading stats?')) return; chrome.runtime.sendMessage({ action: 'resetStats' }, () => { safeLog('resetStats requested'); loadStats(); setReadingStatus('Not Reading'); toast('Stats reset.', 'success'); }); });
 
-  // ---------------- Saved reads UI + summarization helpers ----------------
 
-// Render saved reads list into #savedList
 function renderSavedList() {
   try {
     const container = document.getElementById('savedList');
@@ -2488,7 +2368,6 @@ function renderSavedList() {
         return;
       }
 
-   // each saved item
       for (const it of arr.slice().reverse()) {
         const row = document.createElement('div');
         row.className = 'saved-item';
@@ -2536,7 +2415,6 @@ function renderSavedList() {
         playBtn.className = 'btn btn-secondary';
         playBtn.addEventListener('click', () => {
           try {
-            // send readAloud with saved text payload so content script uses it directly
             const tab = null; // background forward will pick best tab
             chrome.runtime.sendMessage({ action: 'readAloud', _savedText: it.text }, (resp) => {
               if (chrome.runtime.lastError) safeLog('readAloud message lastError', chrome.runtime.lastError);
@@ -2568,7 +2446,6 @@ function renderSavedList() {
 }
 
 
-// Summarize a single saved item (shows modal)
 async function summarizeSavedItem(item) {
   try {
     if (!item || !item.text) return toast('Nothing to summarize.', 'info');
@@ -2595,45 +2472,11 @@ async function summarizeSavedItem(item) {
   }
 }
 
-// Summarize all saved selections (concatenate & summarize)
-async function summarizeAllSaved() {
-  try {
-    chrome.storage.local.get(['savedReads'], async (r) => {
-      const arr = Array.isArray(r && r.savedReads) ? r.savedReads : [];
-      if (!arr.length) { toast('No saved selections to summarize.', 'info'); return; }
 
-      // join saved texts with paragraph breaks; if combined text is huge, consider truncation
-      const combined = arr.map(x => (x.text || '').trim()).filter(Boolean).join('\n\n');
-      if (!combined) { toast('No textual content found in saved selections.', 'info'); return; }
 
-      const pref = await readSummaryPref();
-      const adaptiveMax = computeAdaptiveMax(combined, pref);
-
-      const pid = createProgressToast('Generating combined summary — please wait...', 60000);
-      let summary = '(no summary produced)';
-      try {
-        summary = summarizeTextLocal(combined, adaptiveMax, pref) || summary;
-      } catch (e) {
-        safeLog('summarizer error (all saved)', e);
-      } finally {
-        clearProgressToast();
-      }
-
-      const actualSentences = (summary || '').split(/(?<=[.?!])\s+/).map(s => s.trim()).filter(Boolean).length || 0;
-      const headerTitle = `Saved Selections — ${actualSentences} sentence${actualSentences === 1 ? '' : 's'}`;
-      createSummaryModal(headerTitle, summary);
-    });
-  } catch (e) {
-    safeLog('summarizeAllSaved error', e);
-    toast('Failed to summarize saved selections.', 'error');
-  }
-}
-
-// Ensure saved list is rendered at startup
 try { renderSavedList(); } catch (e) { safeLog('initial renderSavedList failed', e); }
 
 
-  // Save selection -> use background/content messaging helper which handles injecting + permission flow
   safeOn(saveSelectionBtn, 'click', async () => {
     safeLog('saveSelectionBtn clicked');
     if (!saveSelectionBtn) return;
@@ -2764,7 +2607,6 @@ try { renderSavedList(); } catch (e) { safeLog('initial renderSavedList failed',
 
   safeOn(shareStatsBtn, 'click', generateStatsImageAndDownload);
 
-  // ---------- Messages from background/content ----------
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   safeLog('chrome.runtime.onMessage received', msg, sender && sender.tab && { tabId: sender.tab.id, url: sender.tab.url });
 
@@ -2797,7 +2639,6 @@ try { renderSavedList(); } catch (e) { safeLog('initial renderSavedList failed',
 });
 
 
-  // ---------- Popup keyboard shortcuts (active while popup open) ----------
   window.addEventListener('keydown', (e) => {
     try {
       // only while popup is open/focused — ignore if input elements are focused

@@ -1,17 +1,15 @@
-// src/background.js - improved tab selection + injection/fallback handling (hardened)
 (() => {
   'use strict';
 
   const HANDSHAKE_KEY = '_handshakeSelection';
-  const HANDSHAKE_TTL_MS = 30 * 1000; // 30s - popup should consume handshake quickly
+  const HANDSHAKE_TTL_MS = 30 * 1000; // 30s 
 
-  const DEBUG = true; // set true locally when debugging, false for release
+  const DEBUG = true; // set true for debugging, false for release
   const safeLog = (...args) => { try { if (DEBUG) console.log('[ClarityRead bg]', ...args); } catch (e) {} };
   const safeWarn = (...args) => { try { if (DEBUG) console.warn('[ClarityRead bg]', ...args); } catch (e) {} };
   const safeInfo = (...args) => { try { if (DEBUG) console.info('[ClarityRead bg]', ...args); } catch (e) {} };
 
 
-  // Utility: safe runtime.sendMessage (silently ignores "no receiver" errors)
   function safeRuntimeSendMessage(message) {
     try {
       chrome.runtime.sendMessage(message, () => {
@@ -30,11 +28,7 @@
     return !/^(chrome:\/\/|about:|chrome-extension:\/\/|edge:\/\/|file:\/\/|view-source:|moz-extension:\/\/)/.test(s);
   }
 
-  /**
-   * Build a valid host-permission pattern for a tab URL, or return null when URL isn't suitable.
-   * Examples returned: "https://example.com/*" or "http://host:port/*"
-   * IMPORTANT: do NOT return the literal string "<all_urls>" (Chrome will treat that as unknown in permissions APIs).
-   */
+  
   function buildOriginPermissionPattern(url) {
     try {
       const u = new URL(url);
@@ -48,7 +42,6 @@
     }
   }
 
-  // Try to request permission for the specific origin (popup may call this)
   function requestHostPermissionForUrl(url) {
     return new Promise((resolve) => {
       const originPattern = buildOriginPermissionPattern(url);
@@ -136,7 +129,6 @@
 
             const permissionPattern = buildOriginPermissionPattern(tab.url);
 
-            // If we have no usable origin pattern (odd URL), proceed with a best-effort attempt to inject.
             if (!permissionPattern) {
               safeInfo('no origin permission pattern (best-effort injection)', tab.url);
               try {
@@ -172,7 +164,6 @@
               return;
             }
 
-            // Normal path: we have a permissionPattern — check permissions.contains first
             try {
               chrome.permissions.contains({ origins: [permissionPattern] }, (has) => {
                 try {
@@ -191,7 +182,6 @@
                     });
                   }
 
-                  // Try injecting content script (manifest declared)
                   try {
                     safeLog('attempting scripting.executeScript', { tabId, jsFile });
                     chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: [jsFile] }, (injectionResults) => {
@@ -293,7 +283,6 @@
     });
   }
 
-  // Helper: store handshake selection and try to open/focus popup window
   function storeHandshakeAndOpenPopup(selectionObj = {}) {
     const payload = {
       text: selectionObj.text || '',
@@ -341,7 +330,6 @@
 
   
 
-// Context menu: "Read with ClarityRead" for text selections
   chrome.runtime.onInstalled.addListener(() => {
     try {
       chrome.contextMenus.create({
@@ -357,7 +345,6 @@
     }
   });
 
-  // NEW: context click now stores handshake and opens/focuses popup instead of messaging the page directly
   chrome.contextMenus.onClicked.addListener((info, tab) => {
     try {
       if (info.menuItemId === 'clarityReadSelection') {
@@ -392,8 +379,6 @@
     }
   });
 
-  // improved commands handler: prefer web tab, but if popup/extension page is active,
-// route command to popup via runtime message so popup keyboard UI works when open.
 chrome.commands.onCommand.addListener(async (command) => {
   try {
     // try active tab first
@@ -681,7 +666,6 @@ chrome.commands.onCommand.addListener(async (command) => {
               // Prefer a focused normal window's active web tab, then other discovery strategies
               const allWins = await new Promise(resolve => chrome.windows.getAll({ populate: true }, resolve));
               if (Array.isArray(allWins)) {
-                // 1) Focused normal window -> active web tab
                 const focusedNormalWin = allWins.find(w => w.focused && w.type === 'normal' && Array.isArray(w.tabs));
                 if (focusedNormalWin) {
                   const tab = (focusedNormalWin.tabs || []).find(t => t && t.active && isWebUrl(t.url));
@@ -693,7 +677,6 @@ chrome.commands.onCommand.addListener(async (command) => {
                   }
                 }
 
-                // 2) Any normal window's active web tab
                 for (const w of allWins) {
                   if (w && w.type === 'normal' && Array.isArray(w.tabs)) {
                     const t = (w.tabs || []).find(tt => tt && tt.active && isWebUrl(tt.url));
@@ -706,7 +689,6 @@ chrome.commands.onCommand.addListener(async (command) => {
                   }
                 }
 
-                // 3) Fallback: first web tab anywhere
                 for (const w of allWins) {
                   for (const t of (w.tabs || [])) {
                     if (t && isWebUrl(t.url)) {
@@ -749,7 +731,6 @@ chrome.commands.onCommand.addListener(async (command) => {
     }
   });
 
-  // Periodic cleanup: remove stale handshake keys older than TTL (best-effort)
   setInterval(() => {
     try {
       chrome.storage.local.get([HANDSHAKE_KEY], (res) => {

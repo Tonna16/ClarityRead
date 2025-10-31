@@ -1,5 +1,3 @@
-// contentScript.js
-// Handles applySettings, readAloud, speedRead, pause/resume/stop, selection, detectLanguage.
 // All speech synthesis happens in this file only.
 
 (function () {
@@ -9,7 +7,6 @@
   }
   window.__clarityread_contentScriptLoaded = true;
 
-  // ---------- Reflow / dys / overlay helpers ----------
   (function() {
     if (window.__clarity_reflow_installed) return;
     window.__clarity_reflow_installed = true;
@@ -27,8 +24,6 @@
         st.id = REFLOW_STYLE_ID;
         st.type = 'text/css';
 
-        /* IMPORTANT: limit scope to article-like containers only.
-           Avoid applying to the entire page to prevent breaking complex layouts. */
         st.textContent = `
 :root { --clarity-font-size: 20px; --clarity-line-height: 1.5; --readeasy-font-size: 20px; }
 
@@ -102,15 +97,12 @@ html.readeasy-reflow h3 {
       } catch (e) { /* ignore */ }
     }
 
-    // Apply font-size to article containers. If no known container matches,
-    // apply to the "main node" found by getMainNode() inline (safe fallback).
     function applyClarityFontSize(px) {
       try {
         ensureReflowStyle();
         let v = Number(px) || 20;
         v = Math.max(10, Math.min(48, Math.round(v))); // clamp
 
-        // store previous inline body font-size (so we can restore it on remove)
         try {
           if (_prevBodyFontSize === null) {
             _prevBodyFontSize = (document.body && document.body.style && document.body.style.fontSize) ? document.body.style.fontSize : null;
@@ -125,7 +117,6 @@ html.readeasy-reflow h3 {
         const lh = (1.25 + Math.min(0.6, (v - 14) / 80)).toFixed(2);
         document.documentElement.style.setProperty('--clarity-line-height', lh);
 
-        // Add compatibility classes (both historical names)
         document.documentElement.classList.add('clarityreflow-active');
         document.documentElement.classList.add('clarityread-reflow');
         document.documentElement.classList.add('readeasy-reflow');
@@ -133,12 +124,9 @@ html.readeasy-reflow h3 {
         // set body inline for sites that read inline font-size (best-effort)
         try { document.body.style.fontSize = v + 'px'; } catch(e) {}
 
-        // If the page's article container doesn't pick up our rules due to very specific site CSS,
-        // also apply a safe inline font-size to the 'mainNode' (restorable on remove).
         try {
           const main = (typeof getMainNode === 'function') ? getMainNode() : null;
           if (main && main instanceof Element) {
-            // Save previous inline styles for this node (one-time)
             if (!_prevMainNode) {
               _prevMainNode = main;
               _prevMainNodeFontSize = main.style && main.style.fontSize ? main.style.fontSize : null;
@@ -288,7 +276,6 @@ html.readeasy-reflow h3 {
   let speedActive = false;
   let sessionId = 0; // incremental session id to guard against races
 
-  // New: coalesced state sending
   let lastSentState = 'Not Reading'; // 'Reading...', 'Paused', 'Not Reading'
 
   const STATS_SEND_INTERVAL_MS = 10000;
@@ -302,7 +289,6 @@ html.readeasy-reflow h3 {
 
   safeLog('✅ contentScript loaded for', location.href);
 
-  // Helper: send coalesced runtime messages (avoid spamming popup)
   function sendState(state, extra) {
     if (!state) return;
     if (state === lastSentState) { safeLog('sendState skipped duplicate', state); return; }
@@ -315,16 +301,13 @@ html.readeasy-reflow h3 {
     safeLog('sendState sent', state);
   }
 
-  // --- Overlay state notifier for popup/background
   function notifyOverlayState(active) {
     try {
       chrome.runtime.sendMessage({ action: 'clarity_overlay_state', overlayActive: !!active }, () => {});
     } catch (e) { safeLog('notifyOverlayState failed', e); }
   }
 
-  /* lightweight selection tracker to persist last selection so popup can read it
-     Only stores text > 20 chars to avoid tiny accidental selections.
-  */
+  
   (function() {
     try {
       let lastStored = null;
@@ -361,15 +344,12 @@ html.readeasy-reflow h3 {
   })();
 
 
-  // --- sanitize text for TTS
   function sanitizeForTTS(s) {
     if (!s) return '';
     return String(s).replace(/\s+/g, ' ').trim();
   }
 
-  // --- Enhanced Font injection for OpenDyslexic (inject into same-origin iframes & contenteditable fields)
-  // Uses packaged fonts (chrome.runtime.getURL) and robust CSS rules that apply only when html has the dys class.
-  let _dysObserver = null;
+ let _dysObserver = null;
   const CLARITY_DYS_STYLE_ID = 'clarity-dysfont-style';
   const CLARITY_DYS_LINK_ID = 'clarity-dysfont-link';
 
@@ -533,7 +513,6 @@ html.readeasy-dyslexic *::placeholder { font-family: var(--readeasy-dys-font) !i
     } catch (e) { safeLog('startDysObserver failed', e); }
   }
 
-  // --- Heuristics: choose main content node
   function isVisible(el) {
     if (!el) return false;
     try {
@@ -589,7 +568,6 @@ html.readeasy-dyslexic *::placeholder { font-family: var(--readeasy-dys-font) !i
     return document.documentElement || document.body;
   }
 
-  // --- Extraction helper: robust cleaning (site-specific heuristics + general noise filtering)
 function extractCleanMainTextAndHtml(mainNode) {
   // local logger that prefers safeLog if present
   const lg = (...args) => {
@@ -623,7 +601,6 @@ function extractCleanMainTextAndHtml(mainNode) {
           lg('Readability live parse threw (continuing to serialized fallback)', liveErr && (liveErr.stack || liveErr.message || liveErr));
         }
 
-        // 2) Serialized DOM parse as fallback
         try {
           lg('Attempting Readability.parse on serialized DOM');
           const serialized = (document.documentElement && document.documentElement.outerHTML)
@@ -650,7 +627,6 @@ function extractCleanMainTextAndHtml(mainNode) {
       lg('Readability check threw (will use legacy extractor)', e && (e.stack || e));
     }
 
-    // --- Legacy fallback extractor (clone + prune) ---
     lg('Using legacy extractor (clone + prune)');
 
     const clone = (mainNode && typeof mainNode.cloneNode === 'function') ? mainNode.cloneNode(true) : null;
@@ -778,7 +754,6 @@ function extractCleanMainTextAndHtml(mainNode) {
           }
         }
 
-        // 2) some web editors expose editor content in known selectors (e.g., Google Docs kix pages)
         const kix = Array.from(document.querySelectorAll('.kix-page, .kix-zoomdocumentplugin-outer, .kix-canvas-tile-content')).filter(isVisible);
         if (kix.length) {
           const agg2 = kix.map(e => (e.innerText || '')).join('\n\n');
@@ -790,7 +765,6 @@ function extractCleanMainTextAndHtml(mainNode) {
           }
         }
 
-        // 3) If still tiny and document.body is large, fall back to body text (already present earlier but re-run)
         if ((!text || text.length < 120) && document.body && document.body.innerText && document.body.innerText.length > 200) {
           text = String(document.body.innerText || '').replace(/\s{2,}/g, ' ').trim();
           text = _postCleanExtractedText(text);
@@ -819,52 +793,66 @@ function extractCleanMainTextAndHtml(mainNode) {
     return { text: '', html: '', title: document.title || '' };
   }
 
-  // -------------------------
-  // helper: normalize glued fragments and strip leading header/meta noise
-  // -------------------------
-  function _postCleanExtractedText(text) {
-    try {
-      if (!text || typeof text !== 'string') return '';
-      // 1) insert spaces where words got glued (conservative)
-      text = text.replace(/([a-z0-9])([A-Z][a-z])/g, '$1 $2');
-      text = text.replace(/([^\s])By([A-Z])/g, '$1 By $2');
-      text = text.replace(/(Updated on|updated on)([A-Z0-9])/g, '$1 $2');
-
-      // split into lines and drop short top noise blocks
-      const lines = String(text).split(/\n/).map(l => l.trim()).filter(Boolean);
-      if (!lines.length) return text.trim();
-
-      // find the first "real" paragraph
-      let start = 0;
-      for (let i = 0; i < lines.length; i++) {
-        const L = lines[i];
-        if (L.length < 60 && (/^(EXPLORE|Explore|Diet & Nutrition|Healthy|Recipes|Topics?|Explore This Topic|Related|Trending|Sponsored|Advertisement)$/i.test(L) || /^[A-Z\s&]{2,50}$/.test(L))) {
-          start = i + 1;
-          continue;
-        }
-        if (L.length >= 60 || /\.\s+/.test(L) || /[a-z]\s+[A-Z][a-z]/.test(L)) {
-          start = i;
-          break;
-        }
+  
+function _postCleanExtractedText(text) {
+  try {
+    if (!text || typeof text !== 'string') return '';
+    
+    text = text.replace(/([a-z0-9])([A-Z][a-z])/g, '$1 $2');
+    text = text.replace(/([^\s])By([A-Z])/g, '$1 By $2');
+    text = text.replace(/(Updated on|updated on)([A-Z0-9])/g, '$1 $2');
+    
+    const lines = text.split(/\n/).map(l => l.trim()).filter(Boolean);
+    if (!lines.length) return text.trim();
+    
+    const noisePatterns = [
+      /^(EXPLORE|Explore|Diet & Nutrition|Healthy|Recipes|Topics?|Advertisement|Sponsored)/i,
+      /^(Related|Trending|Popular|You may also like|More from|Read more|Continue reading)/i,
+      /^(Subscribe|Newsletter|Sign up|Follow us|Share this)/i,
+      /^(Comments?|Leave a comment|Join the conversation)/i,
+      /^\d+\s+(shares?|comments?|views?)/i,  // "42 shares"
+      /^[A-Z\s&]{2,50}$/,  // ALL CAPS short lines
+    ];
+    
+    const filtered = lines.filter(line => {
+      // Drop if matches noise pattern
+      if (noisePatterns.some(pat => pat.test(line))) return false;
+      
+      // Drop very short lines at document boundaries (likely nav)
+      if (line.length < 60 && (lines.indexOf(line) < 3 || lines.indexOf(line) > lines.length - 3)) {
+        return false;
       }
-
-      let newLines = (start > 0) ? lines.slice(start) : lines.slice();
-
-      if (newLines.length && (/^(By\s|Updated on|By:)/i.test(newLines[0]) || newLines[0].length < 30 && /By|Updated|Author/i.test(newLines[0]))) {
-        newLines.shift();
+      
+      return true;
+    });
+    
+    let start = 0;
+    for (let i = 0; i < filtered.length; i++) {
+      const L = filtered[i];
+      // Real content usually has: length > 60, sentence structure, or mixed case
+      if (L.length >= 60 || /\.\s+/.test(L) || /[a-z]\s+[A-Z][a-z]/.test(L)) {
+        start = i;
+        break;
       }
-
-      text = newLines.join('\n\n').trim();
-      text = text.replace(/\s{2,}/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
-      return text;
-    } catch (e) {
-      return String(text || '').trim();
     }
+    
+    let newLines = (start > 0) ? filtered.slice(start) : filtered;
+    
+    if (newLines.length && (/^(By\s|Updated on|By:)/i.test(newLines[0]) || 
+        (newLines[0].length < 30 && /By|Updated|Author/i.test(newLines[0])))) {
+      newLines.shift();
+    }
+    
+    text = newLines.join('\n\n').trim();
+    text = text.replace(/\s{2,}/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+    
+    return text;
+  } catch (e) {
+    return String(text || '').trim();
   }
 }
+}
 
-// Expose a small helper so popup can call extraction via scripting.executeScript
-// Example: chrome.scripting.executeScript(..., func: () => window.__clarity_read_extract && window.__clarity_read_extract())
 window.__clarity_read_extract = function() {
   try {
     const main = (typeof getMainNode === 'function') ? getMainNode() : (document.body || document.documentElement);
@@ -880,7 +868,6 @@ window.__clarity_read_extract = function() {
   }
 };
 
-  // --- Overlay helper (preferred because it avoids DOM mutation issues)
   function createReaderOverlay(text) {
     removeReaderOverlay();
     const overlay = document.createElement('div');
@@ -950,7 +937,6 @@ window.__clarity_read_extract = function() {
       if (count >= MAX_SPANS_BEFORE_OVERLAY) break;
     }
 
-    // fallback if text is extremely long
     if (text.length > MAX_OVERLAY_CHARS && inner.childNodes.length && inner.childNodes.length * 10 > MAX_OVERLAY_CHARS) {
       // trim inner to a slice
       overlayTextSplice = text.slice(0, MAX_OVERLAY_CHARS);
@@ -974,7 +960,6 @@ window.__clarity_read_extract = function() {
     safeLog('createReaderOverlay created with', highlightSpans.length, 'spans (overlayActive)');
     buildCumLengths();
 
-    // notify popup/background that overlay is active
     try { notifyOverlayState(true); } catch(e){ safeLog('notify overlay create failed', e); }
 
     return overlay;
@@ -986,15 +971,12 @@ window.__clarity_read_extract = function() {
     overlayTextSplice = null;
     safeLog('removeReaderOverlay executed');
 
-    // notify popup/background that overlay is closed
     try { notifyOverlayState(false); } catch(e){ safeLog('notify overlay remove failed', e); }
   }
 
-  // --- Highlight management
   function clearHighlights() {
     if (fallbackTicker) { clearInterval(fallbackTicker); fallbackTicker = null; fallbackTickerRunning = false; }
 
-    // If overlay is active, simply remove overlay (do not attempt to replace spans)
     if (overlayActive) {
       try { removeReaderOverlay(); } catch (e) { safeLog('clearHighlights remove overlay failed', e); }
       highlightSpans = [];
@@ -1006,7 +988,6 @@ window.__clarity_read_extract = function() {
       return;
     }
 
-    // Otherwise attempt to restore any in-place replacements (legacy support)
     if (selectionRestore && selectionRestore.wrapperSelector) {
       try {
         const wrapper = document.querySelector(selectionRestore.wrapperSelector);
@@ -1934,21 +1915,90 @@ if (typeof msg.invert !== 'undefined') {
           break;
         }
 
-        // NEW: extraction for popup summarizer -> returns cleaned text/html/title
-        case 'clarity_extract_main': {
+       // NEW: extraction for popup summarizer -> returns cleaned text/html/title
+case 'clarity_extract_main': {
   try {
-    // prefer an explicit selection if present
+    // 1) Check for selection first
     const sel = (window.getSelection && window.getSelection().toString && window.getSelection().toString()) || '';
     if (sel && sel.trim().length > 20) {
-      const outSelText = _postCleanExtractedText(sel.trim());
-      sendResponse({ ok: true, text: outSelText, html: '', title: document.title || '', url: location.href || '' });
-      safeLog('clarity_extract_main responded with selection', { textLen: (outSelText || '').length, title: document.title, url: location.href });
+      // --- DOM-based selection cleaning for better noise removal ---
+      let cleanedSel = sel.trim();
+      
+      try {
+        const selection = window.getSelection();
+        if (selection && selection.rangeCount > 0) {
+          // Extract the DOM nodes that were selected
+          const range = selection.getRangeAt(0);
+          const container = range.commonAncestorContainer;
+          const parentEl = (container.nodeType === Node.TEXT_NODE) ? container.parentElement : container;
+          
+          if (parentEl) {
+            // Clone the selected region to safely clean it without affecting the page
+            const clone = parentEl.cloneNode(true);
+            
+            // Remove all noise selectors (same strategy as main extraction)
+            const noiseSelectors = [
+              'nav', 'aside', 'footer', 'header',
+              '.related', '.related-articles', '.related-content', '.related-links', '.related-posts',
+              '.trending', '.popular', '.most-read', '.latest', '.more-stories',
+              '.ad', '.ads', '.advert', '.advertisement', '.promo', '.sponsored', '.promo-banner',
+              '.author', '.byline', '.contributor', '.meta', '.article-meta', '.post-meta',
+              '.share', '.social', '.social-share', '.share-buttons',
+              '.comments', '.comment', '.comment-list', '.disqus',
+              '.newsletter', '.subscribe', '.signup', '.cta', '.call-to-action',
+              '.breadcrumb', '.breadcrumbs', '.tags', '.tag-list', '.topics',
+              '[class*="related"]', '[class*="trending"]', '[class*="promo"]', 
+              '[class*="sidebar"]', '[class*="aside"]',
+              '[id*="related"]', '[id*="trending"]', '[id*="sidebar"]'
+            ];
+            
+            noiseSelectors.forEach(sel => {
+              try {
+                clone.querySelectorAll(sel).forEach(n => { try { n.remove(); } catch(e){} });
+              } catch(e){ safeLog('noise selector removal failed for', sel, e); }
+            });
+            
+            // Remove script/style/iframe/svg elements
+            try {
+              clone.querySelectorAll('script, style, iframe, svg, noscript').forEach(n => { try { n.remove(); } catch(e){} });
+            } catch(e){}
+            
+            // Remove elements with suspicious text patterns (short noise blocks)
+            try {
+              Array.from(clone.querySelectorAll('*')).forEach(el => {
+                const txt = (el.textContent || '').trim();
+                // Only remove if short and matches noise patterns
+                if (txt.length < 200) {
+                  if (/^(Related|Trending|Popular|You may also like|More from|More stories|Advertisement|Sponsored|Subscribe|Newsletter|Sign up|Share this|Follow us|Read more|Continue reading|Comments?|Leave a comment)/i.test(txt)) {
+                    try { el.remove(); } catch(e){}
+                  }
+                }
+              });
+            } catch(e){ safeLog('suspicious text pattern removal failed', e); }
+            
+            // Get cleaned text from the pruned clone
+            cleanedSel = (clone.innerText || clone.textContent || sel).trim();
+            safeLog('DOM-based selection cleaning applied', { original: sel.length, cleaned: cleanedSel.length });
+          }
+        }
+      } catch(e) {
+        safeLog('DOM-based selection cleaning failed, using raw selection', e);
+        cleanedSel = sel.trim();
+      }
+      
+      // Apply additional text-level cleaning
+      cleanedSel = _postCleanExtractedText(cleanedSel);
+      
+      sendResponse({ ok: true, text: cleanedSel, html: '', title: document.title || '', url: location.href || '' });
+      safeLog('clarity_extract_main responded with cleaned selection', { textLen: cleanedSel.length, title: document.title, url: location.href });
       return true;
     }
 
+    // 2) No selection -> use Readability for full page extraction
     const main = getMainNode();
     const out = extractCleanMainTextAndHtml(main);
-    // if tiny, attempt contenteditable fallback
+    
+    // 3) If tiny result, attempt contenteditable fallback (for editors like Google Docs)
     if ((!out.text || out.text.length < 120)) {
       try {
         const editables = Array.from(document.querySelectorAll('[contenteditable="true"]')).filter(isVisible);
@@ -1962,9 +2012,10 @@ if (typeof msg.invert !== 'undefined') {
             return true;
           }
         }
-      } catch(e){}
+      } catch(e){ safeLog('contenteditable fallback failed', e); }
     }
 
+    // 4) Return the main extraction result
     sendResponse({ ok: true, text: out.text || '', html: out.html || '', title: out.title || '', url: location.href || '' });
     safeLog('clarity_extract_main responded', { textLen: (out.text || '').length, title: out.title, url: location.href });
   } catch (e) {
@@ -1975,24 +2026,55 @@ if (typeof msg.invert !== 'undefined') {
 }
 
 
-        case 'readAloud': {
-          chrome.storage.sync.get(['voice','rate','pitch','highlight'], (res) => {
-            const voice = (typeof msg.voice === 'string' && msg.voice.length) ? msg.voice : (res.voice || '');
-            const rate = (typeof msg.rate !== 'undefined' ? msg.rate : (res.rate || 1));
-            const pitch = (typeof msg.pitch !== 'undefined' ? msg.pitch : (res.pitch || 1));
-            const highlight = (typeof msg.highlight !== 'undefined' ? !!msg.highlight : !!res.highlight);
-            const text = (typeof msg._savedText === 'string' && msg._savedText.length) ? msg._savedText : getTextToRead();
-            if (!text || !text.trim()) {
-              safeLog('readAloud: no text found to read');
-              sendResponse({ ok: false, error: 'no-text' });
+      // simplified pseudo-patch illustrating the approach
+case 'readAloud': {
+  chrome.storage.sync.get(['voice','rate','pitch','highlight'], (res) => {
+    const voice = msg.voice || res.voice || '';
+    const rate = (typeof msg.rate !== 'undefined' ? msg.rate : (res.rate || 1));
+    const pitch = (typeof msg.pitch !== 'undefined' ? msg.pitch : (res.pitch || 1));
+    const highlight = (typeof msg.highlight !== 'undefined' ? !!msg.highlight : !!res.highlight);
+
+    function attemptOnce(cb) {
+      const saved = msg._savedText || '';
+      let text = '';
+      try {
+        if (saved && saved.length) text = saved;
+        else if (typeof window.__clarity_read_extract === 'function') {
+          try { text = (window.__clarity_read_extract().text || '').trim(); } catch(e){ text = ''; }
+        }
+        if (!text) {
+          try { text = getTextToRead() || ''; } catch(e){ text = ''; }
+        }
+      } catch(e){ text = ''; }
+      cb(text);
+    }
+
+    attemptOnce((text) => {
+      if (!text || !text.trim()) {
+        // short retry for hydrated pages
+        setTimeout(() => {
+          attemptOnce((text2) => {
+            if (!text2 || !text2.trim()) {
+              // return diagnostic info (like patch above)
+              const selection = (window.getSelection && window.getSelection().toString && window.getSelection().toString()) || '';
+              sendResponse({ ok:false, error:'no-text', diag: { selectionLen: selection.length, bodyLen:(document.body && document.body.innerText||'').length, readability: !!(typeof Readability === 'function') }});
               return;
             }
-            safeLog('readAloud starting', { voice, rate, pitch, highlight, textLen: text.length });
-            const r = speakText(text, { voiceName: voice, rate, pitch, highlight });
-            sendResponse(r || { ok: true });
+            safeLog('readAloud (retry) starting', text2.length);
+            const r = speakText(text2, { voiceName: voice, rate, pitch, highlight });
+            sendResponse(r || { ok:true });
           });
-          break;
-        }
+        }, 400);
+        return;
+      }
+      safeLog('readAloud starting (first try)', text.length);
+      const r = speakText(text, { voiceName: voice, rate, pitch, highlight });
+      sendResponse(r || { ok:true });
+    });
+  });
+  break;
+}
+
 
         case 'speedRead': {
           chrome.storage.sync.get(['voice'], (res) => {
