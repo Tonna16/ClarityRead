@@ -1,5 +1,5 @@
 document.addEventListener('DOMContentLoaded', () => {
-  const DEBUG = true; // set true for development, false for production
+  const DEBUG = false; // set true for development, false for production
   const $ = id => document.getElementById(id) || null;
  
   const safeLog = (...a) => { try { if (DEBUG) console.log('[ClarityRead popup]', ...a); } catch (e) {} };
@@ -2313,6 +2313,25 @@ importSettingsInput.addEventListener('change', (ev) => {
 
   safeOn(resetStatsBtn, 'click', () => { if (!confirm('Reset all reading stats?')) return; chrome.runtime.sendMessage({ action: 'resetStats' }, () => { safeLog('resetStats requested'); loadStats(); setReadingStatus('Not Reading'); toast('Stats reset.', 'success'); }); });
 
+function normalizeForCompare(txt) {
+  return (txt || '').trim().toLowerCase().replace(/\s+/g, ' ').replace(/[^\w\s]/g, '');
+}
+
+function dedupeSavedArray(arr) {
+  const seen = new Set();
+  const out = [];
+  // iterate from newest to oldest to preserve latest-first behaviour when reversing later
+  for (let i = arr.length - 1; i >= 0; i--) {
+    const it = arr[i];
+    const n = normalizeForCompare(it && it.text ? it.text : '');
+    if (!n) continue;
+    if (!seen.has(n)) {
+      seen.add(n);
+      out.unshift(it); // preserve original order (oldest -> newest)
+    }
+  }
+  return out;
+}
 
 function renderSavedList() {
   try {
@@ -2403,6 +2422,69 @@ function renderSavedList() {
     });
   } catch (e) { safeLog('renderSavedList error', e); }
 }
+
+async function mergeHandshakeIntoSavedReads() {
+  try {
+    chrome.storage.local.get(['savedReads', 'clarity_last_selection', '_handshakeSelection'], (res) => {
+      const saved = Array.isArray(res.savedReads) ? res.savedReads.slice() : [];
+      const storedSel = res.clarity_last_selection || null;
+      const handshake = res._handshakeSelection || null;
+
+      // Prefer handshake (background context menu), otherwise content-script selection.
+      const candidate = handshake && handshake.text ? handshake : (storedSel && storedSel.text ? storedSel : null);
+      if (!candidate || !candidate.text) {
+        // nothing to merge — just render
+        try { renderSavedList(); } catch(e) { safeLog('renderSavedList failed after merge-check', e); }
+        return;
+      }
+
+      // check freshness if selection came from content script (avoid old unrelated selections)
+      const now = Date.now();
+      if (storedSel && storedSel.ts && (now - storedSel.ts) > (2 * 60 * 1000)) {
+        // older than 2 minutes -> ignore stored selection (likely stale)
+        try { chrome.storage.local.remove('clarity_last_selection', ()=>{}); } catch(e) {}
+        renderSavedList();
+        return;
+      }
+
+      // normalise and check duplicate
+      const cNorm = normalizeForCompare(candidate.text);
+      const already = saved.some(it => normalizeForCompare(it.text) === cNorm);
+
+      if (!already) {
+        const newItem = {
+          id: `${Date.now()}-${Math.floor(Math.random()*99999)}`,
+          text: candidate.text.trim(),
+          title: (candidate.title || candidate.text.slice(0,80)).trim(),
+          url: candidate.url || '',
+          ts: Date.now()
+        };
+        saved.push(newItem);
+        const deduped = dedupeSavedArray(saved);
+        // persist and remove handshake/selection keys
+        chrome.storage.local.set({ savedReads: deduped }, () => {
+          chrome.storage.local.remove(['clarity_last_selection','_handshakeSelection'], () => {
+            safeLog('merged handshake/selection into savedReads and cleared transient keys', newItem.id);
+            renderSavedList();
+          });
+        });
+      } else {
+        // already present — just clear transient keys and render
+        chrome.storage.local.remove(['clarity_last_selection','_handshakeSelection'], () => {
+          safeLog('transient selection found but already saved; cleaned transient keys');
+          renderSavedList();
+        });
+      }
+    });
+  } catch (e) {
+    safeLog('mergeHandshakeIntoSavedReads failed', e);
+    try { renderSavedList(); } catch(e) { safeLog('renderSavedList fallback failed', e); }
+  }
+}
+
+// Replace your initial call to renderSavedList() with:
+try { mergeHandshakeIntoSavedReads(); } catch(e) { safeLog('initial mergeHandshakeIntoSavedReads failed', e); renderSavedList(); }
+
 
 
 async function summarizeSavedItem(item) {

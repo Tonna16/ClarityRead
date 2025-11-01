@@ -5,7 +5,7 @@
     try { console.debug('[ClarityRead contentScript] already loaded.'); } catch(e){}
     return;
   }
-  window.__clarityread_contentScriptLoaded = true;
+  window.__clarityread_contentScriptLoaded = false;
 
   // Developer safety flags (defaults)
   // By default we do NOT allow destructive main DOM changes.
@@ -14,13 +14,12 @@
   // overlay disable flag (set per-run by speakText)
   window.__clarityread_disable_overlay = false;
   // debug logs (false by default). Flip to true in console to see logs:
-  //   window.__clarityread_debug = true
   window.__clarityread_debug = false;
 
 
   (function() {
     if (window.__clarity_reflow_installed) return;
-    window.__clarity_reflow_installed = true;
+    window.__clarity_reflow_installed = false;
 
     const REFLOW_STYLE_ID = 'clarityreflow-style';
     let _prevBodyFontSize = null;
