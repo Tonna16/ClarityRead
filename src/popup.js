@@ -1,5 +1,5 @@
 document.addEventListener('DOMContentLoaded', () => {
-  const DEBUG = true; // set true for development, false for production
+  const DEBUG = false; // set true for development, false for production
   const $ = id => document.getElementById(id) || null;
  
   const safeLog = (...a) => { try { if (DEBUG) console.log('[ClarityRead popup]', ...a); } catch (e) {} };
