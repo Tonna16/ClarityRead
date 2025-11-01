@@ -13,6 +13,10 @@
   window.__clarityread_allow_dom_mods = false;
   // overlay disable flag (set per-run by speakText)
   window.__clarityread_disable_overlay = false;
+  // debug logs (false by default). Flip to true in console to see logs:
+  //   window.__clarityread_debug = true
+  window.__clarityread_debug = false;
+
 
   (function() {
     if (window.__clarity_reflow_installed) return;
@@ -296,7 +300,12 @@ let __clarityread_nav_prevent_handler = null;
   const RATE_SCALE = 0.85; // slightly slower baseline so UI rate=1 feels natural
 
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, Number(v) || lo));
-  const safeLog = (...a) => { try { console.log('[ClarityRead contentScript]', ...a); } catch (e) {} };
+  // safeLog that respects the runtime debug flag
+  const safeLog = (...a) => { 
+    try { 
+      if (window.__clarityread_debug) console.log('[ClarityRead contentScript]', ...a); 
+    } catch (e) {} 
+  };
 
   safeLog('✅ contentScript loaded for', location.href);
 
@@ -2197,18 +2206,51 @@ case 'readAloud': {
       console.trace('[ClarityRead contentScript] readAloud handler stack');
     } catch(e){}
 
-    function attemptOnce(cb) {
-      const saved = msg._savedText || '';
+       function attemptOnce(cb) {
       let text = '';
       try {
-        if (saved && saved.length) text = saved;
-        else if (typeof window.__clarity_read_extract === 'function') {
-          try { text = (window.__clarity_read_extract().text || '').trim(); } catch(e){ text = ''; }
+        // 1) Prefer direct user selection (highest priority)
+        try {
+          const sel = (window.getSelection && window.getSelection().toString && window.getSelection().toString()) || '';
+          if (sel && sel.trim().length > 0) {
+            text = sel.trim();
+            safeLog('readAloud.attemptOnce: using direct selection length', text.length);
+            cb(text);
+            return;
+          }
+        } catch (e) { safeLog('readAloud.attemptOnce selection check failed', e); }
+
+        // 2) Saved payload (from popup if present)
+        const saved = msg._savedText || '';
+        if (saved && saved.length) {
+          text = saved;
+          safeLog('readAloud.attemptOnce: using saved text length', text.length);
+          cb(text);
+          return;
         }
+
+        // 3) Robust extractor (Readability / clone) fallback
+        if (typeof window.__clarity_read_extract === 'function') {
+          try {
+            const ex = window.__clarity_read_extract();
+            if (ex && typeof ex.text === 'string' && ex.text.trim().length) {
+              text = ex.text.trim();
+              safeLog('readAloud.attemptOnce: extractor returned length', text.length);
+            }
+          } catch (e) { safeLog('readAloud.attemptOnce extractor threw', e); }
+        }
+
+        // 4) Last-resort heuristics (contenteditable / main node)
         if (!text) {
-          try { text = getTextToRead() || ''; } catch(e){ text = ''; }
+          try {
+            text = getTextToRead() || '';
+            safeLog('readAloud.attemptOnce: getTextToRead fallback length', (text||'').length);
+          } catch (e) { safeLog('readAloud.attemptOnce getTextToRead failed', e); text = ''; }
         }
-      } catch(e){ text = ''; }
+      } catch (e) {
+        safeLog('readAloud.attemptOnce outer error', e);
+        text = '';
+      }
       cb(text);
     }
 
