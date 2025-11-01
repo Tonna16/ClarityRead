@@ -20,7 +20,7 @@ ClarityRead is privacy-first. By default, all processing (summaries, TTS via bro
 ## Usage
 - Click the ClarityRead toolbar icon to open the popup.
 - Toggle dyslexia font / reflow / high contrast/ invert colors.
-- Select text on any webpage and press **Summarize Page** to summarize either the selection or the full page.
+- Select text on any webpage and press **Summarize Page** to summarize your text selection.
 - Use the export/import buttons to back up or restore saved content and preferences.
 - Additional features are shown in the demo.
 
