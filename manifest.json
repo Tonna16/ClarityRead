@@ -44,20 +44,21 @@
   }
 ]
 ,
-  "web_accessible_resources": [
-    {
-      "resources": [
-        "src/fonts/OpenDyslexic-Regular.woff2",
-        "src/inject.css",
-        "src/lib/chart.umd.min.js",
-        "src/toast.css"
-      ],
-      "matches": [
-        "http://*/*",
-        "https://*/*"
-      ]
-    }
-  ],
+ "web_accessible_resources": [
+  {
+    "resources": [
+      "src/fonts/OpenDyslexic-Regular.woff2",
+      "src/fonts/OpenDyslexic-Regular.woff",
+      "src/inject.css",
+      "src/lib/chart.umd.min.js",
+      "src/toast.css"
+    ],
+    "matches": [
+      "http://*/*",
+      "https://*/*"
+    ]
+  }
+],
   "commands": {
     "read-aloud": {
       "suggested_key": { "default": "Alt+R" },

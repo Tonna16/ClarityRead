@@ -1,17 +1,7 @@
-@font-face {
-  font-family: 'OpenDyslexic';
-  font-style: normal;
-  font-weight: 400;
-  /* These paths must match the files exposed in web_accessible_resources in manifest.json */
-  src: local('OpenDyslexic'),
-       url('src/fonts/OpenDyslexic-Regular.woff2') format('woff2'),
-       url('src/fonts/OpenDyslexic-Regular.woff') format('woff');
-  font-display: swap;
-}
 
-/* --- Enhanced Dyslexia font (scoped via html classes) --- */
+/* Just keep the scoped dyslexic styling: */
 html.readeasy-dyslexic,
-html.readeasy-dyslexic * ,
+html.readeasy-dyslexic *,
 html.clarityread-dyslexic,
 html.clarityread-dyslexic * {
   font-family: 'OpenDyslexic', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif !important;

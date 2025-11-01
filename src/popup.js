@@ -2436,99 +2436,151 @@ async function summarizeSavedItem(item) {
 try { renderSavedList(); } catch (e) { safeLog('initial renderSavedList failed', e); }
 
 
-  safeOn(saveSelectionBtn, 'click', async () => {
-    safeLog('saveSelectionBtn clicked');
-    if (!saveSelectionBtn) return;
-    saveSelectionBtn.disabled = true;
-    try {
-      const resRaw = await sendMessageToActiveTabWithInject({ action: 'getSelection' });
-      safeLog('getSelection via helper', resRaw);
-
-      const res = normalizeBgResponse(resRaw);
-      if (res && res.ok === false) {
-        if (res.error === 'no-host-permission') {
-          toast('ClarityRead lacks permission to access this site. Open the page and allow access.', 'error', 7000);
-          saveSelectionBtn.disabled = false;
-          return;
+safeOn(saveSelectionBtn, 'click', async () => {
+  safeLog('saveSelectionBtn clicked');
+  if (!saveSelectionBtn) return;
+  saveSelectionBtn.disabled = true;
+  
+  // Helper: normalize text for duplicate detection
+  const normalize = (txt) => {
+    return (txt || '').trim()
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .replace(/[^\w\s]/g, '');
+  };
+  
+  // Helper: save with deduplication (unified)
+  const saveWithDedup = (selectionObj) => {
+    if (!selectionObj || !selectionObj.text || !selectionObj.text.trim()) {
+      toast('No selection to save.', 'info');
+      saveSelectionBtn.disabled = false;
+      return;
+    }
+    
+    chrome.storage.local.get(['savedReads'], (r) => {
+      const arr = r.savedReads || [];
+      
+      const textNorm = normalize(selectionObj.text);
+      const isDuplicate = arr.some(existing => {
+        const existingNorm = normalize(existing.text);
+        if (existingNorm === textNorm) return true;
+        if (existingNorm.length > 100 && textNorm.length > 100) {
+          if (existingNorm.slice(0, 200) === textNorm.slice(0, 200)) return true;
+        }
+        const lengthRatio = Math.min(existingNorm.length, textNorm.length) / Math.max(existingNorm.length, textNorm.length);
+        if (lengthRatio > 0.92 && existingNorm.slice(0, 150) === textNorm.slice(0, 150)) return true;
+        return false;
+      });
+      
+      if (isDuplicate) {
+        toast('This selection is already saved.', 'info', 2500);
+        saveSelectionBtn.disabled = false;
+        return;
+      }
+      
+      const item = { 
+        id: `${Date.now()}-${Math.floor(Math.random()*99999)}`,
+        text: selectionObj.text.trim(),
+        title: (selectionObj.title || selectionObj.text.slice(0,80)).trim(), 
+        url: selectionObj.url, 
+        ts: Date.now() 
+      };
+      
+      arr.push(item);
+      
+      // Final dedup pass
+      const dedupedArr = [];
+      const seen = new Set();
+      for (const it of arr.reverse()) {
+        const norm = normalize(it.text);
+        if (norm && !seen.has(norm)) {
+          seen.add(norm);
+          dedupedArr.unshift(it);
         }
       }
-
-      const selection = extractSelection(resRaw);
-      safeLog('selection from helper', selection && { textLen: selection.text && selection.text.length, title: selection.title });
-
-      if (selection && selection.text && selection.text.trim()) {
-        const item = { id: Date.now() + '-' + Math.floor(Math.random()*1000), text: selection.text, title: selection.title || selection.text.slice(0,80), url: selection.url, ts: Date.now() };
-        chrome.storage.local.get(['savedReads'], (r) => {
-          const arr = r.savedReads || [];
-          arr.push(item);
-          chrome.storage.local.set({ savedReads: arr }, () => {
-            toast('Selection saved.', 'success');
-            safeLog('selection saved', item.id);
-            renderSavedList();
-            saveSelectionBtn.disabled = false;
-          });
-        });
-        return;
-      }
-
-      // Fallback: use scripting on best web tab
-      const tab = await findBestWebTab();
-      safeLog('saveSelection fallback tab', tab && { id: tab.id, url: tab.url });
-      if (!tab || !tab.id) {
-        toast('No active page found.', 'error');
-        safeLog('saveSelection fallback: no web tab');
-        saveSelectionBtn.disabled = false;
-        return;
-      }
-
-      try {
-        chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          func: () => {
-            const s = window.getSelection();
-            const text = s ? s.toString() : '';
-            return { text: text, title: document.title || '', url: location.href || '' };
-          }
-        }, (results) => {
+      
+      chrome.storage.local.remove('clarity_last_selection', () => {
+        chrome.storage.local.set({ savedReads: dedupedArr }, () => {
+          toast('Selection saved.', 'success');
+          safeLog('selection saved (after dedup)', item.id, { totalSaved: dedupedArr.length });
+          renderSavedList();
           saveSelectionBtn.disabled = false;
-          if (chrome.runtime.lastError) {
-            safeLog('scripting.executeScript failed', chrome.runtime.lastError);
-            const msg = (chrome.runtime.lastError.message || '').toLowerCase();
-            if (msg.includes('must request permission') || msg.includes('cannot access contents of the page')) {
-              toast('Extension lacks permission to access this site. Open the page and allow access.', 'error', 7000);
-            } else {
-              toast('Failed to fetch selection (see console).', 'error');
-            }
-            return;
-          }
-          const result = results && results[0] && results[0].result;
-          if (!result || !result.text || !result.text.trim()) {
-            toast('No selection found on the page.', 'info');
-            safeLog('scripting returned no selection');
-            return;
-          }
-          const item = { id: Date.now() + '-' + Math.floor(Math.random()*1000), text: result.text, title: result.title || result.text.slice(0,80), url: result.url, ts: Date.now() };
-          chrome.storage.local.get(['savedReads'], (r) => {
-            const arr = r.savedReads || [];
-            arr.push(item);
-            chrome.storage.local.set({ savedReads: arr }, () => {
-              toast('Selection saved.', 'success');
-              safeLog('selection saved via scripting', item.id);
-              renderSavedList();
-            });
-          });
         });
-      } catch (err) {
-        safeLog('save selection scripting failed', err);
-        toast('Failed to fetch selection (see console).', 'error');
-        saveSelectionBtn.disabled = false;
-      }
-    } catch (e) {
-      safeLog('saveSelection exception', e);
-      toast('Failed to save selection (see console).', 'error');
+      });
+    });
+  };
+  
+  try {
+    // ✅ Path 1: Try helper message (preferred)
+    const resRaw = await sendMessageToActiveTabWithInject({ action: 'getSelection' });
+    safeLog('getSelection via helper', resRaw);
+
+    const res = normalizeBgResponse(resRaw);
+    if (res && res.ok === false && res.error === 'no-host-permission') {
+      toast('ClarityRead lacks permission to access this site. Open the page and allow access.', 'error', 7000);
       saveSelectionBtn.disabled = false;
+      return; // ✅ Exit completely
     }
-  });
+
+    const selection = extractSelection(resRaw);
+    safeLog('selection from helper', selection && { textLen: selection.text && selection.text.length, title: selection.title });
+
+    if (selection && selection.text && selection.text.trim()) {
+      saveWithDedup(selection);
+      return; // ✅ CRITICAL: Exit here to prevent fallback from running
+    }
+
+    // ✅ Path 2: Only runs if Path 1 didn't find a selection
+    const tab = await findBestWebTab();
+    safeLog('saveSelection fallback tab', tab && { id: tab.id, url: tab.url });
+    if (!tab || !tab.id) {
+      toast('No active page found.', 'error');
+      saveSelectionBtn.disabled = false;
+      return;
+    }
+
+    chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => {
+        const s = window.getSelection();
+        const text = s ? s.toString() : '';
+        return { text: text, title: document.title || '', url: location.href || '' };
+      }
+    }, (results) => {
+      if (chrome.runtime.lastError) {
+        safeLog('scripting.executeScript failed', chrome.runtime.lastError);
+        const msg = (chrome.runtime.lastError.message || '').toLowerCase();
+        if (msg.includes('must request permission') || msg.includes('cannot access contents of the page')) {
+          toast('Extension lacks permission to access this site.', 'error', 7000);
+        } else {
+          toast('Failed to fetch selection (see console).', 'error');
+        }
+        saveSelectionBtn.disabled = false;
+        return;
+      }
+      
+      const result = results && results[0] && results[0].result;
+      if (!result || !result.text || !result.text.trim()) {
+        toast('No selection found on the page.', 'info');
+        safeLog('scripting returned no selection');
+        saveSelectionBtn.disabled = false;
+        return;
+      }
+      
+      // Use the same unified deduplication
+      saveWithDedup({
+        text: result.text,
+        title: result.title || result.text.slice(0,80),
+        url: result.url
+      });
+    });
+    
+  } catch (e) {
+    safeLog('saveSelection exception', e);
+    toast('Failed to save selection (see console).', 'error');
+    saveSelectionBtn.disabled = false;
+  }
+});
 
   // ---------- Sharing stats image ----------
   async function generateStatsImageAndDownload() {

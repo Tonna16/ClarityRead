@@ -824,21 +824,18 @@ window.__clarity_read_extract = function() {
   }
 };
 
-  function createReaderOverlay(text) {
-  // Respect the global disable flag
-  try {
-    if (window.__clarityread_disable_overlay) {
-      safeLog('createReaderOverlay: skipped because __clarityread_disable_overlay is true');
-      return null;
-    }
-  } catch (e) { safeLog('createReaderOverlay disable-check failed', e); }
-
+function createReaderOverlay(text) {
+  // defensive: try to remove any existing overlay first
   removeReaderOverlay();
+
   const overlay = document.createElement('div');
+  try { console.trace('[ClarityRead contentScript] createReaderOverlay call stack'); } catch(e){}
+  try { console.warn('[ClarityRead contentScript] createReaderOverlay called; overlay disable flag =', !!window.__clarityread_disable_overlay); } catch(e){}
 
   overlay.id = 'readeasy-reader-overlay';
   overlay.setAttribute('role','dialog');
   overlay.setAttribute('aria-label','Reader overlay');
+
   const dys = document.documentElement.classList.contains('readeasy-dyslexic') || document.documentElement.classList.contains('clarityread-dyslexic');
   overlay.style.position = 'fixed';
   overlay.style.inset = '6%';
@@ -853,39 +850,26 @@ window.__clarity_read_extract = function() {
   overlay.style.lineHeight = '1.8';
   overlay.style.fontSize = '18px';
   overlay.style.whiteSpace = 'pre-wrap';
+  overlay.style.touchAction = 'manipulation';
+  overlay.style.willChange = 'transform, opacity';
 
+  // close button
   try {
     const close = document.createElement('button');
     close.type = 'button';
-    close.textContent = 'Close Focus Mode';
-    close.setAttribute('aria-label', 'Close focus mode');
+    close.textContent = 'Close reader';
+    close.setAttribute('aria-label', 'Close reader');
     close.style.position = 'absolute';
     close.style.right = '16px';
     close.style.top = '10px';
-    close.style.padding = '8px 16px';
-    close.style.background = '#f3f4f6';
-    close.style.border = '1px solid #d1d5db';
-    close.style.borderRadius = '6px';
-    close.style.cursor = 'pointer';
-    close.style.fontSize = '14px';
-    close.style.fontWeight = '500';
-    
     close.addEventListener('click', () => {
       try {
-        if (typeof stopReadingAll === 'function') {
-          stopReadingAll();
-        } else {
-          try { window.speechSynthesis.cancel(); } catch(e){}
-          removeReaderOverlay();
-          clearHighlights();
-          sendState('Not Reading');
-        }
+        if (typeof stopReadingAll === 'function') stopReadingAll();
+        else { try { window.speechSynthesis.cancel(); } catch(e){} removeReaderOverlay(); clearHighlights(); sendState('Not Reading'); }
       } catch (e) {
         safeLog('overlay close handler error', e);
         try { window.speechSynthesis.cancel(); } catch(e){}
-        removeReaderOverlay();
-        clearHighlights();
-        sendState('Not Reading');
+        removeReaderOverlay(); clearHighlights(); sendState('Not Reading');
       }
     });
     overlay.appendChild(close);
@@ -894,85 +878,99 @@ window.__clarity_read_extract = function() {
   const inner = document.createElement('div');
   inner.id = 'readeasy-reader-inner';
   inner.style.whiteSpace = 'pre-wrap';
-  inner.style.marginTop = '40px'; // space for close button
 
+  // build spans incrementally in batches to avoid freezing the page
   const wordRe = /(\S+)(\s*)/g;
-  let m;
   wordRe.lastIndex = 0;
   let count = 0;
-  while ((m = wordRe.exec(text)) !== null) {
-    const sp = document.createElement('span');
-    sp.textContent = (m[1] || '') + (m[2] || '');
-    sp.classList.add('readeasy-word');
-    inner.appendChild(sp);
-    count++;
-    if (count >= MAX_SPANS_BEFORE_OVERLAY) break;
-  }
 
-  if (text.length > MAX_OVERLAY_CHARS && inner.childNodes.length && inner.childNodes.length * 10 > MAX_OVERLAY_CHARS) {
-    overlayTextSplice = text.slice(0, MAX_OVERLAY_CHARS);
-    inner.innerHTML = '';
-    wordRe.lastIndex = 0;
-    count = 0;
-    while ((m = wordRe.exec(overlayTextSplice)) !== null) {
-      const sp = document.createElement('span');
-      sp.textContent = (m[1] || '') + (m[2] || '');
-      sp.classList.add('readeasy-word');
-      inner.appendChild(sp);
-      count++;
-      if (count >= MAX_SPANS_BEFORE_OVERLAY) break;
-    }
-  }
-
-  overlay.appendChild(inner);
-  try { document.documentElement.appendChild(overlay); } catch(e){ safeLog('append overlay failed', e); }
-  overlayActive = true;
-
-  // ✅ IMPROVED: Only prevent navigation WHILE ACTIVELY READING (not just when overlay is open)
-  // This allows normal browsing in Focus Mode when not reading
+  // Put inner into a fragment first
   try {
-    if (__clarityread_nav_prevent_handler) {
-      document.removeEventListener('click', __clarityread_nav_prevent_handler, true);
-      __clarityread_nav_prevent_handler = null;
-    }
-    
-    __clarityread_nav_prevent_handler = function (ev) {
+    const frag = document.createDocumentFragment();
+    frag.appendChild(inner);
+    overlay.appendChild(frag);
+  } catch(e) {
+    try { overlay.appendChild(inner); } catch(_) {}
+  }
+
+  // Attach overlay on next paint to reduce reflow risk
+  try {
+    requestAnimationFrame(() => {
+      try { document.documentElement.appendChild(overlay); }
+      catch (e) { safeLog('append overlay failed (rAF)', e); }
+    });
+  } catch(e) {
+    try { document.documentElement.appendChild(overlay); } catch (e2) { safeLog('append overlay failed', e2); }
+  }
+
+  // batching parameters
+  const BATCH_SIZE = 250;
+  let finished = false;
+  overlayActive = true;
+  overlayTextSplice = null;
+  highlightSpans = []; // will be populated after batch completes
+
+  const createBatch = () => {
+    try {
+      let i = 0, m = null;
+      while (i < BATCH_SIZE && (m = wordRe.exec(text)) !== null && count < MAX_SPANS_BEFORE_OVERLAY) {
+        const sp = document.createElement('span');
+        sp.textContent = (m[1] || '') + (m[2] || '');
+        sp.classList.add('readeasy-word');
+        inner.appendChild(sp);
+        count++; i++;
+      }
+
+      if (count >= MAX_SPANS_BEFORE_OVERLAY || (m === null)) {
+        // done building spans (or hit limit)
+        try {
+          highlightSpans = Array.from(inner.querySelectorAll('.readeasy-word'));
+          buildCumLengths();
+          safeLog('createReaderOverlay finished building spans', highlightSpans.length);
+        } catch(e){ safeLog('createReaderOverlay finalization failed', e); }
+        finished = true;
+        try { notifyOverlayState(true); } catch(e){ safeLog('notify overlay create failed', e); }
+        return;
+      }
+
+      // schedule next batch without blocking
+      setTimeout(createBatch, 0);
+    } catch (e) {
+      safeLog('createReaderOverlay batch error', e);
       try {
-        // ✅ FIX 1: Only prevent if ACTIVELY reading (not paused, not stopped)
-        const isActivelyReading = window.speechSynthesis && window.speechSynthesis.speaking && !window.speechSynthesis.paused;
-        if (!isActivelyReading) {
-          // Allow normal navigation when not reading
-          return;
-        }
+        highlightSpans = Array.from(inner.querySelectorAll('.readeasy-word'));
+        buildCumLengths();
+        notifyOverlayState(true);
+      } catch(_) {}
+      finished = true;
+    }
+  };
 
-        // ✅ FIX 2: Allow clicks INSIDE the overlay (close button, scrolling, etc.)
-        const overlayEl = document.getElementById('readeasy-reader-overlay') || document.getElementById('clarityread-overlay');
-        if (overlayEl && overlayEl.contains(ev.target)) {
-          return; // Allow overlay interactions
-        }
+  // If the text is extremely long, create a truncated splice first and build from that
+  try {
+    if (text.length > MAX_OVERLAY_CHARS) {
+      overlayTextSplice = text.slice(0, MAX_OVERLAY_CHARS);
+      wordRe.lastIndex = 0;
+      text = overlayTextSplice;
+    }
+  } catch (e) { safeLog('overlay splice check failed', e); }
 
-        // ✅ FIX 3: Only prevent anchor navigation (let other clicks work normally)
-        const a = (ev.target && ev.target.closest) ? ev.target.closest('a') : null;
-        if (a && a.href) {
-          // Prevent navigation to avoid interrupting reading
-          ev.preventDefault();
-          ev.stopPropagation();
-          safeLog('Prevented navigation during active reading:', a.href);
-          // Don't auto-open in new tab - just block it to keep user focused on reading
-        }
-      } catch (e) { safeLog('nav prevent handler error', e); }
-    };
-    
-    document.addEventListener('click', __clarityread_nav_prevent_handler, true);
-    safeLog('Installed smart nav prevent handler (only active during reading)');
-  } catch (e) { safeLog('install nav prevent handler failed', e); }
+  // start batch build
+  try { setTimeout(createBatch, 0); } catch(e) { createBatch(); }
 
-  highlightSpans = Array.from(inner.querySelectorAll('.readeasy-word'));
-  safeLog('createReaderOverlay created with', highlightSpans.length, 'spans (overlayActive)');
-  buildCumLengths();
+  // safety: remove overlay if page hides quickly (prevents leaving unexpected DOM when site navigates)
+  const onVisibility = () => {
+    try {
+      if (document.visibilityState === 'hidden') {
+        try { removeReaderOverlay(); clearHighlights(); } catch(e){}
+        window.removeEventListener('visibilitychange', onVisibility);
+      }
+    } catch(e){}
+  };
+  window.addEventListener('visibilitychange', onVisibility);
+  setTimeout(() => { try { window.removeEventListener('visibilitychange', onVisibility); } catch(e){} }, 10000);
 
-  try { notifyOverlayState(true); } catch(e){ safeLog('notify overlay create failed', e); }
-
+  safeLog('createReaderOverlay created (async batch started) spansEstimate:', Math.min(MAX_SPANS_BEFORE_OVERLAY, Math.ceil((text.length || 0) / 6)));
   return overlay;
 }
 
@@ -1060,70 +1058,64 @@ function removeReaderOverlay() {
     }
   }
 
-  function clearHighlights() {
-    if (fallbackTicker) { clearInterval(fallbackTicker); fallbackTicker = null; fallbackTickerRunning = false; }
+ function clearHighlights() {
+  // stop any fallback ticker first
+  try { if (fallbackTicker) { clearInterval(fallbackTicker); fallbackTicker = null; fallbackTickerRunning = false; } } catch(e){}
 
-    if (overlayActive) {
-      try { removeReaderOverlay(); } catch (e) { safeLog('clearHighlights remove overlay failed', e); }
-      highlightSpans = [];
-      highlightIndex = 0;
-      cumLengths = [];
-      overlayActive = false;
-      overlayTextSplice = null;
-      safeLog('clearHighlights cleared (overlay mode)');
-      return;
-    }
-
-    if (selectionRestore && selectionRestore.wrapperSelector) {
-      try {
-        const wrapper = document.querySelector(selectionRestore.wrapperSelector);
-        if (wrapper && selectionRestore.originalHtml != null) {
-          // Guard destructive DOM operations behind allow flag.
-          if (window.__clarityread_allow_dom_mods) {
-            try {
-              const container = document.createElement('div');
-              container.innerHTML = selectionRestore.originalHtml;
-              while (container.firstChild) wrapper.parentNode.insertBefore(container.firstChild, wrapper);
-              wrapper.parentNode.removeChild(wrapper);
-              safeLog('clearHighlights: restored selection region (destructive restore)');
-            } catch (e) {
-              safeLog('selection restore (destructive) failed', e);
-            }
-          } else {
-            // Non-destructive fallback: replace wrapper with its plain text content
-            try {
-              const textNode = document.createTextNode(wrapper.innerText || '');
-              if (wrapper.parentNode) wrapper.parentNode.replaceChild(textNode, wrapper);
-              safeLog('clearHighlights: performed non-destructive wrapper replace (allow_dom_mods=false)');
-            } catch (e) {
-              safeLog('selection restore non-destructive fallback failed', e);
-            }
-          }
-        }
-      } catch (e) {
-        safeLog('selection restore failed', e);
-      }
-      selectionRestore = null;
-    }
-
-    try {
-      highlightSpans.forEach(s => {
-        if (s && s.parentNode) {
-          // replace highlight span with plain text node to be safe
-          try { s.parentNode.replaceChild(document.createTextNode(s.textContent || ''), s); } catch(e){}
-        }
-      });
-    } catch(e){
-      safeLog('clearHighlights replace error', e);
-    }
-
-    safeLog('clearHighlights cleared', highlightSpans.length, 'spans');
+  // If overlay is active, remove overlay and don't touch page DOM
+  if (overlayActive) {
+    try { removeReaderOverlay(); } catch (e) { safeLog('clearHighlights remove overlay failed', e); }
     highlightSpans = [];
     highlightIndex = 0;
     cumLengths = [];
     overlayActive = false;
     overlayTextSplice = null;
+    safeLog('clearHighlights cleared (overlay mode)');
+    return;
   }
+
+  // selectionRestore path: attempt to restore only when it's valid
+  if (selectionRestore && selectionRestore.wrapperSelector) {
+    try {
+      const wrapper = document.querySelector(selectionRestore.wrapperSelector);
+      if (wrapper && selectionRestore.originalHtml != null && wrapper.parentNode) {
+        const container = document.createElement('div');
+        container.innerHTML = selectionRestore.originalHtml;
+        while (container.firstChild) wrapper.parentNode.insertBefore(container.firstChild, wrapper);
+        wrapper.parentNode.removeChild(wrapper);
+      }
+    } catch (e) {
+      safeLog('selection restore failed', e);
+    }
+    selectionRestore = null;
+  }
+
+  // Replace highlight spans with text only if they live inside document.body (defensive)
+  try {
+    if (Array.isArray(highlightSpans) && highlightSpans.length) {
+      for (let s of highlightSpans) {
+        try {
+          if (!s) continue;
+          // only touch DOM if the node is currently in the document body
+          if (s.parentNode && document.body.contains(s)) {
+            const txt = s.textContent || '';
+            try { s.parentNode.replaceChild(document.createTextNode(txt), s); } catch(e) { safeLog('clearHighlights replace failed for span', e); }
+          }
+        } catch (e) { safeLog('clearHighlights per-span error', e); }
+      }
+    }
+  } catch(e){
+    safeLog('clearHighlights replace error', e);
+  }
+
+  highlightSpans = [];
+  highlightIndex = 0;
+  cumLengths = [];
+  overlayActive = false;
+  overlayTextSplice = null;
+  safeLog('clearHighlights cleared', 'spansRemoved', (highlightSpans && highlightSpans.length) || 0);
+}
+
 
   function buildCumLengths() {
     cumLengths = [];
@@ -1369,15 +1361,33 @@ function resolveVoices(cb, opts) {
 function speakText(fullText, { voiceName, rate = 1, pitch = 1, highlight = false } = {}) {
   safeLog('speakText called len=', (fullText || '').length, { voiceName, rate, pitch, highlight });
 
+  // Ensure we do NOT have duplicate local backup functions here (use global ones).
+  // Provide helper to always clear the disable-overlay flag on terminal paths
+  function _clear_disable_overlay_flag() {
+    try { window.__clarityread_disable_overlay = false; } catch (e) { safeLog('clear disable flag failed', e); }
+  }
+
+  // Safety: temporarily disable overlay creation only for non-highlight runs
+  try {
+    window.__clarityread_disable_overlay = !highlight;
+    safeLog('speakText: __clarityread_disable_overlay set to', !!window.__clarityread_disable_overlay);
+  } catch (e) { safeLog('speakText: failed to set disable flag', e); }
+
   if (!('speechSynthesis' in window)) {
     safeLog('TTS not supported here.');
     sendState('Not Reading');
+    _clear_disable_overlay_flag();
     return { ok: false, error: 'no-tts' };
   }
 
   fullText = sanitizeForTTS(fullText || '');
-  if (!fullText) { safeLog('No text to read'); return { ok: false, error: 'no-text', url: location.href || ''}; }
+  if (!fullText) {
+    safeLog('No text to read');
+    _clear_disable_overlay_flag();
+    return { ok: false, error: 'no-text', url: location.href || ''};
+  }
 
+  // New session
   sessionId += 1;
   const mySessionId = sessionId;
   stoppedAlready = false;
@@ -1385,50 +1395,60 @@ function speakText(fullText, { voiceName, rate = 1, pitch = 1, highlight = false
   rate = clamp(rate, 0.5, 1.6);
   pitch = clamp(pitch, 0.5, 2);
 
+  // Cancel any prior speak to avoid race where stop→start toggles incorrectly
   try { window.speechSynthesis.cancel(); } catch(e){}
-  
-  if (overlayActive) removeReaderOverlay();
-  clearHighlights();
+
+  // Only clear highlights if overlay is active (we created one previously)
+  try {
+    if (overlayActive || highlight) {
+      clearHighlights();
+    } else {
+      safeLog('speakText: skipping clearHighlights (no overlayActive && highlight=false)');
+    }
+  } catch(e) { safeLog('guarded clearHighlights failed', e); }
+
   errorFallbackAttempted = false;
 
-  // ✅ NEW: Inject inline highlighting CSS when highlight=true
+  // prepare highlighting (overlay) — only when highlight === true AND overlay not already active
+  let utterText = fullText;
   if (highlight) {
     try {
-      const styleId = 'clarityread-inline-highlight-style';
-      if (!document.getElementById(styleId)) {
-        const st = document.createElement('style');
-        st.id = styleId;
-        st.textContent = `
-          .clarityread-highlight-sentence {
-            background-color: #fef08a !important;
-            border-bottom: 2px solid #eab308 !important;
-            padding: 2px 0 !important;
-            transition: all 0.2s ease !important;
-          }
-        `;
-        (document.head || document.documentElement).appendChild(st);
+      if (!overlayActive && !document.getElementById('readeasy-reader-overlay') && !document.getElementById('clarityread-overlay')) {
+        const prep = prepareSpansForHighlighting(fullText);
+        safeLog('speakText prepareSpans result', prep);
+        if (prep && prep.mode === 'overlay') {
+          utterText = prep.overlayText || overlayTextSplice || fullText.slice(0, MAX_OVERLAY_CHARS);
+        } else {
+          utterText = fullText;
+        }
+      } else {
+        safeLog('speakText: overlay already present, skipping prepareSpans');
+        utterText = fullText;
       }
-    } catch(e) { safeLog('inline highlight style injection failed', e); }
+    } catch (e) { safeLog('prepareSpans call failed', e); utterText = fullText; }
   }
 
   const CHUNK_SIZE = 1800;
   const chunks = [];
   let pos = 0;
-  while (pos < fullText.length) {
-    chunks.push(fullText.slice(pos, pos + CHUNK_SIZE));
+  while (pos < utterText.length) {
+    chunks.push(utterText.slice(pos, pos + CHUNK_SIZE));
     pos += CHUNK_SIZE;
   }
   safeLog('speakText created chunks', chunks.length, 'sessionId', mySessionId);
 
+  // Start timers / stats immediately
   readStartTs = Date.now();
   accumulatedElapsed = 0;
   pendingSecondsForSend = 0;
   lastStatsSendTs = Date.now();
   startAutoStatsTimer();
 
+  // Wait for voices then start speaking the chunks
   resolveVoices(function(voices) {
-    if (mySessionId !== sessionId) { safeLog('voice resolution aborted due session change', mySessionId, sessionId); return; }
+    if (mySessionId !== sessionId) { safeLog('voice resolution aborted due session change', mySessionId, sessionId); _clear_disable_overlay_flag(); return; }
 
+    // choose voice: prefer voiceName, then language-match, then first available
     let chosen = null;
     try {
       if (voiceName) chosen = voices.find(v => v.name === voiceName) || null;
@@ -1443,23 +1463,17 @@ function speakText(fullText, { voiceName, rate = 1, pitch = 1, highlight = false
     safeLog('speakText chosen voice', chosen && chosen.name);
 
     let chunkIndex = 0;
-    let charsRead = 0;
-    let currentHighlightEl = null;
+    let charsSpokenBefore = 0;
 
     function speakNext() {
-      if (mySessionId !== sessionId) { safeLog('speakNext aborted due session change', mySessionId, sessionId); return; }
-      if (stoppedAlready) { safeLog('speakNext aborted because stoppedAlready', mySessionId); return; }
-      
+      if (mySessionId !== sessionId) { safeLog('speakNext aborted due session change', mySessionId, sessionId); _clear_disable_overlay_flag(); return; }
+      if (stoppedAlready) { safeLog('speakNext aborted because stoppedAlready', mySessionId); _clear_disable_overlay_flag(); return; }
+
       if (chunkIndex >= chunks.length) {
-        // ✅ Cleanup highlighting
-        if (currentHighlightEl) {
-          try { currentHighlightEl.classList.remove('clarityread-highlight-sentence'); } catch(e){}
-        }
-        try {
-          const styleEl = document.getElementById('clarityread-inline-highlight-style');
-          if (styleEl) styleEl.remove();
-        } catch(e){}
-        
+        // finished all chunks — clear disable flag, remove overlay and finalize stats
+        try { _clear_disable_overlay_flag(); } catch(e){ safeLog('clear flag on finish failed', e); }
+        try { removeReaderOverlay(); } catch(e){ safeLog('remove overlay on finish failed', e); }
+        try { clearHighlights(); } catch(e){ safeLog('clear highlights on finish failed', e); }
         sendState('Not Reading');
         finalizeStatsAndSend();
         safeLog('speakText finished all chunks', 'sessionId', mySessionId);
@@ -1468,78 +1482,30 @@ function speakText(fullText, { voiceName, rate = 1, pitch = 1, highlight = false
 
       const text = chunks[chunkIndex++];
       const utter = new SpeechSynthesisUtterance(text);
+      utter._chunkBase = charsSpokenBefore;
+      charsSpokenBefore += text.length;
 
       if (chosen) {
-        try { utter.voice = chosen; } catch(e){}
+        try { utter.voice = chosen; } catch(e){} // defensive
       }
       utter.rate = clamp((Number(rate) || 1) * RATE_SCALE, 0.5, 1.6);
       utter.pitch = pitch;
       currentUtterance = utter;
 
-      utter.onstart = () => {
-        if (mySessionId !== sessionId) return;
-        sendState('Reading...');
-      };
+      // attach handlers (start/boundary/pause/resume/error)
+      attachUtterHandlers(utter, mySessionId);
 
-      // ✅ NEW: Add boundary handler for inline highlighting
-      if (highlight) {
-        utter.onboundary = (e) => {
-          if (mySessionId !== sessionId) return;
-          if (!e || e.name !== 'sentence') return;
-          
-          try {
-            // Remove previous highlight
-            if (currentHighlightEl) {
-              currentHighlightEl.classList.remove('clarityread-highlight-sentence');
-            }
-
-            // Find sentence in main content using text search
-            const main = getMainNode();
-            if (main) {
-              const sentenceStart = charsRead + e.charIndex;
-              const walker = document.createTreeWalker(main, NodeFilter.SHOW_TEXT);
-              let currentPos = 0;
-              
-              while (walker.nextNode()) {
-                const node = walker.currentNode;
-                const nodeLen = (node.textContent || '').length;
-                
-                if (currentPos + nodeLen > sentenceStart) {
-                  const parentEl = node.parentElement;
-                  if (parentEl) {
-                    parentEl.classList.add('clarityread-highlight-sentence');
-                    currentHighlightEl = parentEl;
-                    try { parentEl.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch(e){}
-                  }
-                  break;
-                }
-                currentPos += nodeLen;
-              }
-            }
-          } catch(e) { safeLog('boundary highlight failed', e); }
-        };
-      }
-
-      utter.onpause = () => {
-        if (mySessionId !== sessionId) return;
-        sendState('Paused');
-      };
-
-      utter.onresume = () => {
-        if (mySessionId !== sessionId) return;
-        sendState('Reading...');
-      };
-
+      // onend continues the chain only if still in same session
       utter.onend = () => {
-        charsRead += text.length;
         setTimeout(() => {
-          if (mySessionId !== sessionId) return;
+          if (mySessionId !== sessionId) { safeLog('onend not continuing due session mismatch', mySessionId, sessionId); return; }
           speakNext();
         }, 50);
       };
 
+      // chunk-level onerror (kept mostly as before)
       utter.onerror = (err) => {
-        if (mySessionId !== sessionId) return;
+        if (mySessionId !== sessionId) { safeLog('chunk onerror ignored due to session mismatch', mySessionId, sessionId); return; }
         let m = '';
         try { m = (err && (err.error || err.message)) ? String(err.error || err.message) : String(err); } catch(e) { m = String(err); }
         if (m && /interrupt/i.test(m)) {
@@ -1549,29 +1515,28 @@ function speakText(fullText, { voiceName, rate = 1, pitch = 1, highlight = false
         }
 
         safeLog('chunk utterance error', err);
-        
-        // Cleanup highlighting
-        if (currentHighlightEl) {
-          try { currentHighlightEl.classList.remove('clarityread-highlight-sentence'); } catch(e){}
-        }
-        
+        // terminal failure for chunked flow
+        try { _clear_disable_overlay_flag(); } catch(e){ safeLog('clear flag on chunk error failed', e); }
         sendState('Not Reading');
         finalizeStatsAndSend();
       };
 
       try { window.speechSynthesis.speak(utter); } catch (e) {
         safeLog('speak failed', e);
+        try { _clear_disable_overlay_flag(); } catch(e){}
         sendState('Not Reading');
         finalizeStatsAndSend();
       }
     }
 
+    // kick off
     sendState('Reading...');
     speakNext();
-  }, { timeout: 2000 });
+  }, { timeout: 800 });
 
   return { ok: true };
 }
+
 
 
 // ======= speakChunksSequentially(...) (unchanged except small guards) =======
@@ -1740,47 +1705,48 @@ function speakChunksSequentially(chunks, rate = 1, voiceName) {
 
   // --- Helpers to get page text or selection
   function getTextToRead() {
+  try {
+    // ✅ FIX: Call .toString() properly
+    const sel = window.getSelection();
+    const s = (sel && typeof sel.toString === 'function') ? sel.toString() : '';
+    
+    if (s && s.trim().length > 0) {
+      safeLog('getTextToRead returning selection length', s.length);
+      return s.trim();
+    }
+    
+    safeLog('getTextToRead start heuristics', {
+      selectionLen: s.length,
+      activeElementTag: (document.activeElement && document.activeElement.tagName) ? document.activeElement.tagName : null,
+      docBodyLen: (document.body && document.body.innerText) ? document.body.innerText.length : 0
+    });
+
+    // 2) Try largest contenteditable (editors) first
     try {
-      // 1) Accept any explicit non-empty selection
-      const s = (window.getSelection && window.getSelection().toString) || '';
-      if (s && s.trim().length > 0) {
-        safeLog('getTextToRead returning selection length', s.length);
-        return s.trim();
-      }
-      safeLog('getTextToRead start heuristics', {
-  selectionLen: (window.getSelection && window.getSelection().toString && window.getSelection().toString().length) || 0,
-  activeElementTag: (document.activeElement && document.activeElement.tagName) ? document.activeElement.tagName : null,
-  docBodyLen: (document.body && document.body.innerText) ? document.body.innerText.length : 0
-});
-
-
-      // 2) Try largest contenteditable (editors) first - often provides the user-typed text
-      try {
-        const editables = Array.from(document.querySelectorAll('[contenteditable="true"]')).filter(isVisible);
-        if (editables.length) {
-          // choose largest
-          editables.sort((a,b) => ((b.innerText||'').length - (a.innerText||'').length));
-          if ((editables[0].innerText || '').trim().length >= 40) {
-            const tEd = editables[0].innerText.trim();
-            safeLog('getTextToRead using contenteditable text length', tEd.length);
-            return tEd;
-          }
+      const editables = Array.from(document.querySelectorAll('[contenteditable="true"]')).filter(isVisible);
+      if (editables.length) {
+        editables.sort((a,b) => ((b.innerText||'').length - (a.innerText||'').length));
+        if ((editables[0].innerText || '').trim().length >= 40) {
+          const tEd = editables[0].innerText.trim();
+          safeLog('getTextToRead using contenteditable text length', tEd.length);
+          return tEd;
         }
-      } catch(e){ safeLog('getTextToRead contenteditable check failed', e); }
-
-      // 3) Fallback to main node extraction
-      const main = getMainNode();
-      let t = (main && main.innerText) ? main.innerText.trim() : (document.body && document.body.innerText ? document.body.innerText.trim() : '');
-
-      // If main came from an element that appears to be an embedded editor canvas (kix), prefer it only if substantial
-      if (t && t.length > 20000) {
-        safeLog('getTextToRead truncated main text to 20000 chars');
-        return t.slice(0, 20000);
       }
-      safeLog('getTextToRead main text length', (t || '').length);
-      return t ? t : '';
-    } catch (e) { safeLog('getTextToRead err', e); return ''; }
-  }
+    } catch(e){ safeLog('getTextToRead contenteditable check failed', e); }
+
+    // 3) Fallback to main node extraction
+    const main = getMainNode();
+    let t = (main && main.innerText) ? main.innerText.trim() : (document.body && document.body.innerText ? document.body.innerText.trim() : '');
+
+    if (t && t.length > 20000) {
+      safeLog('getTextToRead truncated main text to 20000 chars');
+      return t.slice(0, 20000);
+    }
+    safeLog('getTextToRead main text length', (t || '').length);
+    return t ? t : '';
+  } catch (e) { safeLog('getTextToRead err', e); return ''; }
+}
+
   function detectLanguage() {
     const lang = (document.documentElement.lang || navigator.language || 'en').toLowerCase();
     safeLog('detectLanguage', lang);
@@ -2274,18 +2240,22 @@ case 'readAloud': {
 
 
         case 'speedRead': {
-          chrome.storage.sync.get(['voice'], (res) => {
-            const chunkSize = Number(msg.chunkSize || msg.chunk || 3);
-            const r = Number(msg.rate || 1);
-            const text = (typeof msg.text === 'string' && msg.text.length) ? msg.text : ((typeof msg._savedText === 'string' && msg._savedText.length) ? msg._savedText : getTextToRead());
-            if (!text || !text.trim()) { safeLog('speedRead: no-text'); sendResponse({ ok: false, error: 'no-text' }); return; }
-            const chunks = splitIntoChunks(text, Math.max(1, Math.floor(chunkSize)));
-            safeLog('speedRead will speak chunks', chunks.length, { chunkSize, rate: r });
-            const out = speakChunksSequentially(chunks, clamp(r, 0.5, 1.6), (msg.voice || res.voice));
-            sendResponse(out || { ok: true });
-          });
-          break;
-        }
+  chrome.storage.sync.get(['voice'], (res) => {
+    const chunkSize = Number(msg.chunkSize || msg.chunk || 3);
+    const r = Number(msg.rate || 1);
+    const text = (typeof msg.text === 'string' && msg.text.length) ? msg.text : ((typeof msg._savedText === 'string' && msg._savedText.length) ? msg._savedText : getTextToRead());
+    if (!text || !text.trim()) { 
+      safeLog('speedRead: no-text'); 
+      sendResponse({ ok: false, error: 'no-text' }); 
+      return; 
+    }
+    const chunks = splitIntoChunks(text, Math.max(1, Math.floor(chunkSize)));
+    safeLog('speedRead will speak chunks', chunks.length, { chunkSize, rate: r });
+    const out = speakChunksSequentially(chunks, clamp(r, 0.5, 1.6), (msg.voice || res.voice));
+    sendResponse(out || { ok: true });
+  });
+  return true; // ✅ CRITICAL: Keep message channel open for async callback
+}
 
         case 'toggleFocusMode': {
           const res = toggleFocusMode();
