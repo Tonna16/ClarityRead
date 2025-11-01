@@ -80,7 +80,6 @@
     }
   }
 
-  // Try sending a message to a tab; if there's no receiver, try to inject the content script then retry.
   // Resolves with structured result { ok: boolean, response?, error?, detail?, permissionPattern?, cssError?, userFriendlyMessage? }
   async function sendMessageToTabWithInjection(tabId, message) {
     safeLog('sendMessageToTabWithInjection called', { tabId, action: message && message.action, hintedTarget: message && message._targetTabId });
@@ -449,7 +448,6 @@ chrome.commands.onCommand.addListener(async (command) => {
       return;
     }
 
-    // No web tab found — if the popup or extension is open, send a runtime message so extension pages (popup) can act
     safeLog('no web tab found; routing command to extension runtime', command);
 
     try {
@@ -514,7 +512,6 @@ chrome.commands.onCommand.addListener(async (command) => {
     });
   }
 
-  // small helper to persist overlay state (so popup can query if it opens after overlay was created)
   function persistOverlayStateForTab(tabId, url, overlayActive) {
     try {
       const key = `_overlay_state_${tabId}`;
@@ -538,7 +535,6 @@ chrome.commands.onCommand.addListener(async (command) => {
     });
   }
 
-  // single message handler: forwards UI actions to a sensible web tab and handles internal requests
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // Always return true so we can send async responses.
     let responded = false;
@@ -623,7 +619,6 @@ chrome.commands.onCommand.addListener(async (command) => {
           return true;
         }
 
-        // Forwarded UI actions handled by picking a tab to target and using sendMessageToTabWithInjection
         case 'readAloud':
         case 'toggleFocusMode':
         case 'stopReading':
@@ -635,9 +630,7 @@ chrome.commands.onCommand.addListener(async (command) => {
         case 'getSelection':
           case 'clarity_apply_font_size':
         case 'clarity_extract_main':
-        // (fallthrough to the general forward handler below)
 
-        // allow popup to query overlay state directly on tab (forwarded to content script)
         case 'clarity_query_overlay': {
           (async () => {
             try {
@@ -709,7 +702,6 @@ chrome.commands.onCommand.addListener(async (command) => {
                 }
               }
 
-              // 4) Last-resort: active tab in lastFocusedWindow (legacy fallback)
               const activeTabs = await new Promise((resolve) => chrome.tabs.query({ active: true, lastFocusedWindow: true }, resolve));
               if (activeTabs && activeTabs[0] && isWebUrl(activeTabs[0].url || '')) {
                 safeLog('using active tab in lastFocusedWindow fallback', { id: activeTabs[0].id, url: activeTabs[0].url });

@@ -1,4 +1,4 @@
-// All speech synthesis happens in this file only.
+// All speech synthesis happens in this file 
 
 (function () {
   if (window.__clarityread_contentScriptLoaded) {
@@ -7,13 +7,8 @@
   }
   window.__clarityread_contentScriptLoaded = false;
 
-  // Developer safety flags (defaults)
-  // By default we do NOT allow destructive main DOM changes.
-  // Set to true only when you explicitly want the extension to perform DOM rewrites.
   window.__clarityread_allow_dom_mods = false;
-  // overlay disable flag (set per-run by speakText)
   window.__clarityread_disable_overlay = false;
-  // debug logs (false by default). Flip to true in console to see logs:
   window.__clarityread_debug = false;
 
 
@@ -119,7 +114,6 @@ html.readeasy-reflow h3 {
           }
         } catch (e) { _prevBodyFontSize = null; }
 
-        // set CSS variables (include unit) — preferred approach
         document.documentElement.style.setProperty('--clarity-font-size', v + 'px');
         document.documentElement.style.setProperty('--readeasy-font-size', v + 'px');
 
@@ -264,7 +258,6 @@ html.readeasy-reflow h3 {
   })();
 
  
-// --- State
   let currentUtterance = null;
   let readTimer = null;
   let readStartTs = null;
@@ -279,7 +272,6 @@ html.readeasy-reflow h3 {
   let fallbackTickerRunning = false;
   let overlayActive = false;
   let overlayTextSplice = null;
-  // add near other state vars
 let __clarityread_nav_prevent_handler = null;
 
 
@@ -289,8 +281,20 @@ let __clarityread_nav_prevent_handler = null;
   let speedIndex = 0;
   let speedActive = false;
   let sessionId = 0; // incremental session id to guard against races
-
+  
   let lastSentState = 'Not Reading'; // 'Reading...', 'Paused', 'Not Reading'
+let __lastReadFingerprint = null;
+let __lastReadTs = 0;
+function __simpleHash(s) {
+  // small non-crypto hash for quick fingerprinting
+  let h = 0;
+  for (let i = 0; i < s.length; i++) {
+    h = ((h << 5) - h) + s.charCodeAt(i);
+    h |= 0;
+  }
+  return h;
+}
+
 
   const STATS_SEND_INTERVAL_MS = 10000;
   const MAX_OVERLAY_CHARS = 10000;
@@ -299,7 +303,6 @@ let __clarityread_nav_prevent_handler = null;
   const RATE_SCALE = 0.85; // slightly slower baseline so UI rate=1 feels natural
 
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, Number(v) || lo));
-  // safeLog that respects the runtime debug flag
   const safeLog = (...a) => { 
     try { 
       if (window.__clarityread_debug) console.log('[ClarityRead contentScript]', ...a); 
@@ -326,7 +329,6 @@ let __clarityread_nav_prevent_handler = null;
     } catch (e) { safeLog('notifyOverlayState failed', e); }
   }
 
-  // --- Defensive backup/restore for main content (single canonical copy)
   let __clarityread_backup_main = null;
   function __clarityread_backupMain() {
     try {
@@ -339,7 +341,6 @@ let __clarityread_nav_prevent_handler = null;
   }
   function __clarityread_restoreMainIfTruncated() {
     try {
-      // if body text is suspiciously small (page truncated) and we have a backup, restore it
       const bodyLen = (document.body && document.body.innerText) ? String(document.body.innerText).trim().length : 0;
       if (__clarityread_backup_main && bodyLen < 500) {
         const main = (typeof getMainNode === 'function') ? getMainNode() : (document.body || document.documentElement);
@@ -409,7 +410,6 @@ let __clarityread_nav_prevent_handler = null;
         try {
           const doc = f.contentDocument;
           if (!doc) continue; // cross-origin or not available
-          // remove if requested
           if (removeFlag) {
             const old = doc.getElementById(CLARITY_DYS_STYLE_ID);
             if (old) old.remove();
@@ -449,7 +449,6 @@ let __clarityread_nav_prevent_handler = null;
       const urlWoff2 = chrome.runtime.getURL('src/fonts/OpenDyslexic-Regular.woff2');
       const urlWoff  = chrome.runtime.getURL('src/fonts/OpenDyslexic-Regular.woff');
 
-      // Create a robust style that only applies when html.readeasy-dyslexic is present;
       // ensure inputs/contenteditable are covered and add some Google-Docs-friendly selectors.
       const style = document.createElement('style');
       style.id = CLARITY_DYS_STYLE_ID;
@@ -463,26 +462,22 @@ let __clarityread_nav_prevent_handler = null;
   font-display: swap;
 }
 
-/* Scoped application - only when toggled */
-html.readeasy-dyslexic, html.clarityread-dyslexic {
+    ]html.readeasy-dyslexic, html.clarityread-dyslexic {
   --readeasy-dys-font: 'OpenDyslexic', system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
 
-/* apply to general text flow */
 html.readeasy-dyslexic body, html.clarityread-dyslexic body,
 html.readeasy-dyslexic p, html.clarityread-dyslexic p,
 html.readeasy-dyslexic li, html.clarityread-dyslexic li {
   font-family: var(--readeasy-dys-font) !important;
 }
 
-/* Editable controls: inputs, textareas, and contenteditable elements */
 html.readeasy-dyslexic input, html.clarityread-dyslexic input,
 html.readeasy-dyslexic textarea, html.clarityread-dyslexic textarea,
 html.readeasy-dyslexic [contenteditable="true"], html.clarityread-dyslexic [contenteditable="true"] {
   font-family: var(--readeasy-dys-font) !important;
 }
 
-/* Google Docs / Kix best-effort selectors (non-destructive) */
 html.readeasy-dyslexic .kix-zoomdocumentplugin-outer,
 html.readeasy-dyslexic .kix-canvas-tile-content,
 html.readeasy-dyslexic .kix-page,
@@ -630,7 +625,6 @@ function extractCleanMainTextAndHtml(mainNode) {
   try {
     lg('extractCleanMainTextAndHtml start', { hostname: (location && location.hostname) ? location.hostname : '' });
 
-    // ✅ CRITICAL FIX: ONLY use serialized Readability (never live document - it's destructive!)
     try {
       const hasRead = (typeof Readability === 'function');
       lg('Readability available?', !!hasRead);
@@ -833,7 +827,6 @@ window.__clarity_read_extract = function() {
 };
 
 function createReaderOverlay(text) {
-  // defensive: try to remove any existing overlay first
   removeReaderOverlay();
 
   const overlay = document.createElement('div');
@@ -887,7 +880,6 @@ function createReaderOverlay(text) {
   inner.id = 'readeasy-reader-inner';
   inner.style.whiteSpace = 'pre-wrap';
 
-  // build spans incrementally in batches to avoid freezing the page
   const wordRe = /(\S+)(\s*)/g;
   wordRe.lastIndex = 0;
   let count = 0;
@@ -993,7 +985,6 @@ function removeReaderOverlay() {
       }
     }
 
-    // ✅ ALWAYS remove the nav prevent handler when overlay closes
     try {
       if (__clarityread_nav_prevent_handler) {
         document.removeEventListener('click', __clarityread_nav_prevent_handler, true);
@@ -1098,7 +1089,6 @@ function removeReaderOverlay() {
     selectionRestore = null;
   }
 
-  // Replace highlight spans with text only if they live inside document.body (defensive)
   try {
     if (Array.isArray(highlightSpans) && highlightSpans.length) {
       for (let s of highlightSpans) {
@@ -1199,7 +1189,6 @@ function removeReaderOverlay() {
     }
   }
 
-  // --- Utterance attach handlers (use sessionId to guard races)
   function attachUtterHandlers(utter, mySessionId) {
     try {
       utter.onstart = () => {
@@ -1245,7 +1234,6 @@ function removeReaderOverlay() {
     } catch (ex) { safeLog('onboundary attach failed', ex); }
 
     utter.onpause = () => {
-      // only act if still current session
       try { if (mySessionId !== sessionId) return; } catch(e){}
       sendState('Paused');
       safeLog('utter.onpause');
@@ -1283,7 +1271,6 @@ function removeReaderOverlay() {
     };
   }
 
-  // --- Stats timer helpers
   function startAutoStatsTimer() {
     if (readTimer) clearInterval(readTimer);
     pendingSecondsForSend = 0;
@@ -1340,7 +1327,6 @@ function resolveVoices(cb, opts) {
 
     try { window.speechSynthesis.addEventListener('voiceschanged', onVoicesChanged); } catch(e){}
 
-    // polling fallback in case voiceschanged doesn't fire quickly
     const pollInterval = 200;
     let polled = 0;
     const pollMax = Math.ceil(timeout / pollInterval);
@@ -1369,8 +1355,6 @@ function resolveVoices(cb, opts) {
 function speakText(fullText, { voiceName, rate = 1, pitch = 1, highlight = false } = {}) {
   safeLog('speakText called len=', (fullText || '').length, { voiceName, rate, pitch, highlight });
 
-  // Ensure we do NOT have duplicate local backup functions here (use global ones).
-  // Provide helper to always clear the disable-overlay flag on terminal paths
   function _clear_disable_overlay_flag() {
     try { window.__clarityread_disable_overlay = false; } catch (e) { safeLog('clear disable flag failed', e); }
   }
@@ -1547,7 +1531,6 @@ function speakText(fullText, { voiceName, rate = 1, pitch = 1, highlight = false
 
 
 
-// ======= speakChunksSequentially(...) (unchanged except small guards) =======
 function speakChunksSequentially(chunks, rate = 1, voiceName) {
   safeLog('speakChunksSequentially called', chunks.length, { rate, voiceName });
   if (!chunks || !chunks.length) { safeLog('no chunks'); return { ok: false, error: 'no-chunks' }; }
@@ -1651,7 +1634,6 @@ function speakChunksSequentially(chunks, rate = 1, voiceName) {
 
   function stopSpeedRead() { speedActive = false; speedChunks = null; speedIndex = 0; try { window.speechSynthesis.cancel(); } catch(e){} finalizeStatsAndSend(); sendState('Not Reading'); safeLog('stopSpeedRead called'); }
 
-  // --- Pause / resume / stop (use speechSynthesis state and sendState)
   function pauseReading() {
     try {
       if (window.speechSynthesis && window.speechSynthesis.speaking && !window.speechSynthesis.paused) {
@@ -1714,7 +1696,6 @@ function speakChunksSequentially(chunks, rate = 1, voiceName) {
   // --- Helpers to get page text or selection
   function getTextToRead() {
   try {
-    // ✅ FIX: Call .toString() properly
     const sel = window.getSelection();
     const s = (sel && typeof sel.toString === 'function') ? sel.toString() : '';
     
@@ -1729,7 +1710,6 @@ function speakChunksSequentially(chunks, rate = 1, voiceName) {
       docBodyLen: (document.body && document.body.innerText) ? document.body.innerText.length : 0
     });
 
-    // 2) Try largest contenteditable (editors) first
     try {
       const editables = Array.from(document.querySelectorAll('[contenteditable="true"]')).filter(isVisible);
       if (editables.length) {
@@ -1742,7 +1722,6 @@ function speakChunksSequentially(chunks, rate = 1, voiceName) {
       }
     } catch(e){ safeLog('getTextToRead contenteditable check failed', e); }
 
-    // 3) Fallback to main node extraction
     const main = getMainNode();
     let t = (main && main.innerText) ? main.innerText.trim() : (document.body && document.body.innerText ? document.body.innerText.trim() : '');
 
@@ -1885,10 +1864,7 @@ function removeInvertStyle() {
   stopInvertGuard();
 }
 
-/* ---------- Guard utilities ---------- 
-   These try to reapply our classes/attributes if site JS removes them immediately
-   (observes class + data-attribute changes for a short window).
-*/
+
 function startContrastGuard() {
   try {
     const el = document.documentElement;
@@ -2195,89 +2171,141 @@ case 'clarity_extract_main': {
 
       // simplified pseudo-patch illustrating the approach
 case 'readAloud': {
-  chrome.storage.sync.get(['voice','rate','pitch','highlight'], (res) => {
-    const voice = msg.voice || res.voice || '';
-    const rate = (typeof msg.rate !== 'undefined' ? msg.rate : (res.rate || 1));
-    const pitch = (typeof msg.pitch !== 'undefined' ? msg.pitch : (res.pitch || 1));
-    const highlight = (typeof msg.highlight !== 'undefined' ? !!msg.highlight : !!res.highlight);
+  // Minimal, opt-in debug logging. To enable: window.__clarity_debug = true;
+  const __DEBUG = !!(window && window.__clarity_debug);
+
+  function dbg(...args) { if (__DEBUG) try { console.log('[ClarityRead DBG]', ...args); } catch(e){} }
+  function dbgWarn(...args) { if (__DEBUG) try { console.warn('[ClarityRead DBG]', ...args); } catch(e){} }
+
+  // small non-crypto hash for quick fingerprinting (if not defined elsewhere)
+  if (typeof window.__simpleHash !== 'function') {
+    window.__simpleHash = function(s) {
+      let h = 0;
+      for (let i = 0; i < s.length; i++) {
+        h = ((h << 5) - h) + s.charCodeAt(i);
+        h |= 0;
+      }
+      return h;
+    };
+  }
+  if (typeof window.__lastReadFingerprint === 'undefined') {
+    window.__lastReadFingerprint = null;
+    window.__lastReadTs = 0;
+  }
+
+  // Helper: quick duplicate suppression (throttle quick repeated reads)
+  function checkAndRecordDuplicate(text) {
+    try {
+      const fpSource = String(text || '').slice(0, 2000);
+      const fingerprint = (typeof window.__simpleHash === 'function') ? window.__simpleHash(fpSource) : 0;
+      const now = Date.now();
+      const DUP_WINDOW_MS = 2500;
+      if (fingerprint === (window.__lastReadFingerprint || null) && (now - (window.__lastReadTs || 0)) < DUP_WINDOW_MS) {
+        dbg('duplicate suppressed', { len: fpSource.length });
+        return { duplicate: true };
+      }
+      window.__lastReadFingerprint = fingerprint;
+      window.__lastReadTs = now;
+      return { duplicate: false };
+    } catch (e) {
+      dbgWarn('duplicate check error', e);
+      return { duplicate: false };
+    }
+  }
+
+  // Read tts prefs from message (overrides) and fallback to storage.sync
+  chrome.storage.sync.get(['voice','rate','pitch','highlight'], (store) => {
+    const voice = (typeof msg.voice === 'string') ? msg.voice : (store && store.voice) ? store.voice : '';
+    const rate = (typeof msg.rate !== 'undefined' && !isNaN(Number(msg.rate))) ? Number(msg.rate) : (store && typeof store.rate !== 'undefined' ? Number(store.rate) : 1);
+    const pitch = (typeof msg.pitch !== 'undefined' && !isNaN(Number(msg.pitch))) ? Number(msg.pitch) : (store && typeof store.pitch !== 'undefined' ? Number(store.pitch) : 1);
+    const highlight = (typeof msg.highlight !== 'undefined') ? !!msg.highlight : !!(store && store.highlight);
+
+    // get text: saved > extractor > selection > body
+    (function attemptGetText(cb) {
       try {
-      console.warn('[ClarityRead contentScript] readAloud handler invoked. incoming msg:', msg);
-      console.trace('[ClarityRead contentScript] readAloud handler stack');
-    } catch(e){}
+        const saved = (typeof msg._savedText === 'string' && msg._savedText.length) ? msg._savedText : '';
+        if (saved) return cb(saved);
 
-       function attemptOnce(cb) {
-      let text = '';
-      try {
-        // 1) Prefer direct user selection (highest priority)
-        try {
-          const sel = (window.getSelection && window.getSelection().toString && window.getSelection().toString()) || '';
-          if (sel && sel.trim().length > 0) {
-            text = sel.trim();
-            safeLog('readAloud.attemptOnce: using direct selection length', text.length);
-            cb(text);
-            return;
-          }
-        } catch (e) { safeLog('readAloud.attemptOnce selection check failed', e); }
-
-        // 2) Saved payload (from popup if present)
-        const saved = msg._savedText || '';
-        if (saved && saved.length) {
-          text = saved;
-          safeLog('readAloud.attemptOnce: using saved text length', text.length);
-          cb(text);
-          return;
-        }
-
-        // 3) Robust extractor (Readability / clone) fallback
         if (typeof window.__clarity_read_extract === 'function') {
           try {
             const ex = window.__clarity_read_extract();
-            if (ex && typeof ex.text === 'string' && ex.text.trim().length) {
-              text = ex.text.trim();
-              safeLog('readAloud.attemptOnce: extractor returned length', text.length);
-            }
-          } catch (e) { safeLog('readAloud.attemptOnce extractor threw', e); }
+            if (ex && ex.text) return cb(String(ex.text || '').trim());
+          } catch (e) { dbgWarn('extractor threw', e); }
         }
 
-        // 4) Last-resort heuristics (contenteditable / main node)
-        if (!text) {
-          try {
-            text = getTextToRead() || '';
-            safeLog('readAloud.attemptOnce: getTextToRead fallback length', (text||'').length);
-          } catch (e) { safeLog('readAloud.attemptOnce getTextToRead failed', e); text = ''; }
-        }
+        const sel = (window.getSelection && window.getSelection().toString && window.getSelection().toString()) || '';
+        if (sel && sel.trim()) return cb(sel.trim());
+
+        const bodyText = (document.body && document.body.innerText) ? String(document.body.innerText || '').trim() : '';
+        if (bodyText) return cb(bodyText);
+
+        return cb('');
       } catch (e) {
-        safeLog('readAloud.attemptOnce outer error', e);
-        text = '';
+        dbgWarn('attemptGetText error', e);
+        cb('');
       }
-      cb(text);
-    }
+    })(function (text) {
+      try {
+        if (!text || !text.trim()) {
+          // retry once after short delay for dynamic pages
+          setTimeout(() => {
+            (function retryGetText(cb) {
+              const saved2 = (typeof msg._savedText === 'string' && msg._savedText.length) ? msg._savedText : '';
+              if (saved2) return cb(saved2);
+              const sel2 = (window.getSelection && window.getSelection().toString && window.getSelection().toString()) || '';
+              if (sel2 && sel2.trim()) return cb(sel2.trim());
+              const body2 = (document.body && document.body.innerText) ? String(document.body.innerText || '').trim() : '';
+              cb(body2 || '');
+            })(function (text2) {
+              try {
+                if (!text2 || !text2.trim()) {
+                  // return a small diagnostic rather than noisy logs
+                  const selection = (window.getSelection && window.getSelection().toString && window.getSelection().toString()) || '';
+                  try { sendResponse({ ok:false, error:'no-text', diag: { selectionLen: selection.length, bodyLen:(document.body && document.body.innerText||'').length, readability: !!(typeof Readability === 'function') } }); } catch(e){}
+                  return;
+                }
 
-    attemptOnce((text) => {
-      if (!text || !text.trim()) {
-        // short retry for hydrated pages
-        setTimeout(() => {
-          attemptOnce((text2) => {
-            if (!text2 || !text2.trim()) {
-              // return diagnostic info (like patch above)
-              const selection = (window.getSelection && window.getSelection().toString && window.getSelection().toString()) || '';
-              sendResponse({ ok:false, error:'no-text', diag: { selectionLen: selection.length, bodyLen:(document.body && document.body.innerText||'').length, readability: !!(typeof Readability === 'function') }});
-              return;
-            }
-            safeLog('readAloud (retry) starting', text2.length);
-            const r = speakText(text2, { voiceName: voice, rate, pitch, highlight });
-            sendResponse(r || { ok:true });
-          });
-        }, 400);
-        return;
+                const dup2 = checkAndRecordDuplicate(text2);
+                if (dup2.duplicate) {
+                  try { sendResponse({ ok:false, error:'duplicate-read' }); } catch(e){}
+                  return;
+                }
+
+                // call speakText (assumes speakText exists in this content script)
+                const r2 = speakText(text2, { voiceName: voice, rate, pitch, highlight });
+                try { sendResponse(r2 || { ok:true }); } catch(e){}
+              } catch (e) {
+                dbgWarn('retry speak error', e);
+                try { sendResponse({ ok:false, error: String(e) }); } catch(e2){}
+              }
+            });
+          }, 400);
+          return;
+        }
+
+        // duplicate suppression for immediate reads
+        const dup = checkAndRecordDuplicate(text);
+        if (dup.duplicate) {
+          try { sendResponse({ ok:false, error:'duplicate-read' }); } catch(e){}
+          return;
+        }
+
+        // invoke TTS with resolved prefs
+        const r = speakText(text, { voiceName: voice, rate, pitch, highlight });
+        try { sendResponse(r || { ok:true }); } catch(e){}
+      } catch (e) {
+        dbgWarn('speak error', e);
+        try { sendResponse({ ok:false, error: String(e) }); } catch(e2){}
       }
-      safeLog('readAloud starting (first try)', text.length);
-      const r = speakText(text, { voiceName: voice, rate, pitch, highlight });
-      sendResponse(r || { ok:true });
     });
   });
-  break;
+
+  // we will call sendResponse asynchronously
+  return true;
 }
+
+
+
 
 
         case 'speedRead': {

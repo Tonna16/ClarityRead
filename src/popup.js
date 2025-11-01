@@ -201,7 +201,6 @@ function setToStorage(obj) {
     } catch (e) { if (DEBUG) console.warn('Toasts.clearAll error', e); }
   }
 
-  // progress helper (returns id). Caller must call clear(id).
   function showProgress(msg = 'Working...', timeoutMs = 60000) {
     return show(msg, 'info', timeoutMs);
   }
@@ -209,7 +208,6 @@ function setToStorage(obj) {
   return { show, clear, clearAll, showProgress };
 })();
 
-// Back-compat shim so existing code `toast(msg,type,ttl)` keeps working
 function toast(msg, type = 'info', ttl = 3500) {
   // If ttl === 0, create a non-autoclearing toast and return its id
   if (ttl === 0) return Toasts.show(msg, type, ttl);
@@ -239,14 +237,12 @@ function clearToastsLocal() { Toasts.clearAll(); }
     safeLog('ensureChartReady injected script', src);
   }
 
-  // ---------- Quick element presence check ----------
   const requiredIds = ['dyslexicToggle','reflowToggle','contrastToggle','invertToggle','readBtn','pauseBtn','stopBtn','pagesRead','timeRead','avgSession','statsChart','voiceSelect'];
   const elPresence = requiredIds.reduce((acc, id) => (acc[id]=!!document.getElementById(id), acc), {});
   safeLog('Popup element presence:', elPresence);
 
   ensureChartReady(() => { try { if (typeof loadStats === 'function') loadStats(); } catch (e) { safeLog('ensureChartReady callback loadStats threw', e); } });
 
-  // ---------- Elements ----------
   const dysToggle = $('dyslexicToggle');
   const reflowToggle = $('reflowToggle');
   const contrastToggle = $('contrastToggle');
@@ -285,11 +281,6 @@ function clearToastsLocal() { Toasts.clearAll(); }
   const openSavedManagerBtn = $('openSavedManagerBtn');
   const savedListEl = $('savedList');
   const shareStatsBtn = $('shareStatsBtn');
-// CONFIG
-
-// ---------------- Toast cleanup helper ---------------
-// keep focusModeBtn in sync with overlay state messages from content script
-// ---------- runtime -> popup sync (overlay + reading state) ----------
 
 
 chrome.runtime.onMessage.addListener((msg) => {
@@ -313,11 +304,6 @@ chrome.runtime.onMessage.addListener((msg) => {
 });
 
 
- 
-// Call this on slider input/change
-// Improved: apply font size -> will attempt injection, and if permission is missing will request it then retry
-// Replace existing applyFontSizeToActiveTab with this
-// Apply font size, with improved handling for 'in-flight' / permission flows and UI disable while pending.
 async function applyFontSizeToActiveTab(sizePx) {
   try {
     const sizeNum = Number(sizePx) || DEFAULTS.fontSize || 16;
@@ -366,7 +352,6 @@ async function applyFontSizeToActiveTab(sizePx) {
           break;
         }
 
-        // Permission granted: loop continues and we retry immediately
         attempt = 0; // reset retry counter after permission
         continue;
       }
@@ -403,9 +388,7 @@ async function applyFontSizeToActiveTab(sizePx) {
 }
 
 
-// Ask page whether overlay exists (content script should respond to 'clarity_query_overlay' with { ok:true, overlayActive: bool })
 
-// In popup: add debounce helper near top-level code
 function debounce(fn, wait) {
   let t = null;
   return function (...args) {
@@ -485,7 +468,6 @@ try {
 } catch (e) { safeLog('creating summarizePageBtn failed', e); }
 
 
-  // hide redundant "Manage" saved button to reduce UI clutter (you can remove it from HTML later)
   if (openSavedManagerBtn) {
     try { openSavedManagerBtn.style.display = 'none'; safeLog('hidden openSavedManagerBtn (Manage)'); } catch(e) {}
   }
@@ -642,8 +624,6 @@ function normalizeSelectionResponse(raw) {
 
 
 
-// robust send helper - popup -> background forward wrapper
-// improved: wait a short while if opLock already in use (avoids spamming 'in-flight' failures)
 async function sendMessageToActiveTabWithInject(message, _retry = 0) {
   // If opLock is active, wait briefly for it to clear (helps slider & concurrent quick UI events)
   const WAIT_MS = 1600; // total wait before giving up
@@ -718,14 +698,12 @@ async function sendMessageToActiveTabWithInject(message, _retry = 0) {
       });
     });
   } finally {
-    // ensure lock cleared as a last-resort guard
     opLock = false;
   }
 }
 
 
 
-  // ---------- Stats / chart ----------
   function build7DaySeries(daily = []) {
     const labels = lastNDates(7);
     const map = Object.fromEntries((daily || []).map(d => [d.date, d.pages || 0]));
@@ -783,7 +761,6 @@ async function sendMessageToActiveTabWithInject(message, _retry = 0) {
     });
   }
 
-  // ---------- Voices ----------
   function loadVoicesIntoSelect() {
     if (!voiceSelect) { safeLog('voiceSelect missing'); return; }
     const voices = speechSynthesis.getVoices() || [];
@@ -845,7 +822,6 @@ async function sendMessageToActiveTabWithInject(message, _retry = 0) {
     });
   }
   
-  // ---------- Theme handling (single, persistent) ----------
   function applyThemeFromStorage() {
     chrome.storage.local.get(['darkTheme'], (res) => {
       const isDark = !!(res && res.darkTheme);
@@ -873,7 +849,6 @@ async function sendMessageToActiveTabWithInject(message, _retry = 0) {
     chrome.storage.local.set({ darkTheme: isDark }, () => { toast(isDark ? 'Dark theme on' : 'Dark theme off', 'info'); });
   });
 
-  // ---------- Per-site UI init ----------
   function initPerSiteUI() {
     safeLog('initPerSiteUI start');
     chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
@@ -984,9 +959,6 @@ async function sendMessageToActiveTabWithInject(message, _retry = 0) {
     return obj;
   }
 
-  // send settings (single applySettings message)
-  // Default behavior: do not show toast to avoid spamming during slider changes.
-  // Optionally pass { showToast: true } to show a success toast.
   function sendSettingsAndToggles(settings, options = { showToast: false }) {
     safeLog('sendSettingsAndToggles', settings, options);
     return sendMessageToActiveTabWithInject({ action: 'applySettings', ...settings })
@@ -1002,8 +974,6 @@ async function sendMessageToActiveTabWithInject(message, _retry = 0) {
         // after successful applySettings response, also ensure overlay font updates immediately in case overlay is open
 try {
   if (res && res.ok) {
-    // best-effort message to page to update overlay font-family/size instantly
-    // (content script will also respond to applySettings but this ensures overlay update even on edge cases)
     sendMessageToActiveTabWithInject({ action: 'applySettings', dys: settings.dys, fontSize: settings.fontSize }).catch(() => {});
   }
 } catch (e) { safeLog('overlay font immediate update failed', e); }
@@ -1013,7 +983,6 @@ try {
       .catch(err => { safeLog('applySettings err', err); if (options.showToast) toast('Failed to apply settings (see console).', 'error'); return { ok:false, error: String(err) }; });
   }
 
-  // gather settings and save to sync/local; by default do not show toast (to avoid slider spam)
   function gatherAndSendSettings(options = { showToast: false }) {
     const settings = gatherSettingsObject();
     chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
@@ -1046,7 +1015,6 @@ try {
     else { isReading = false; isPaused = false; if (pauseBtn) pauseBtn.textContent = 'Pause'; if (readBtn) readBtn.disabled = false; }
   }
 
-  // ---------- Events hookup ----------
   safeOn(dysToggle, 'change', () => gatherAndSendSettings({ showToast: false }));
   safeOn(reflowToggle, 'change', () => { if (sizeOptions) sizeOptions.hidden = !reflowToggle.checked; gatherAndSendSettings({ showToast: false }); });
   safeOn(contrastToggle, 'change', () => { if (contrastToggle?.checked && invertToggle) invertToggle.checked = false; gatherAndSendSettings({ showToast: false }); });
@@ -1219,16 +1187,11 @@ try {
       safeLog('focusModeBtn UI updated', focusModeBtn.textContent);
     }
   });
-// ------------------ Local-only summarizer integration (replace server / AI paths) ------------------
-// Drop-in replacement: removes all remote calls and uses an in-extension summarizer.
-// It will try to load an optional idf.json from the extension public folder to improve scoring.
 
 
 
-// IDF map (optional)
 let IDF_MAP = Object.create(null);
 
-// Try to load idf.json shipped with the extension (non-blocking)
 (async function loadIdfFromExtension() {
   try {
     // runtime.getURL will resolve extension relative path
@@ -1298,15 +1261,7 @@ function sentenceSimilarityLocal(a, b) {
   return inter / uni;
 }
 
-// MMR selection helper (diverse + relevant)
-// ---------- Improved summarizer and helpers (drop-in replace) ----------
 
-/** Helper: decide number of sentences based on content length + user preference.
- *  userPref: 'concise'|'normal'|'detailed' (default 'normal')
- */
-/** Helper: decide number of sentences based on content length + user preference.
- *  userPref: 'concise'|'normal'|'detailed' (default 'normal')
- */
 function getAdaptiveMaxSentences(text, userPref = 'normal') {
   const words = (text || '').trim().split(/\s+/).filter(Boolean).length;
   // baseline: roughly 1 sentence per 90-240 words depending on preference
@@ -1320,9 +1275,7 @@ function getAdaptiveMaxSentences(text, userPref = 'normal') {
   return Math.min(cap, Math.max(1, est));
 }
 
-/** Small content cleaner to drop nav/TOC junk, scripts, styles, and obvious boilerplate.
- *  Called early to improve scoring.
- */
+
 function scrubInputForSummarizer(raw) {
   if (!raw || typeof raw !== 'string') return '';
   let t = raw;
@@ -2314,7 +2267,6 @@ importSettingsInput.addEventListener('change', (ev) => {
 
   safeOn(resetStatsBtn, 'click', () => { if (!confirm('Reset all reading stats?')) return; chrome.runtime.sendMessage({ action: 'resetStats' }, () => { safeLog('resetStats requested'); loadStats(); setReadingStatus('Not Reading'); toast('Stats reset.', 'success'); }); });
 
-// ---- Utilities: normalization + dedupe ----
 function normalizeForCompare(txt) {
   // Unicode-aware normalization: remove diacritics, punctuation, collapse whitespace, lowercase
   try {
@@ -2350,7 +2302,7 @@ function dedupeSavedArray(arr) {
   return Array.from(map.values()).sort((a, b) => (Number(a.ts || 0) - Number(b.ts || 0)));
 }
 
-// ---- Render saved list (reads savedReads from storage, expects oldest->newest in storage) ----
+// Copy-paste ready: replace your current renderSavedList() with this
 function renderSavedList() {
   try {
     const container = document.getElementById('savedList');
@@ -2360,99 +2312,194 @@ function renderSavedList() {
     chrome.storage.local.get(['savedReads'], (res) => {
       try {
         let arr = Array.isArray(res.savedReads) ? res.savedReads.slice() : [];
-        if (!arr.length) {
-          container.innerHTML = '<div class="saved-empty">No saved selections</div>';
-          return;
-        }
 
-        // Ensure UI shows newest-first (reverse storage oldest->newest)
-        const list = arr.slice().reverse();
-
-        for (const it of list) {
-          const row = document.createElement('div');
-          row.className = 'saved-item';
-          row.style.borderBottom = '1px solid rgba(0,0,0,0.06)';
-          row.style.padding = '8px';
-          row.style.display = 'flex';
-          row.style.justifyContent = 'space-between';
-          row.style.alignItems = 'flex-start';
-
-          const left = document.createElement('div');
-          left.style.flex = '1';
-          const title = document.createElement('div');
-          title.textContent = it.title || (it.text || '').slice(0, 80);
-          title.style.fontWeight = '600';
-          const preview = document.createElement('div');
-          preview.textContent = (it.text || '').slice(0, 220);
-          preview.style.fontSize = '12px';
-          preview.style.marginTop = '6px';
-          left.appendChild(title);
-          left.appendChild(preview);
-
-          const actions = document.createElement('div');
-          actions.style.display = 'flex';
-          actions.style.flexDirection = 'column';
-          actions.style.gap = '6px';
-
-          const sumBtn = document.createElement('button');
-          sumBtn.textContent = 'Summarize';
-          sumBtn.className = 'btn btn-secondary';
-          sumBtn.addEventListener('click', async () => {
-            sumBtn.disabled = true;
-            try {
-              const pref = await readSummaryPref();
-              const adaptiveMax = computeAdaptiveMax(it.text || '', pref);
-              createProgressToast('Generating summary — please wait...', 60000);
-              let out = '(no summary)';
-              try { out = summarizeTextLocal(it.text || '', adaptiveMax, pref) || out; } finally { clearProgressToast(); }
-              createSummaryModal(`Saved Summary — ${((out||'').split(/(?<=[.?!])\s+/).filter(Boolean)||[]).length} sentences`, out);
-            } catch (e) { safeLog('saved item summarize failed', e); toast('Failed to summarize', 'error'); }
-            sumBtn.disabled = false;
+        // final dedupe at render time (defensive) - keep newest per normalized key
+        const cleaned = dedupeSavedArray(arr);
+        // If cleaned differs from stored, persist cleaned to avoid duplicates after reload
+        if (JSON.stringify(cleaned) !== JSON.stringify(arr)) {
+          chrome.storage.local.set({ savedReads: cleaned }, () => {
+            safeLog('renderSavedList: cleaned savedReads persisted', { before: arr.length, after: cleaned.length });
+            arr = cleaned.slice();
+            _renderListFromArray(arr);
           });
-
-          const playBtn = document.createElement('button');
-          playBtn.textContent = 'Read';
-          playBtn.className = 'btn btn-secondary';
-          playBtn.addEventListener('click', () => {
-            try {
-              chrome.runtime.sendMessage({ action: 'readAloud', _savedText: it.text }, (resp) => {
-                if (chrome.runtime.lastError) safeLog('readAloud message lastError', chrome.runtime.lastError);
-              });
-            } catch (e) { safeLog('play saved read failed', e); }
-          });
-
-          const delBtn = document.createElement('button');
-          delBtn.textContent = 'Delete';
-          delBtn.className = 'btn btn-link';
-          delBtn.addEventListener('click', () => {
-            chrome.storage.local.get(['savedReads'], (r) => {
-              try {
-                let arr2 = Array.isArray(r.savedReads) ? r.savedReads.slice() : [];
-                arr2 = arr2.filter(x => x.id !== it.id);
-                chrome.storage.local.set({ savedReads: arr2 }, () => { toast('Saved item deleted', 'info'); renderSavedList(); });
-              } catch (err) {
-                safeLog('delete saved item failed', err);
-              }
-            });
-          });
-
-          actions.appendChild(sumBtn);
-          actions.appendChild(playBtn);
-          actions.appendChild(delBtn);
-
-          row.appendChild(left);
-          row.appendChild(actions);
-          container.appendChild(row);
+        } else {
+          _renderListFromArray(arr);
         }
       } catch (e) {
         safeLog('renderSavedList inner render error', e);
         container.innerHTML = '<div class="saved-empty">No saved selections</div>';
       }
     });
-  } catch (e) { safeLog('renderSavedList error', e); }
+  } catch (e) {
+    safeLog('renderSavedList error', e);
+  }
+
+  // local helper to actually build DOM from an array (oldest -> newest expected in storage)
+  function _renderListFromArray(storageArr) {
+    try {
+      const list = (Array.isArray(storageArr) ? storageArr.slice().reverse() : []); // show newest first
+      const container = document.getElementById('savedList');
+      if (!container) return;
+      container.innerHTML = '';
+
+      if (!list.length) {
+        container.innerHTML = '<div class="saved-empty">No saved selections</div>';
+        return;
+      }
+
+      for (const it of list) {
+        const row = document.createElement('div');
+        row.className = 'saved-item';
+        row.style.borderBottom = '1px solid rgba(0,0,0,0.06)';
+        row.style.padding = '8px';
+        row.style.display = 'flex';
+        row.style.justifyContent = 'space-between';
+        row.style.alignItems = 'flex-start';
+
+        const left = document.createElement('div');
+        left.style.flex = '1';
+        const title = document.createElement('div');
+        title.textContent = it.title || (it.text || '').slice(0, 80);
+        title.style.fontWeight = '600';
+        const preview = document.createElement('div');
+        preview.textContent = (it.text || '').slice(0, 220);
+        preview.style.fontSize = '12px';
+        preview.style.marginTop = '6px';
+        left.appendChild(title);
+        left.appendChild(preview);
+
+        const actions = document.createElement('div');
+        actions.style.display = 'flex';
+        actions.style.flexDirection = 'column';
+        actions.style.gap = '6px';
+
+        // Summarize button - unchanged
+        const sumBtn = document.createElement('button');
+        sumBtn.textContent = 'Summarize';
+        sumBtn.className = 'btn btn-secondary';
+        sumBtn.addEventListener('click', async () => {
+          sumBtn.disabled = true;
+          try {
+            const pref = await readSummaryPref();
+            const adaptiveMax = computeAdaptiveMax(it.text || '', pref);
+            createProgressToast('Generating summary — please wait...', 60000);
+            let out = '(no summary)';
+            try { out = summarizeTextLocal(it.text || '', adaptiveMax, pref) || out; } finally { clearProgressToast(); }
+            createSummaryModal(`Saved Summary — ${((out||'').split(/(?<=[.?!])\s+/).filter(Boolean)||[]).length} sentences`, out);
+          } catch (e) { safeLog('saved item summarize failed', e); toast('Failed to summarize', 'error'); }
+          sumBtn.disabled = false;
+        });
+
+      // Read button: include live TTS prefs so saved reads use same settings as article reads
+const playBtn = document.createElement('button');
+playBtn.textContent = 'Read';
+playBtn.className = 'btn btn-secondary';
+playBtn.addEventListener('click', async () => {
+  playBtn.disabled = true;
+  try {
+    // Gather UI values if present (the popup may expose these controls)
+    const uiVoice = (typeof voiceSelect !== 'undefined' && voiceSelect && voiceSelect.value) ? voiceSelect.value : null;
+    const uiRate  = (typeof rateInput  !== 'undefined' && rateInput  && rateInput.value)  ? Number(rateInput.value)  : null;
+    const uiPitch = (typeof pitchInput !== 'undefined' && pitchInput && pitchInput.value) ? Number(pitchInput.value) : null;
+    const uiHighlight = (typeof highlightCheckbox !== 'undefined' && highlightCheckbox && typeof highlightCheckbox.checked !== 'undefined')
+      ? !!highlightCheckbox.checked
+      : null;
+
+    // If any UI value missing, load stored defaults from sync
+    let store = {};
+    if (uiVoice === null || uiRate === null || uiPitch === null || uiHighlight === null) {
+      store = await new Promise(resolve => chrome.storage.sync.get(['voice','rate','pitch','highlight'], resolve)) || {};
+    }
+
+    const voice = uiVoice !== null ? uiVoice : (store.voice || '');
+    const rate  = (uiRate !== null && !isNaN(uiRate)) ? uiRate : (typeof store.rate !== 'undefined' ? Number(store.rate) : 1);
+    const pitch = (uiPitch !== null && !isNaN(uiPitch)) ? uiPitch : (typeof store.pitch !== 'undefined' ? Number(store.pitch) : 1);
+    const highlight = uiHighlight !== null ? !!uiHighlight : (!!store.highlight);
+
+    // If the popup has a "speed read" toggle and it's enabled, send speedRead
+    if (typeof speedToggle !== 'undefined' && speedToggle && speedToggle.checked) {
+      // chunk size and speed rate fallbacks
+      const chunkSize = Number((typeof chunkSizeInput !== 'undefined' && chunkSizeInput && chunkSizeInput.value) ? chunkSizeInput.value : 3);
+      const speedRate = Number((typeof speedRateInput !== 'undefined' && speedRateInput && speedRateInput.value) ? speedRateInput.value : rate);
+
+      // send speedRead via runtime (background will forward to a tab)
+      await new Promise((resolve) => {
+        chrome.runtime.sendMessage({
+          action: 'speedRead',
+          text: it.text || '',
+          chunkSize,
+          rate: speedRate,
+          voice,
+          _source: 'savedRead'
+        }, (resp) => {
+          if (chrome.runtime.lastError) safeLog('speedRead sendMessage lastError', chrome.runtime.lastError);
+          resolve(resp);
+        });
+      });
+
+      toast('Started speed-read of saved item.', 'success');
+      playBtn.disabled = false;
+      return;
+    }
+
+    // Normal read path: send full tts prefs so content script uses the same settings
+    await new Promise((resolve) => {
+      chrome.runtime.sendMessage({
+        action: 'readAloud',
+        _savedText: it.text || '',
+        voice,
+        rate,
+        pitch,
+        highlight,
+        _source: 'savedRead'
+      }, (resp) => {
+        if (chrome.runtime.lastError) safeLog('readAloud (saved) sendMessage lastError', chrome.runtime.lastError);
+        resolve(resp);
+      });
+    });
+
+    toast('Started reading saved item.', 'success');
+  } catch (e) {
+    safeLog('play saved read failed', e);
+    toast('Failed to start saved read.', 'error');
+  } finally {
+    playBtn.disabled = false;
+  }
+});
+
+
+        // Delete button
+        const delBtn = document.createElement('button');
+        delBtn.textContent = 'Delete';
+        delBtn.className = 'btn btn-link';
+        delBtn.addEventListener('click', () => {
+          chrome.storage.local.get(['savedReads'], (r) => {
+            try {
+              let arr2 = Array.isArray(r.savedReads) ? r.savedReads.slice() : [];
+              arr2 = arr2.filter(x => x.id !== it.id);
+              chrome.storage.local.set({ savedReads: arr2 }, () => { toast('Saved item deleted', 'info'); renderSavedList(); });
+            } catch (err) {
+              safeLog('delete saved item failed', err);
+            }
+          });
+        });
+
+        actions.appendChild(sumBtn);
+        actions.appendChild(playBtn);
+        actions.appendChild(delBtn);
+
+        row.appendChild(left);
+        row.appendChild(actions);
+        container.appendChild(row);
+      }
+    } catch (e) {
+      safeLog('renderSavedList DOM build error', e);
+      container.innerHTML = '<div class="saved-empty">No saved selections</div>';
+    }
+  }
 }
 
-// ---- idempotent merge that records merged candidate hashes ----
+
 function mergeHandshakeIntoSavedReads() {
   try {
     chrome.storage.local.get(['savedReads', 'clarity_last_selection', '_handshakeSelection', MERGED_HANDSHAKES_KEY], (res) => {
@@ -2494,7 +2541,6 @@ function mergeHandshakeIntoSavedReads() {
         return;
       }
 
-      // Freshness check: ignore very old transient selections (defensive)
       const now = Date.now();
       if (candidate.ts && (now - candidate.ts) > (5 * 60 * 1000)) {
         safeLog('mergeHandshakeIntoSavedReads: candidate stale, ignoring', { ageMs: now - candidate.ts });
@@ -2502,7 +2548,6 @@ function mergeHandshakeIntoSavedReads() {
         return;
       }
 
-      // Check normalized duplicates against existing saved reads
       const already = saved.some(it => normalizeForCompare(it.text) === candKey);
       if (already) {
         safeLog('mergeHandshakeIntoSavedReads: candidate duplicate of existing saved read, skipping persist.');
@@ -2525,7 +2570,6 @@ function mergeHandshakeIntoSavedReads() {
 
       saved.push(newItem);
 
-      // Final dedupe pass (keeps newest for each normalized key)
       const deduped = dedupeSavedArray(saved);
 
       // Persist both savedReads and the merged-hashes registry in one go
@@ -2544,7 +2588,6 @@ function mergeHandshakeIntoSavedReads() {
   }
 }
 
-// ---- Initialization: call merge once (do NOT call renderSavedList() separately at startup) ----
 try {
   mergeHandshakeIntoSavedReads();
 } catch (e) {
@@ -2730,7 +2773,6 @@ safeOn(saveSelectionBtn, 'click', async () => {
   }
 });
 
-  // ---------- Sharing stats image ----------
   async function generateStatsImageAndDownload() {
     safeLog('generateStatsImageAndDownload start');
     try {
@@ -2815,7 +2857,6 @@ safeOn(saveSelectionBtn, 'click', async () => {
     } catch (err) { /* silent */ }
   });
 
-  // ---------- Init ----------
   safeLog('popup init: loadStats, initPerSiteUI, renderSavedList');
   loadStats();
   initPerSiteUI();
