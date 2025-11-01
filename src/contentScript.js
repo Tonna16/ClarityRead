@@ -2171,20 +2171,16 @@ case 'clarity_extract_main': {
 
       // simplified pseudo-patch illustrating the approach
 case 'readAloud': {
-  // Minimal, opt-in debug logging. To enable: window.__clarity_debug = true;
+  // Opt-in debug: enable on a page with window.__clarity_debug = true
   const __DEBUG = !!(window && window.__clarity_debug);
+  const dbg = (...args) => { if (__DEBUG) try { console.log('[ClarityRead DBG]', ...args); } catch(e){} };
+  const dbgWarn = (...args) => { if (__DEBUG) try { console.warn('[ClarityRead DBG]', ...args); } catch(e){} };
 
-  function dbg(...args) { if (__DEBUG) try { console.log('[ClarityRead DBG]', ...args); } catch(e){} }
-  function dbgWarn(...args) { if (__DEBUG) try { console.warn('[ClarityRead DBG]', ...args); } catch(e){} }
-
-  // small non-crypto hash for quick fingerprinting (if not defined elsewhere)
+  // small non-crypto hash / duplicate suppression (keeps light footprint)
   if (typeof window.__simpleHash !== 'function') {
-    window.__simpleHash = function(s) {
+    window.__simpleHash = function (s) {
       let h = 0;
-      for (let i = 0; i < s.length; i++) {
-        h = ((h << 5) - h) + s.charCodeAt(i);
-        h |= 0;
-      }
+      for (let i = 0; i < s.length; i++) { h = ((h << 5) - h) + s.charCodeAt(i); h |= 0; }
       return h;
     };
   }
@@ -2193,7 +2189,6 @@ case 'readAloud': {
     window.__lastReadTs = 0;
   }
 
-  // Helper: quick duplicate suppression (throttle quick repeated reads)
   function checkAndRecordDuplicate(text) {
     try {
       const fpSource = String(text || '').slice(0, 2000);
@@ -2213,86 +2208,114 @@ case 'readAloud': {
     }
   }
 
-  // Read tts prefs from message (overrides) and fallback to storage.sync
+  // attempt to retrieve a "last stored selection" from storage (fallback if live selection lost)
+  function getStoredSelection(cb) {
+    try {
+      chrome.storage.local.get(['clarity_last_selection'], (res) => {
+        try {
+          const s = res && res.clarity_last_selection && res.clarity_last_selection.text ? String(res.clarity_last_selection.text).trim() : '';
+          cb(s || '');
+        } catch (e) { cb(''); }
+      });
+    } catch (e) { cb(''); }
+  }
+
+  // Read TTS prefs override from incoming message, falling back to storage.sync
   chrome.storage.sync.get(['voice','rate','pitch','highlight'], (store) => {
     const voice = (typeof msg.voice === 'string') ? msg.voice : (store && store.voice) ? store.voice : '';
     const rate = (typeof msg.rate !== 'undefined' && !isNaN(Number(msg.rate))) ? Number(msg.rate) : (store && typeof store.rate !== 'undefined' ? Number(store.rate) : 1);
     const pitch = (typeof msg.pitch !== 'undefined' && !isNaN(Number(msg.pitch))) ? Number(msg.pitch) : (store && typeof store.pitch !== 'undefined' ? Number(store.pitch) : 1);
     const highlight = (typeof msg.highlight !== 'undefined') ? !!msg.highlight : !!(store && store.highlight);
 
-    // get text: saved > extractor > selection > body
+    // Get text to read in this order:
+    // 1) explicit _savedText passed by popup
+    // 2) extractor helper (__clarity_read_extract)
+    // 3) current window.getSelection()
+    // 4) stored recent selection in chrome.storage.local.clarity_last_selection (helps when popup opened)
+    // 5) document.body innerText
     (function attemptGetText(cb) {
       try {
         const saved = (typeof msg._savedText === 'string' && msg._savedText.length) ? msg._savedText : '';
-        if (saved) return cb(saved);
+        if (saved) { return cb(saved); }
 
         if (typeof window.__clarity_read_extract === 'function') {
           try {
             const ex = window.__clarity_read_extract();
-            if (ex && ex.text) return cb(String(ex.text || '').trim());
+            if (ex && ex.text && String(ex.text || '').trim()) return cb(String(ex.text || '').trim());
           } catch (e) { dbgWarn('extractor threw', e); }
         }
 
         const sel = (window.getSelection && window.getSelection().toString && window.getSelection().toString()) || '';
         if (sel && sel.trim()) return cb(sel.trim());
 
-        const bodyText = (document.body && document.body.innerText) ? String(document.body.innerText || '').trim() : '';
-        if (bodyText) return cb(bodyText);
+        // If no live selection, try the stored selection (helpful when popup stole focus)
+        getStoredSelection((stored) => {
+          try {
+            if (stored && stored.trim()) return cb(stored.trim());
+            // last fallback: body text
+            const bodyText = (document.body && document.body.innerText) ? String(document.body.innerText || '').trim() : '';
+            return cb(bodyText || '');
+          } catch (e) { dbgWarn('stored selection fallback failed', e); cb(''); }
+        });
 
-        return cb('');
       } catch (e) {
-        dbgWarn('attemptGetText error', e);
+        dbgWarn('attemptGetText outer error', e);
         cb('');
       }
     })(function (text) {
       try {
         if (!text || !text.trim()) {
-          // retry once after short delay for dynamic pages
+          // retry short delay for hydrated pages (same fallback flow, but will reuse storage fallback)
           setTimeout(() => {
             (function retryGetText(cb) {
-              const saved2 = (typeof msg._savedText === 'string' && msg._savedText.length) ? msg._savedText : '';
-              if (saved2) return cb(saved2);
-              const sel2 = (window.getSelection && window.getSelection().toString && window.getSelection().toString()) || '';
-              if (sel2 && sel2.trim()) return cb(sel2.trim());
-              const body2 = (document.body && document.body.innerText) ? String(document.body.innerText || '').trim() : '';
-              cb(body2 || '');
+              try {
+                const saved2 = (typeof msg._savedText === 'string' && msg._savedText.length) ? msg._savedText : '';
+                if (saved2) return cb(saved2);
+
+                if (typeof window.__clarity_read_extract === 'function') {
+                  try {
+                    const ex2 = window.__clarity_read_extract();
+                    if (ex2 && ex2.text && String(ex2.text || '').trim()) return cb(String(ex2.text || '').trim());
+                  } catch (e) { dbgWarn('extractor threw on retry', e); }
+                }
+
+                const sel2 = (window.getSelection && window.getSelection().toString && window.getSelection().toString()) || '';
+                if (sel2 && sel2.trim()) return cb(sel2.trim());
+
+                // storage fallback
+                getStoredSelection((stored2) => {
+                  if (stored2 && stored2.trim()) return cb(stored2.trim());
+                  const body2 = (document.body && document.body.innerText) ? String(document.body.innerText || '').trim() : '';
+                  return cb(body2 || '');
+                });
+              } catch (e) { dbgWarn('retryGetText error', e); cb(''); }
             })(function (text2) {
               try {
                 if (!text2 || !text2.trim()) {
-                  // return a small diagnostic rather than noisy logs
+                  // keep response minimal so popup can show helpful UI text
                   const selection = (window.getSelection && window.getSelection().toString && window.getSelection().toString()) || '';
-                  try { sendResponse({ ok:false, error:'no-text', diag: { selectionLen: selection.length, bodyLen:(document.body && document.body.innerText||'').length, readability: !!(typeof Readability === 'function') } }); } catch(e){}
+                  try { sendResponse({ ok:false, error:'no-text', diag: { selectionLen: selection.length, bodyLen:(document.body && document.body.innerText||'').length } }); } catch(e){}
                   return;
                 }
 
                 const dup2 = checkAndRecordDuplicate(text2);
-                if (dup2.duplicate) {
-                  try { sendResponse({ ok:false, error:'duplicate-read' }); } catch(e){}
-                  return;
-                }
+                if (dup2.duplicate) { try { sendResponse({ ok:false, error:'duplicate-read' }); } catch(e){}; return; }
 
-                // call speakText (assumes speakText exists in this content script)
                 const r2 = speakText(text2, { voiceName: voice, rate, pitch, highlight });
                 try { sendResponse(r2 || { ok:true }); } catch(e){}
-              } catch (e) {
-                dbgWarn('retry speak error', e);
-                try { sendResponse({ ok:false, error: String(e) }); } catch(e2){}
-              }
+              } catch (e) { dbgWarn('retry speak error', e); try { sendResponse({ ok:false, error: String(e) }); } catch(e2){} }
             });
           }, 400);
           return;
         }
 
-        // duplicate suppression for immediate reads
+        // immediate duplicate suppression
         const dup = checkAndRecordDuplicate(text);
-        if (dup.duplicate) {
-          try { sendResponse({ ok:false, error:'duplicate-read' }); } catch(e){}
-          return;
-        }
+        if (dup.duplicate) { try { sendResponse({ ok:false, error:'duplicate-read' }); } catch(e){}; return; }
 
-        // invoke TTS with resolved prefs
+        // invoke TTS
         const r = speakText(text, { voiceName: voice, rate, pitch, highlight });
-        try { sendResponse(r || { ok:true }); } catch(e){}
+        try { sendResponse(r || { ok:true }); } catch(e) {}
       } catch (e) {
         dbgWarn('speak error', e);
         try { sendResponse({ ok:false, error: String(e) }); } catch(e2){}
@@ -2300,9 +2323,10 @@ case 'readAloud': {
     });
   });
 
-  // we will call sendResponse asynchronously
+  // keep the message channel open for async sendResponse
   return true;
 }
+
 
 
 
