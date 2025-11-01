@@ -3,7 +3,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const $ = id => document.getElementById(id) || null;
  
   const safeLog = (...a) => { try { if (DEBUG) console.log('[ClarityRead popup]', ...a); } catch (e) {} };
-  const safeWarn = (...a) => { try { if (DEBUG) console.warn('[ClarityRead popup]', ...a); } catch (e) {} };
+  const safeWarn = (...a) => { try { if (DEBUG) safeLog()('[ClarityRead popup]', ...a); } catch (e) {} };
   const safeInfo = (...a) => { try { if (DEBUG) console.info('[ClarityRead popup]', ...a); } catch (e) {} };
 
   let opLock = false;
@@ -174,7 +174,7 @@ function setToStorage(obj) {
       }
       return id;
     } catch (e) {
-      if (DEBUG) console.warn('Toasts.show error', e);
+      if (DEBUG) safeLog()('Toasts.show error', e);
       return null;
     }
   }
@@ -187,7 +187,7 @@ function setToStorage(obj) {
         try { el.remove(); } catch(e) {}
         instances.delete(id);
       }
-    } catch (e) { if (DEBUG) console.warn('Toasts.clear error', e); }
+    } catch (e) { if (DEBUG) safeLog()('Toasts.clear error', e); }
   }
 
   function clearAll() {
@@ -198,7 +198,7 @@ function setToStorage(obj) {
       }
       const c = document.getElementById(containerId);
       if (c) c.remove();
-    } catch (e) { if (DEBUG) console.warn('Toasts.clearAll error', e); }
+    } catch (e) { if (DEBUG) safeLog()('Toasts.clearAll error', e); }
   }
 
   function showProgress(msg = 'Working...', timeoutMs = 60000) {
@@ -232,7 +232,7 @@ function clearToastsLocal() { Toasts.clearAll(); }
     s.setAttribute('data-clarity-chart', '1');
     s.src = src;
     s.onload = () => { safeLog('Chart.js injected and loaded'); if (typeof callback === 'function') callback(); };
-    s.onerror = (e) => { console.warn('Failed to load Chart.js from', src, e); if (typeof callback === 'function') callback(); };
+    s.onerror = (e) => { safeLog()('Failed to load Chart.js from', src, e); if (typeof callback === 'function') callback(); };
     document.head.appendChild(s);
     safeLog('ensureChartReady injected script', src);
   }

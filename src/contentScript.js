@@ -1,15 +1,36 @@
-// All speech synthesis happens in this file 
-
-(function () {
+function startClarityReadContentScript() {
   if (window.__clarityread_contentScriptLoaded) {
-    try { console.debug('[ClarityRead contentScript] already loaded.'); } catch(e){}
+    try { safeLog()('[ClarityRead contentScript] already loaded.'); } catch(e){}
     return;
   }
-  window.__clarityread_contentScriptLoaded = false;
 
-  window.__clarityread_allow_dom_mods = false;
-  window.__clarityread_disable_overlay = false;
-  window.__clarityread_debug = false;
+  try {
+    if (typeof chrome === 'undefined' || !chrome || !chrome.runtime) {
+      // don't override an existing chrome object if present
+      window.chrome = window.chrome || {};
+      window.chrome.runtime = window.chrome.runtime || {
+        // minimal no-op onMessage API
+        onMessage: { addListener: function () { /* no-op */ } },
+        sendMessage: function () { /* no-op */ }
+      };
+      window.chrome.storage = window.chrome.storage || {
+        local: {
+          set: function () { /* no-op */ },
+          get: function (_keys, cb) { if (typeof cb === 'function') try { cb({}); } catch(e){} }
+        },
+        sync: {
+          get: function (_keys, cb) { if (typeof cb === 'function') try { cb({}); } catch(e){} }
+        }
+      };
+      // optional debug
+      try { console.debug('[ClarityRead] shimbed chrome.runtime/storage for safety'); } catch(_) {}
+    }
+  } catch (e) {
+    // fail silently — never let shim throw
+    try { console.debug('[ClarityRead] chrome shim failed', e); } catch(_) {}
+  }
+
+
 
 
   (function() {
@@ -305,7 +326,7 @@ function __simpleHash(s) {
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, Number(v) || lo));
   const safeLog = (...a) => { 
     try { 
-      if (window.__clarityread_debug) console.log('[ClarityRead contentScript]', ...a); 
+      if (window.__clarityread_debug) safeLog()('[ClarityRead contentScript]', ...a); 
     } catch (e) {} 
   };
 
@@ -616,9 +637,9 @@ function extractCleanMainTextAndHtml(mainNode) {
   const lg = (...args) => {
     try {
       if (typeof safeLog === 'function') safeLog.apply(null, args);
-      else console.log.apply(console, args);
+      else safeLog().apply(console, args);
     } catch (e) {
-      try { console.log.apply(console, args); } catch (e2) {}
+      try { safeLog().apply(console, args); } catch (e2) {}
     }
   };
 
@@ -805,7 +826,7 @@ function extractCleanMainTextAndHtml(mainNode) {
   } catch (err) {
     try {
       if (typeof safeLog === 'function') safeLog('extractCleanMainTextAndHtml error', err && (err.stack || err));
-      else console.log('extractCleanMainTextAndHtml error', err && (err.stack || err));
+      else safeLog()('extractCleanMainTextAndHtml error', err && (err.stack || err));
     } catch (e) {}
     return { text: '', html: '', title: document.title || '' };
   }
@@ -830,8 +851,8 @@ function createReaderOverlay(text) {
   removeReaderOverlay();
 
   const overlay = document.createElement('div');
-  try { console.log('[ClarityRead contentScript] createReaderOverlay call stack'); } catch(e){}
-  try { console.log('[ClarityRead contentScript] createReaderOverlay called; overlay disable flag =', !!window.__clarityread_disable_overlay); } catch(e){}
+  try { safeLog()('[ClarityRead contentScript] createReaderOverlay call stack'); } catch(e){}
+  try { safeLog()('[ClarityRead contentScript] createReaderOverlay called; overlay disable flag =', !!window.__clarityread_disable_overlay); } catch(e){}
 
   overlay.id = 'readeasy-reader-overlay';
   overlay.setAttribute('role','dialog');
@@ -1167,8 +1188,8 @@ function removeReaderOverlay() {
 
       const text = String(fullText || '').slice(0, MAX_OVERLAY_CHARS);
           try {
-      console.log('[ClarityRead contentScript] prepareSpansForHighlighting called; disable_overlay=', !!window.__clarityread_disable_overlay);
-      console.trace('[ClarityRead contentScript] prepareSpansForHighlighting stack');
+      safeLog()('[ClarityRead contentScript] prepareSpansForHighlighting called; disable_overlay=', !!window.__clarityread_disable_overlay);
+      safeLog()('[ClarityRead contentScript] prepareSpansForHighlighting stack');
     } catch(e){}
 
       // Create overlay for highlighting — safer across many sites
@@ -1743,8 +1764,8 @@ function speakChunksSequentially(chunks, rate = 1, voiceName) {
 // --- Focus-mode toggle (uses overlay)
 function toggleFocusMode() {
     try {
-    console.log('[ClarityRead contentScript] toggleFocusMode called; overlayActive=', overlayActive);
-    console.trace('[ClarityRead contentScript] toggleFocusMode stack');
+    safeLog()('[ClarityRead contentScript] toggleFocusMode called; overlayActive=', overlayActive);
+    safeLog()('[ClarityRead contentScript] toggleFocusMode stack');
   } catch(e){}
 
   if (overlayActive) {
@@ -2172,8 +2193,8 @@ case 'clarity_extract_main': {
       // simplified pseudo-patch illustrating the approach
 case 'readAloud': {
   const __DEBUG = !!(window && window.__clarityread_debug);
-  const dbg = (...a) => { if (__DEBUG) try { console.log('[ClarityRead DBG]', ...a); } catch(e){} };
-  const dbglog = (...a) => { if (__DEBUG) try { console.log('[ClarityRead DBG]', ...a); } catch(e){} };
+  const dbg = (...a) => { if (__DEBUG) try { safeLog()('[ClarityRead DBG]', ...a); } catch(e){} };
+  const dbglog = (...a) => { if (__DEBUG) try { safeLog()('[ClarityRead DBG]', ...a); } catch(e){} };
 
   if (typeof window.__simpleHash !== 'function') {
     window.__simpleHash = function(s) { let h = 0; for (let i = 0; i < s.length; i++) { h = ((h << 5) - h) + s.charCodeAt(i); h |= 0; } return h; };
@@ -2316,7 +2337,7 @@ case 'readAloud': {
     const out = speakChunksSequentially(chunks, clamp(r, 0.5, 1.6), (msg.voice || res.voice));
     sendResponse(out || { ok: true });
   });
-  return true; // ✅ CRITICAL: Keep message channel open for async callback
+  return true; // Keep message channel open for async callback
 }
 
         case 'toggleFocusMode': {
@@ -2380,18 +2401,28 @@ sendResponse(resp);
     return true;
   });
 
-  // cleanup when the page unloads
-  window.addEventListener('pagehide', () => {
-    try {
-      // Ensure full cleanup and stats finalization on page hide/navigation
-      if (typeof stopReadingAll === 'function') {
-        stopReadingAll();
-      } else {
-        try { window.speechSynthesis.cancel(); } catch(e){}
-        sendState('Not Reading');
-      }
-    } catch(e){ safeLog('pagehide cleanup error', e); }
-    safeLog('pagehide: attempted to cancel/stop speech synthesis and finalize stats');
-  });
+ } // end of startClarityReadContentScript function
 
+// DOM-ready wrapper: call startClarityReadContentScript once the page DOM is ready
+(function initOnce() {
+  const run = () => {
+    try {
+      startClarityReadContentScript();
+      // mark loaded only after start finishes
+      window.__clarityread_contentScriptLoaded = true;
+      try { safeLog()('[ClarityRead contentScript] initialized at', location.href); } catch(e){}
+    } catch (e) {
+      try { safeLog()('[ClarityRead] failed to start', e); } catch(_) {}
+    }
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', run, { once: true });
+    // Also fall back to run after short timeout in case DOMContentLoaded was missed
+    setTimeout(() => { if (!window.__clarityread_contentScriptLoaded) run(); }, 1200);
+  } else {
+    // already ready
+    setTimeout(run, 0);
+  }
 })();
+
