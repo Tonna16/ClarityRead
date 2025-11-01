@@ -1,5 +1,5 @@
 document.addEventListener('DOMContentLoaded', () => {
-  const DEBUG = false; // set true for development, false for production
+  const DEBUG = true; // set true for development, false for production
   const $ = id => document.getElementById(id) || null;
  
   const safeLog = (...a) => { try { if (DEBUG) console.log('[ClarityRead popup]', ...a); } catch (e) {} };
@@ -2313,26 +2313,43 @@ importSettingsInput.addEventListener('change', (ev) => {
 
   safeOn(resetStatsBtn, 'click', () => { if (!confirm('Reset all reading stats?')) return; chrome.runtime.sendMessage({ action: 'resetStats' }, () => { safeLog('resetStats requested'); loadStats(); setReadingStatus('Not Reading'); toast('Stats reset.', 'success'); }); });
 
+// ---- Utilities: normalization + dedupe ----
 function normalizeForCompare(txt) {
-  return (txt || '').trim().toLowerCase().replace(/\s+/g, ' ').replace(/[^\w\s]/g, '');
+  // Unicode-aware normalization: remove diacritics, punctuation, collapse whitespace, lowercase
+  try {
+    return String(txt || '')
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')                 // remove diacritics
+      .toLowerCase()
+      .replace(/[\u2018\u2019\u201C\u201D]/g, "'")      // normalize quotes
+      .replace(/[^\p{L}\p{N}\s]/gu, '')                // remove punctuation (unicode aware)
+      .replace(/\s+/g, ' ')
+      .trim();
+  } catch (e) {
+    // fallback simpler normalizer if Unicode property escapes not supported
+    return String(txt || '').toLowerCase().replace(/[\u0300-\u036f]/g,'').replace(/[^\w\s]/g,'').replace(/\s+/g,' ').trim();
+  }
 }
 
 function dedupeSavedArray(arr) {
-  const seen = new Set();
-  const out = [];
-  // iterate from newest to oldest to preserve latest-first behaviour when reversing later
-  for (let i = arr.length - 1; i >= 0; i--) {
-    const it = arr[i];
-    const n = normalizeForCompare(it && it.text ? it.text : '');
-    if (!n) continue;
-    if (!seen.has(n)) {
-      seen.add(n);
-      out.unshift(it); // preserve original order (oldest -> newest)
+  // Keep the most recent item (by ts) for each normalized text key.
+  if (!Array.isArray(arr) || arr.length === 0) return [];
+  const map = new Map();
+  for (const it of arr) {
+    if (!it || !it.text) continue;
+    const key = normalizeForCompare(it.text);
+    if (!key) continue;
+    const existing = map.get(key);
+    // prefer the item with the larger timestamp (newest)
+    if (!existing || (Number(it.ts || 0) > Number(existing.ts || 0))) {
+      map.set(key, it);
     }
   }
-  return out;
+  // produce an array ordered oldest -> newest (keeps consistent storage ordering)
+  return Array.from(map.values()).sort((a, b) => (Number(a.ts || 0) - Number(b.ts || 0)));
 }
 
+// ---- Render saved list (reads savedReads from storage, expects oldest->newest in storage) ----
 function renderSavedList() {
   try {
     const container = document.getElementById('savedList');
@@ -2340,141 +2357,154 @@ function renderSavedList() {
     container.innerHTML = ''; // clear
 
     chrome.storage.local.get(['savedReads'], (res) => {
-      const arr = (res && Array.isArray(res.savedReads)) ? res.savedReads : [];
-      if (!arr.length) {
-        container.innerHTML = '<div class="saved-empty">No saved selections</div>';
-        return;
-      }
+      try {
+        let arr = Array.isArray(res.savedReads) ? res.savedReads.slice() : [];
+        if (!arr.length) {
+          container.innerHTML = '<div class="saved-empty">No saved selections</div>';
+          return;
+        }
 
-      for (const it of arr.slice().reverse()) {
-        const row = document.createElement('div');
-        row.className = 'saved-item';
-        row.style.borderBottom = '1px solid rgba(0,0,0,0.06)';
-        row.style.padding = '8px';
-        row.style.display = 'flex';
-        row.style.justifyContent = 'space-between';
-        row.style.alignItems = 'flex-start';
+        // Ensure UI shows newest-first (reverse storage oldest->newest)
+        const list = arr.slice().reverse();
 
-        const left = document.createElement('div');
-        left.style.flex = '1';
-        const title = document.createElement('div');
-        title.textContent = it.title || (it.text || '').slice(0, 80);
-        title.style.fontWeight = '600';
-        const preview = document.createElement('div');
-        preview.textContent = (it.text || '').slice(0, 220);
-        preview.style.fontSize = '12px';
-        preview.style.marginTop = '6px';
-        left.appendChild(title);
-        left.appendChild(preview);
+        for (const it of list) {
+          const row = document.createElement('div');
+          row.className = 'saved-item';
+          row.style.borderBottom = '1px solid rgba(0,0,0,0.06)';
+          row.style.padding = '8px';
+          row.style.display = 'flex';
+          row.style.justifyContent = 'space-between';
+          row.style.alignItems = 'flex-start';
 
-        const actions = document.createElement('div');
-        actions.style.display = 'flex';
-        actions.style.flexDirection = 'column';
-        actions.style.gap = '6px';
+          const left = document.createElement('div');
+          left.style.flex = '1';
+          const title = document.createElement('div');
+          title.textContent = it.title || (it.text || '').slice(0, 80);
+          title.style.fontWeight = '600';
+          const preview = document.createElement('div');
+          preview.textContent = (it.text || '').slice(0, 220);
+          preview.style.fontSize = '12px';
+          preview.style.marginTop = '6px';
+          left.appendChild(title);
+          left.appendChild(preview);
 
-        const sumBtn = document.createElement('button');
-        sumBtn.textContent = 'Summarize';
-        sumBtn.className = 'btn btn-secondary';
-        sumBtn.addEventListener('click', async () => {
-          sumBtn.disabled = true;
-          try {
-            const pref = await readSummaryPref();
-            const adaptiveMax = computeAdaptiveMax(it.text || '', pref);
-            const prog = createProgressToast('Generating summary — please wait...', 60000);
-            let out = '(no summary)';
-            try { out = summarizeTextLocal(it.text || '', adaptiveMax, pref) || out; } finally { clearProgressToast(); }
-            createSummaryModal(`Saved Summary — ${((out||'').split(/(?<=[.?!])\s+/).filter(Boolean)||[]).length} sentences`, out);
-          } catch (e) { safeLog('saved item summarize failed', e); toast('Failed to summarize', 'error'); }
-          sumBtn.disabled = false;
-        });
+          const actions = document.createElement('div');
+          actions.style.display = 'flex';
+          actions.style.flexDirection = 'column';
+          actions.style.gap = '6px';
 
-        const playBtn = document.createElement('button');
-        playBtn.textContent = 'Read';
-        playBtn.className = 'btn btn-secondary';
-        playBtn.addEventListener('click', () => {
-          try {
-            const tab = null; // background forward will pick best tab
-            chrome.runtime.sendMessage({ action: 'readAloud', _savedText: it.text }, (resp) => {
-              if (chrome.runtime.lastError) safeLog('readAloud message lastError', chrome.runtime.lastError);
-            });
-          } catch (e) { safeLog('play saved read failed', e); }
-        });
-
-        const delBtn = document.createElement('button');
-        delBtn.textContent = 'Delete';
-        delBtn.className = 'btn btn-link';
-        delBtn.addEventListener('click', () => {
-          chrome.storage.local.get(['savedReads'], (r) => {
-            let arr2 = r.savedReads || [];
-            arr2 = arr2.filter(x => x.id !== it.id);
-            chrome.storage.local.set({ savedReads: arr2 }, () => { toast('Saved item deleted', 'info'); renderSavedList(); });
+          const sumBtn = document.createElement('button');
+          sumBtn.textContent = 'Summarize';
+          sumBtn.className = 'btn btn-secondary';
+          sumBtn.addEventListener('click', async () => {
+            sumBtn.disabled = true;
+            try {
+              const pref = await readSummaryPref();
+              const adaptiveMax = computeAdaptiveMax(it.text || '', pref);
+              createProgressToast('Generating summary — please wait...', 60000);
+              let out = '(no summary)';
+              try { out = summarizeTextLocal(it.text || '', adaptiveMax, pref) || out; } finally { clearProgressToast(); }
+              createSummaryModal(`Saved Summary — ${((out||'').split(/(?<=[.?!])\s+/).filter(Boolean)||[]).length} sentences`, out);
+            } catch (e) { safeLog('saved item summarize failed', e); toast('Failed to summarize', 'error'); }
+            sumBtn.disabled = false;
           });
-        });
 
-        actions.appendChild(sumBtn);
-        actions.appendChild(playBtn);
-        actions.appendChild(delBtn);
+          const playBtn = document.createElement('button');
+          playBtn.textContent = 'Read';
+          playBtn.className = 'btn btn-secondary';
+          playBtn.addEventListener('click', () => {
+            try {
+              chrome.runtime.sendMessage({ action: 'readAloud', _savedText: it.text }, (resp) => {
+                if (chrome.runtime.lastError) safeLog('readAloud message lastError', chrome.runtime.lastError);
+              });
+            } catch (e) { safeLog('play saved read failed', e); }
+          });
 
-        row.appendChild(left);
-        row.appendChild(actions);
-        container.appendChild(row);
+          const delBtn = document.createElement('button');
+          delBtn.textContent = 'Delete';
+          delBtn.className = 'btn btn-link';
+          delBtn.addEventListener('click', () => {
+            chrome.storage.local.get(['savedReads'], (r) => {
+              try {
+                let arr2 = Array.isArray(r.savedReads) ? r.savedReads.slice() : [];
+                arr2 = arr2.filter(x => x.id !== it.id);
+                chrome.storage.local.set({ savedReads: arr2 }, () => { toast('Saved item deleted', 'info'); renderSavedList(); });
+              } catch (err) {
+                safeLog('delete saved item failed', err);
+              }
+            });
+          });
+
+          actions.appendChild(sumBtn);
+          actions.appendChild(playBtn);
+          actions.appendChild(delBtn);
+
+          row.appendChild(left);
+          row.appendChild(actions);
+          container.appendChild(row);
+        }
+      } catch (e) {
+        safeLog('renderSavedList inner render error', e);
+        container.innerHTML = '<div class="saved-empty">No saved selections</div>';
       }
     });
   } catch (e) { safeLog('renderSavedList error', e); }
 }
 
-async function mergeHandshakeIntoSavedReads() {
+// ---- Merge transient handshake/selection into savedReads (run once at startup) ----
+function mergeHandshakeIntoSavedReads() {
   try {
     chrome.storage.local.get(['savedReads', 'clarity_last_selection', '_handshakeSelection'], (res) => {
-      const saved = Array.isArray(res.savedReads) ? res.savedReads.slice() : [];
-      const storedSel = res.clarity_last_selection || null;
+      let saved = Array.isArray(res.savedReads) ? res.savedReads.slice() : [];
       const handshake = res._handshakeSelection || null;
+      const storedSel = res.clarity_last_selection || null;
 
-      // Prefer handshake (background context menu), otherwise content-script selection.
-      const candidate = handshake && handshake.text ? handshake : (storedSel && storedSel.text ? storedSel : null);
+      // Remove transient keys immediately to avoid duplicate merges if this function runs twice
+      try { chrome.storage.local.remove(['clarity_last_selection', '_handshakeSelection'], () => {}); } catch(e){}
+
+      // Decide candidate (handshake wins)
+      const candidate = (handshake && handshake.text) ? handshake : ((storedSel && storedSel.text) ? storedSel : null);
       if (!candidate || !candidate.text) {
-        // nothing to merge — just render
-        try { renderSavedList(); } catch(e) { safeLog('renderSavedList failed after merge-check', e); }
+        // still clean up savedReads (dedupe) and render
+        const cleaned = dedupeSavedArray(saved);
+        if (cleaned.length !== saved.length) {
+          chrome.storage.local.set({ savedReads: cleaned }, () => { renderSavedList(); });
+        } else {
+          renderSavedList();
+        }
         return;
       }
 
-      // check freshness if selection came from content script (avoid old unrelated selections)
+      // Freshness check (ignore very old transient selections)
       const now = Date.now();
-      if (storedSel && storedSel.ts && (now - storedSel.ts) > (2 * 60 * 1000)) {
-        // older than 2 minutes -> ignore stored selection (likely stale)
-        try { chrome.storage.local.remove('clarity_last_selection', ()=>{}); } catch(e) {}
+      if (candidate.ts && (now - candidate.ts) > (5 * 60 * 1000)) {
         renderSavedList();
         return;
       }
 
-      // normalise and check duplicate
-      const cNorm = normalizeForCompare(candidate.text);
-      const already = saved.some(it => normalizeForCompare(it.text) === cNorm);
-
-      if (!already) {
-        const newItem = {
-          id: `${Date.now()}-${Math.floor(Math.random()*99999)}`,
-          text: candidate.text.trim(),
-          title: (candidate.title || candidate.text.slice(0,80)).trim(),
-          url: candidate.url || '',
-          ts: Date.now()
-        };
-        saved.push(newItem);
-        const deduped = dedupeSavedArray(saved);
-        // persist and remove handshake/selection keys
-        chrome.storage.local.set({ savedReads: deduped }, () => {
-          chrome.storage.local.remove(['clarity_last_selection','_handshakeSelection'], () => {
-            safeLog('merged handshake/selection into savedReads and cleared transient keys', newItem.id);
-            renderSavedList();
-          });
-        });
-      } else {
-        // already present — just clear transient keys and render
-        chrome.storage.local.remove(['clarity_last_selection','_handshakeSelection'], () => {
-          safeLog('transient selection found but already saved; cleaned transient keys');
-          renderSavedList();
-        });
+      // If already exists (normalized match) -> just render
+      const candKey = normalizeForCompare(candidate.text);
+      const already = saved.some(it => normalizeForCompare(it.text) === candKey);
+      if (already) {
+        renderSavedList();
+        return;
       }
+
+      // Create new item and persist
+      const newItem = {
+        id: `${Date.now()}-${Math.floor(Math.random() * 90000 + 10000)}`,
+        text: String(candidate.text || '').trim(),
+        title: (candidate.title || String(candidate.text || '').slice(0, 80)).trim(),
+        url: candidate.url || '',
+        ts: Date.now()
+      };
+      saved.push(newItem);
+
+      const deduped = dedupeSavedArray(saved);
+      chrome.storage.local.set({ savedReads: deduped }, () => {
+        safeLog('mergeHandshakeIntoSavedReads: merged candidate and persisted', newItem.id);
+        renderSavedList();
+      });
     });
   } catch (e) {
     safeLog('mergeHandshakeIntoSavedReads failed', e);
@@ -2482,8 +2512,9 @@ async function mergeHandshakeIntoSavedReads() {
   }
 }
 
-// Replace your initial call to renderSavedList() with:
-try { mergeHandshakeIntoSavedReads(); } catch(e) { safeLog('initial mergeHandshakeIntoSavedReads failed', e); renderSavedList(); }
+// ---- Initialization: call merge once (do NOT call renderSavedList separately afterwards) ----
+try { mergeHandshakeIntoSavedReads(); } catch (e) { safeLog('initial mergeHandshakeIntoSavedReads failed', e); renderSavedList(); }
+
 
 
 
