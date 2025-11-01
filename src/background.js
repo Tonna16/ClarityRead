@@ -101,8 +101,16 @@
             return finish({ ok: true, response: unwrapped, cssError: null });
           }
 
-          const errMsg = (chrome.runtime.lastError && chrome.runtime.lastError.message) ? String(chrome.runtime.lastError.message) : 'unknown';
-          safeWarn('initial sendMessage error', errMsg);
+// --- inside sendMessageToTabWithInjection, replace the initial sendMessage error handling with this:
+const errMsg = (chrome.runtime.lastError && chrome.runtime.lastError.message) ? String(chrome.runtime.lastError.message) : 'unknown';
+
+// Demote the common "receiving end does not exist / Could not establish connection" to debug
+if (/receiving end does not exist/i.test(errMsg) || /could not establish connection/i.test(errMsg)) {
+  safeLog('initial sendMessage: no receiver (will attempt injection).', errMsg);
+} else {
+  safeWarn('initial sendMessage error', errMsg);
+}
+
 
           // get tab info before trying to inject
           chrome.tabs.get(tabId, (tab) => {

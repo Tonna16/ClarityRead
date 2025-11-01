@@ -60,6 +60,7 @@ const CHUNK_SIZE_CHARS = 4000;
 const MAX_INPUT_CHARS = 120000;
 
  const IDF_FILENAME = 'idf.json'; // place idf.json in your extension's root/public so chrome.runtime.getURL finds it
+ const MERGED_HANDSHAKES_KEY = '_merged_handshake_hashes';
 
  let chart = null;
 
@@ -2451,46 +2452,69 @@ function renderSavedList() {
   } catch (e) { safeLog('renderSavedList error', e); }
 }
 
-// ---- Merge transient handshake/selection into savedReads (run once at startup) ----
+// ---- idempotent merge that records merged candidate hashes ----
 function mergeHandshakeIntoSavedReads() {
   try {
-    chrome.storage.local.get(['savedReads', 'clarity_last_selection', '_handshakeSelection'], (res) => {
+    chrome.storage.local.get(['savedReads', 'clarity_last_selection', '_handshakeSelection', MERGED_HANDSHAKES_KEY], (res) => {
       let saved = Array.isArray(res.savedReads) ? res.savedReads.slice() : [];
       const handshake = res._handshakeSelection || null;
       const storedSel = res.clarity_last_selection || null;
-
-      // Remove transient keys immediately to avoid duplicate merges if this function runs twice
-      try { chrome.storage.local.remove(['clarity_last_selection', '_handshakeSelection'], () => {}); } catch(e){}
+      const mergedHashes = (res[MERGED_HANDSHAKES_KEY] && typeof res[MERGED_HANDSHAKES_KEY] === 'object') ? res[MERGED_HANDSHAKES_KEY] : {};
 
       // Decide candidate (handshake wins)
       const candidate = (handshake && handshake.text) ? handshake : ((storedSel && storedSel.text) ? storedSel : null);
+
+      // If no transient candidate, still ensure savedReads are deduped and render
       if (!candidate || !candidate.text) {
-        // still clean up savedReads (dedupe) and render
         const cleaned = dedupeSavedArray(saved);
         if (cleaned.length !== saved.length) {
           chrome.storage.local.set({ savedReads: cleaned }, () => { renderSavedList(); });
         } else {
           renderSavedList();
         }
+        // also clear transient keys just in case (best-effort)
+        try { chrome.storage.local.remove(['clarity_last_selection', '_handshakeSelection'], () => {}); } catch(e){}
         return;
       }
 
-      // Freshness check (ignore very old transient selections)
+      // Normalize candidate key
+      const candKey = normalizeForCompare(candidate.text || '');
+      if (!candKey) {
+        // nothing useful to merge
+        renderSavedList();
+        try { chrome.storage.local.remove(['clarity_last_selection', '_handshakeSelection'], () => {}); } catch(e){}
+        return;
+      }
+
+      // If this candidate hash was already merged previously, skip merging
+      if (mergedHashes[candKey]) {
+        safeLog('mergeHandshakeIntoSavedReads: candidate already merged (hash present), skipping.', candKey);
+        // clear transient keys and render
+        try { chrome.storage.local.remove(['clarity_last_selection', '_handshakeSelection'], () => { renderSavedList(); }); } catch(e){ renderSavedList(); }
+        return;
+      }
+
+      // Freshness check: ignore very old transient selections (defensive)
       const now = Date.now();
       if (candidate.ts && (now - candidate.ts) > (5 * 60 * 1000)) {
-        renderSavedList();
+        safeLog('mergeHandshakeIntoSavedReads: candidate stale, ignoring', { ageMs: now - candidate.ts });
+        try { chrome.storage.local.remove(['clarity_last_selection', '_handshakeSelection'], () => { renderSavedList(); }); } catch(e){ renderSavedList(); }
         return;
       }
 
-      // If already exists (normalized match) -> just render
-      const candKey = normalizeForCompare(candidate.text);
+      // Check normalized duplicates against existing saved reads
       const already = saved.some(it => normalizeForCompare(it.text) === candKey);
       if (already) {
-        renderSavedList();
+        safeLog('mergeHandshakeIntoSavedReads: candidate duplicate of existing saved read, skipping persist.');
+        // mark hash as merged anyway so future runs skip quickly
+        mergedHashes[candKey] = Date.now();
+        chrome.storage.local.set({ [MERGED_HANDSHAKES_KEY]: mergedHashes }, () => {
+          try { chrome.storage.local.remove(['clarity_last_selection', '_handshakeSelection'], () => { renderSavedList(); }); } catch(e){ renderSavedList(); }
+        });
         return;
       }
 
-      // Create new item and persist
+      // Build new item and persist
       const newItem = {
         id: `${Date.now()}-${Math.floor(Math.random() * 90000 + 10000)}`,
         text: String(candidate.text || '').trim(),
@@ -2498,24 +2522,35 @@ function mergeHandshakeIntoSavedReads() {
         url: candidate.url || '',
         ts: Date.now()
       };
+
       saved.push(newItem);
 
+      // Final dedupe pass (keeps newest for each normalized key)
       const deduped = dedupeSavedArray(saved);
-      chrome.storage.local.set({ savedReads: deduped }, () => {
-        safeLog('mergeHandshakeIntoSavedReads: merged candidate and persisted', newItem.id);
-        renderSavedList();
+
+      // Persist both savedReads and the merged-hashes registry in one go
+      mergedHashes[candKey] = Date.now();
+      chrome.storage.local.set({ savedReads: deduped, [MERGED_HANDSHAKES_KEY]: mergedHashes }, () => {
+        // Remove transient keys now that we merged
+        chrome.storage.local.remove(['clarity_last_selection', '_handshakeSelection'], () => {
+          safeLog('mergeHandshakeIntoSavedReads: merged candidate and persisted', newItem.id);
+          renderSavedList();
+        });
       });
     });
   } catch (e) {
     safeLog('mergeHandshakeIntoSavedReads failed', e);
-    try { renderSavedList(); } catch(e) { safeLog('renderSavedList fallback failed', e); }
+    try { renderSavedList(); } catch (e2) { safeLog('renderSavedList fallback failed', e2); }
   }
 }
 
-// ---- Initialization: call merge once (do NOT call renderSavedList separately afterwards) ----
-try { mergeHandshakeIntoSavedReads(); } catch (e) { safeLog('initial mergeHandshakeIntoSavedReads failed', e); renderSavedList(); }
-
-
+// ---- Initialization: call merge once (do NOT call renderSavedList() separately at startup) ----
+try {
+  mergeHandshakeIntoSavedReads();
+} catch (e) {
+  safeLog('initial mergeHandshakeIntoSavedReads failed', e);
+  renderSavedList(); // fallback if merge fails
+}
 
 
 async function summarizeSavedItem(item) {
