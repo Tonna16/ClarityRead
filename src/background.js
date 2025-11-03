@@ -4,7 +4,7 @@
   const HANDSHAKE_KEY = '_handshakeSelection';
   const HANDSHAKE_TTL_MS = 30 * 1000; // 30s 
 
-  const DEBUG = false; // set true for debugging, false for release
+  const DEBUG = true; // set true for debugging, false for release
   const safeLog = (...args) => { try { if (DEBUG) console.log('[ClarityRead bg]', ...args); } catch (e) {} };
   const safeWarn = (...args) => { try { if (DEBUG) console.warn('[ClarityRead bg]', ...args); } catch (e) {} };
   const safeInfo = (...args) => { try { if (DEBUG) console.info('[ClarityRead bg]', ...args); } catch (e) {} };
