@@ -253,22 +253,6 @@ function detectUnsupportedEditor() {
   }
 }
 
-// Ensure this is added inside your existing onMessage handler; if you have a switch(msg.action) add:
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  try {
-    if (!msg || !msg.action) { return; } // keep existing handling
-    if (msg.action === 'clarity_support_check') {
-      const res = detectUnsupportedEditor();
-      sendResponse(res);
-      return true; // async support (though we responded synchronously)
-    }
-
-    // If you have other cases already, keep them here (merge)
-  } catch (e) {
-    try { sendResponse({ ok: true }); } catch(_) {}
-  }
-});
-
 
     function removeClarityReflow() {
       try {
@@ -2136,6 +2120,17 @@ function stopInvertGuard() {
     try {
       safeLog('onMessage received', msg, 'from', sender && sender.tab ? { tabId: sender.tab.id, url: sender.tab.url } : sender);
       if (!msg || !msg.action) { sendResponse({ ok: false }); safeLog('onMessage missing action -> responded false'); return true; }
+      // --- Support-check request (popup asks "is this page supported?")
+if (msg && msg.action === 'clarity_support_check') {
+  try {
+    const res = detectUnsupportedEditor();
+    sendResponse(res);
+  } catch (e) {
+    try { sendResponse({ ok: true }); } catch(_) {}
+  }
+  return true;
+}
+
       // at the top of the onMessage handler (before other cases)
 if (msg && msg.action === 'set_debug') {
   try {
@@ -2151,6 +2146,17 @@ if (msg && msg.action === 'set_debug') {
       switch (msg.action) {
         case 'applySettings':
           try {
+            // If page is unsupported for editor-level injection, skip invasive changes and reply with reason.
+try {
+  const _support = detectUnsupportedEditor();
+  if (_support && _support.unsupported) {
+    safeLog('applySettings skipped due to unsupported page', _support.reason);
+    // respond with unsupported diagnostic so popup can show a friendly notice
+    sendResponse({ ok: false, unsupported: true, reason: _support.reason, message: _support.message });
+    break; // stop further applySettings handling
+  }
+} catch(e){}
+
             if (typeof msg.dys !== 'undefined') {
               if (msg.dys) {
                 try { ensureDysFontInjected(); } catch(e){ safeLog('ensureDysFontInjected threw', e); }
@@ -2420,6 +2426,17 @@ case 'readAloud': {
     } catch (e) { cb(''); }
   }
 
+  // If page is unsupported, respond with diagnostic and don't start TTS/overlay attempts.
+try {
+  const _support = detectUnsupportedEditor();
+  if (_support && _support.unsupported) {
+    safeLog('readAloud aborted due to unsupported page', _support.reason);
+    sendResponse({ ok: false, unsupported: true, reason: _support.reason, message: _support.message });
+    return true; // keep message channel open-consistent
+  }
+} catch(e){}
+
+
   chrome.storage.sync.get(['voice','rate','pitch','highlight'], (store) => {
     const voice = (typeof msg.voice === 'string') ? msg.voice : (store && store.voice) ? store.voice : '';
     const rate = (typeof msg.rate !== 'undefined' && !isNaN(Number(msg.rate))) ? Number(msg.rate) : (store && typeof store.rate !== 'undefined' ? Number(store.rate) : 1);
@@ -2533,6 +2550,15 @@ case 'readAloud': {
 }
 
         case 'toggleFocusMode': {
+          try {
+  const _support = detectUnsupportedEditor();
+  if (_support && _support.unsupported) {
+    safeLog('toggleFocusMode skipped due to unsupported page', _support.reason);
+    sendResponse({ ok: false, unsupported: true, reason: _support.reason, message: _support.message });
+    break;
+  }
+} catch(e){}
+
           const res = toggleFocusMode();
           sendResponse(res);
           safeLog('toggleFocusMode responded', res);
