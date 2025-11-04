@@ -4,7 +4,41 @@ function startClarityReadContentScript() {
     return;
   }
 
-  
+  // --- Early guard: detect hosted/canvas editors and bail early with a friendly toast
+function isHostedOrCanvasEditor() {
+  try {
+    const host = (location.hostname || '').toLowerCase();
+    if (/docs\.google\.com|drive\.google\.com/.test(host)) return { unsupported: true, reason: 'google-docs', message: 'Google Docs content is protected and cannot be accessed by ClarityRead.' };
+    if (/officeapps\.live\.com|office\.com|microsoftonline\.com|microsoftsharepoint\.com/.test(host)) return { unsupported: true, reason: 'office-online', message: 'Microsoft Office Online pages are not supported.' };
+    // Simple canvas detection (many editors render to canvas)
+    const canvasCount = (document.querySelectorAll && document.querySelectorAll('canvas').length) || 0;
+    if (canvasCount > 0 && (document.body && (document.body.innerText || '').trim().length < 200)) {
+      return { unsupported: true, reason: 'canvas-rendered', message: 'This page appears to render text via canvas rather than selectable text.' };
+    }
+    return { unsupported: false };
+  } catch (e) { return { unsupported: false }; }
+}
+
+try {
+  const _hosted = isHostedOrCanvasEditor();
+  if (_hosted && _hosted.unsupported) {
+    // Show a single toast for the session (best-effort; won't throw if toast not injected)
+    try {
+      if (!window.__clarityread_restricted_toast_shown) {
+        window.__clarityread_restricted_toast_shown = true;
+        if (typeof ClarityReadToast !== 'undefined' && ClarityReadToast.showToast) {
+          ClarityReadToast.showToast(_hosted.message || 'This editor is not supported by ClarityRead.', { type: 'info', timeout: 12000 });
+        } else {
+          // best-effort console fallback when toast not available
+          console.info('[ClarityRead] unsupported editor detected:', _hosted.message || _hosted.reason);
+        }
+      }
+    } catch (e) {}
+    // Stop initialization early for these pages
+    return;
+  }
+} catch (e) { /* if detection fails, continue gracefully */ }
+
 
   try {
     if (typeof chrome === 'undefined' || !chrome || !chrome.runtime) {
@@ -28,6 +62,7 @@ function startClarityReadContentScript() {
       try { console.debug('[ClarityRead] shimbed chrome.runtime/storage for safety'); } catch(_) {}
     }
   } catch (e) {
+    // fail silently — never let shim throw
     try { console.debug('[ClarityRead] chrome shim failed', e); } catch(_) {}
   }
 
@@ -49,7 +84,9 @@ function startClarityReadContentScript() {
         if (document.getElementById(REFLOW_STYLE_ID)) return;
         const st = document.createElement('style');
         st.id = REFLOW_STYLE_ID;
+        
         st.type = 'text/css';
+        
 
         st.textContent = `
 :root { --clarity-font-size: 20px; --clarity-line-height: 1.5; --readeasy-font-size: 20px; }
@@ -189,70 +226,6 @@ html.readeasy-reflow h3 {
         return { ok: false, error: String(e) };
       }
     }
-
-    // ---------- Add to content script (near other helpers / message handling) ----------
-function detectUnsupportedEditor() {
-  try {
-    const host = (location.hostname || '').toLowerCase();
-
-    // Google Docs (kix)
-    const isGoogleDocs = !!document.querySelector('.kix-zoomdocumentplugin-outer, .kix-appview-outer, .docs-texteventtarget-iframe');
-    if (isGoogleDocs) {
-      return { ok: false, unsupported: true, reason: 'google-docs',
-        message: 'Google Docs uses a custom canvas/iframe-based editor (Kix). ClarityRead cannot reliably inject fonts or overlays into the document editing surface.' };
-    }
-
-    // MS Word / Office Online editors (common container classes)
-    const isWordOnline = !!document.querySelector('.OfficeCanvas, .WACView, .office-application, .ms-OfficeFrame');
-    if (isWordOnline) {
-      return { ok: false, unsupported: true, reason: 'word-online',
-        message: 'Word / Office Online uses complex rendering which prevents reliable injection of reader overlays or fonts.' };
-    }
-
-    // Canvas-only editors (lots of drawing elements but little text nodes)
-    const hasLargeCanvas = (document.querySelectorAll('canvas') || []).length > 0 && (document.body && (document.body.innerText || '').trim().length < 200);
-    if (hasLargeCanvas) {
-      return { ok: false, unsupported: true, reason: 'canvas-editor',
-        message: 'This page appears to use canvas-based rendering instead of standard text nodes. ClarityRead needs selectable text to work.' };
-    }
-
-    // Editor inside cross-origin iframe (we can't inject into cross-origin)
-    const iframes = Array.from(document.querySelectorAll('iframe'));
-    for (const f of iframes) {
-      try {
-        if (!f.contentDocument) continue; // likely cross-origin or not ready
-        // same-origin iframe with contenteditable might be fine — skip
-      } catch (e) {
-        // access denied -> cross-origin iframe present; check if it looks like editor
-        const src = f.getAttribute('src') || '';
-        if (/docs.google|office|word|microsoftonline|dropbox/i.test(src)) {
-          return { ok: false, unsupported: true, reason: 'cross-origin-iframe-editor',
-            message: 'The editable area is hosted inside a cross-origin iframe (e.g. Google Docs). Browser security prevents ClarityRead from modifying it.' };
-        }
-      }
-    }
-
-    // If there are contenteditable elements that look like editors we can support, return OK
-    const editables = Array.from(document.querySelectorAll('[contenteditable="true"], textarea, input')).filter(el => {
-      try { return el && el.offsetParent !== null && (el.innerText || el.value || '').trim().length > 0; } catch(e){ return false; }
-    });
-    if (editables.length) return { ok: true };
-
-    // fallback: if page has little selectable text but has body text then we allow trying
-    const bodyTextLen = (document.body && document.body.innerText) ? (document.body.innerText || '').trim().length : 0;
-    if (bodyTextLen < 120) {
-      return { ok: false, unsupported: true, reason: 'no-selectable-text', 
-        message: 'This page does not appear to have enough selectable text for the reader overlay to work.' };
-    }
-
-    // default allowed
-    return { ok: true };
-  } catch (e) {
-    try { safeLog('detectUnsupportedEditor error', e); } catch (_) {}
-    return { ok: true }; // be permissive on errors
-  }
-}
-
 
     function removeClarityReflow() {
       try {
@@ -586,7 +559,7 @@ try {
       // ensure inputs/contenteditable are covered and add some Google-Docs-friendly selectors.
       const style = document.createElement('style');
       style.id = CLARITY_DYS_STYLE_ID;
-      style.textContent = `
+style.textContent = `
 @font-face {
   font-family: 'OpenDyslexic';
   src: url("${urlWoff2}") format("woff2"),
@@ -596,7 +569,7 @@ try {
   font-display: swap;
 }
 
-    ]html.readeasy-dyslexic, html.clarityread-dyslexic {
+html.readeasy-dyslexic, html.clarityread-dyslexic {
   --readeasy-dys-font: 'OpenDyslexic', system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
 
@@ -623,6 +596,7 @@ html.readeasy-dyslexic .docs-texteventtarget-iframe {
 /* placeholder fallback */
 html.readeasy-dyslexic *::placeholder { font-family: var(--readeasy-dys-font) !important; }
 `;
+
       try { (document.head || document.documentElement).appendChild(style); } catch (e) { document.documentElement.appendChild(style); }
 
       // Add FontFace load for better UX when fonts are packaged
@@ -750,46 +724,21 @@ function extractCleanMainTextAndHtml(mainNode) {
   const lg = (...args) => {
     try {
       if (typeof safeLog === 'function') safeLog.apply(null, args);
-      else console.log('[ClarityRead contentScript]', ...args);
+      else safeLog().apply(console, args);
     } catch (e) {
-      try { console.log('[ClarityRead contentScript]', ...args); } catch (e2) {}
+      try { safeLog().apply(console, args); } catch (e2) {}
     }
   };
 
   try {
     lg('extractCleanMainTextAndHtml start', { hostname: (location && location.hostname) ? location.hostname : '' });
 
-    // ✅ EARLY DETECTION: Google Docs / Office Online
-    const hostname = (location.hostname || '').toLowerCase();
-    const isGoogleDocs = /docs\.google\.com/.test(hostname);
-    const isOfficeOnline = /officeapps\.live\.com|office\.com|microsoftonline\.com/.test(hostname);
-    const isRestrictedEditor = isGoogleDocs || isOfficeOnline;
-    
-    if (isRestrictedEditor) {
-      lg('restricted editor detected, returning empty (user should copy/paste)');
-      return { text: '', html: '', title: document.title || '' };
-    }
-
-    // ✅ IMPROVED: Filter out navigation/Windows junk BEFORE extraction
-    const cleanBeforeExtract = (txt) => {
-      if (!txt) return '';
-      let t = txt;
-      
-      // Remove common nav/OS UI patterns
-      t = t.replace(/windows\s+\d+/gi, ' '); // "Windows 10", "Windows 11"
-      t = t.replace(/\b(menu|sidebar|navigation|skip to|table of contents|breadcrumb|toolbar)\b[^\n]{0,100}/gi, ' ');
-      t = t.replace(/\b(copyright|©|all rights reserved|privacy policy|terms of service)\b[^\n]{0,150}/gi, ' ');
-      
-      return t.replace(/\s{2,}/g, ' ').trim();
-    };
-
-    // Normal extraction flow
     try {
       const hasRead = (typeof Readability === 'function');
       lg('Readability available?', !!hasRead);
       if (hasRead) {
         try {
-          lg('Attempting Readability.parse on SERIALIZED DOM');
+          lg('Attempting Readability.parse on SERIALIZED DOM (non-destructive)');
           const serialized = (document.documentElement && document.documentElement.outerHTML)
             ? document.documentElement.outerHTML
             : (document.body && document.body.outerHTML) ? document.body.outerHTML : '';
@@ -798,26 +747,37 @@ function extractCleanMainTextAndHtml(mainNode) {
             const parser = new DOMParser();
             const parsedDoc = parser.parseFromString('<!doctype html>\n' + serialized, 'text/html');
             const article = new Readability(parsedDoc).parse();
-            lg('Readability.parse result', { ok: !!article, textLen: article && article.textContent ? article.textContent.length : 0 });
+            lg('Readability.parse serialized result', { ok: !!article, title: article && article.title, textLen: article && article.textContent ? (article.textContent || '').length : 0 });
             
             if (article && article.textContent && String(article.textContent).trim().length > 200) {
-              let text = cleanBeforeExtract(String(article.textContent || ''));
+              let text = String(article.textContent || '').replace(/\s{2,}/g, ' ').trim();
               text = _postCleanExtractedText(text);
               return { text, html: String(article.content || '').trim(), title: (article.title || document.title || '') };
             }
+          } else {
+            lg('Serialization produced empty string; skipping Readability');
           }
         } catch (serErr) {
-          lg('Readability failed', serErr);
+          lg('Readability serialized parse threw (falling back to legacy extractor)', serErr && (serErr.stack || serErr.message || serErr));
         }
       }
     } catch (e) {
-      lg('Readability check threw', e);
+      lg('Readability check threw (will use legacy extractor)', e && (e.stack || e));
     }
 
-    lg('Using legacy extractor');
+    lg('Using legacy extractor (clone + prune)');
+
     const clone = (mainNode && typeof mainNode.cloneNode === 'function') ? mainNode.cloneNode(true) : null;
     if (!clone) {
-      lg('No clone available');
+      lg('Legacy extractor: no mainNode clone available — returning empty');
+      try {
+        const ed = Array.from(document.querySelectorAll('[contenteditable="true"]')).filter(isVisible);
+        if (ed.length) {
+          const agg = ed.map(e => (e.innerText || '')).join('\n\n');
+          const cleaned = _postCleanExtractedText(String(agg || '').replace(/\s{2,}/g, ' ').trim());
+          if (cleaned && cleaned.length) return { text: cleaned, html: '', title: document.title || '' };
+        }
+      } catch(e){}
       return { text: '', html: '', title: document.title || '' };
     }
 
@@ -836,6 +796,7 @@ function extractCleanMainTextAndHtml(mainNode) {
       '.breadcrumb','.breadcrumbs','.tag-list','.tags','.topics'
     ];
 
+    const hostname = (location.hostname || '').toLowerCase();
     const siteExtras = {
       'health.clevelandclinic.org': ['.related-articles', '.related-articles-module', '.rc-article-related', '.article__related', '.trending', '.more-articles', '.cc-byline', '.byline', '.author'],
       'clevelandclinic.org': ['.related-articles', '.trending', '.more-articles'],
@@ -952,12 +913,11 @@ function extractCleanMainTextAndHtml(mainNode) {
   } catch (err) {
     try {
       if (typeof safeLog === 'function') safeLog('extractCleanMainTextAndHtml error', err && (err.stack || err));
-      else console.log('[ClarityRead contentScript] extractCleanMainTextAndHtml error', err && (err.stack || err));
+      else safeLog()('extractCleanMainTextAndHtml error', err && (err.stack || err));
     } catch (e) {}
     return { text: '', html: '', title: document.title || '' };
   }
 }
-
 
 window.__clarity_read_extract = function() {
   try {
@@ -1124,7 +1084,7 @@ function createReaderOverlay(text) {
 
 function removeReaderOverlay() {
   try {
-    // Remove overlay elements
+    // Remove known IDs
     const ids = ['readeasy-reader-overlay', 'clarityread-overlay'];
     for (const id of ids) {
       const el = document.getElementById(id);
@@ -1137,11 +1097,10 @@ function removeReaderOverlay() {
       if (__clarityread_nav_prevent_handler) {
         document.removeEventListener('click', __clarityread_nav_prevent_handler, true);
         __clarityread_nav_prevent_handler = null;
-        safeLog('Removed nav prevent handler');
       }
     } catch(e) { safeLog('remove nav prevent handler failed', e); }
 
-    // Defensive cleanup
+    // Also remove any node that looks like our overlay (defensive)
     try {
       const suspects = Array.from(document.querySelectorAll('div')).filter(d => {
         try {
@@ -1153,7 +1112,7 @@ function removeReaderOverlay() {
 
     overlayActive = false;
     overlayTextSplice = null;
-    safeLog('removeReaderOverlay executed');
+    safeLog('removeReaderOverlay executed (defensive)');
 
     try { notifyOverlayState(false); } catch(e){ safeLog('notify overlay remove failed', e); }
   } catch(e) {
@@ -1163,47 +1122,9 @@ function removeReaderOverlay() {
     try { notifyOverlayState(false); } catch(_) {}
   }
 }
-    function removeReaderOverlay() {
-    try {
-      // Remove known IDs
-      const ids = ['readeasy-reader-overlay', 'clarityread-overlay'];
-      for (const id of ids) {
-        const el = document.getElementById(id);
-        if (el) {
-          try { el.remove(); } catch(e) { safeLog('removeReaderOverlay failed to remove', id, e); }
-        }
-      }
-
-          try {
-      if (__clarityread_nav_prevent_handler) {
-        document.removeEventListener('click', __clarityread_nav_prevent_handler, true);
-        __clarityread_nav_prevent_handler = null;
-      }
-    } catch(e) { safeLog('remove nav prevent handler failed', e); }
 
 
-      // also remove any node that looks like our overlay (defensive)
-      try {
-        const suspects = Array.from(document.querySelectorAll('div')).filter(d => {
-          try {
-            return d && d.id && (d.id.indexOf('readeasy-reader-overlay') >= 0 || d.id.indexOf('clarityread-overlay') >= 0);
-          } catch(e) { return false; }
-        });
-        suspects.forEach(s => { try { s.remove(); } catch(e){} });
-      } catch(e) {}
-
-      overlayActive = false;
-      overlayTextSplice = null;
-      safeLog('removeReaderOverlay executed (defensive)');
-
-      try { notifyOverlayState(false); } catch(e){ safeLog('notify overlay remove failed', e); }
-    } catch(e) {
-      safeLog('removeReaderOverlay outer error', e);
-      overlayActive = false;
-      overlayTextSplice = null;
-      try { notifyOverlayState(false); } catch(_) {}
-    }
-  }
+ 
 
  function clearHighlights() {
   // stop any fallback ticker first
@@ -1842,83 +1763,45 @@ function speakChunksSequentially(chunks, rate = 1, voiceName) {
   }
 
   // --- Helpers to get page text or selection
-function getTextToRead() {
+  function getTextToRead() {
   try {
-    const hostname = (location.hostname || '').toLowerCase();
-    const isGoogleDocs = /docs\.google\.com/.test(hostname);
-    const isOfficeOnline = /officeapps\.live\.com|office\.com|microsoftonline\.com/.test(hostname);
-    const isNotionApp = /notion\.so/.test(hostname);
-    const isRestrictedEditor = isGoogleDocs || isOfficeOnline || isNotionApp;
-    
-    // ✅ SAFE: Only show toast once per session
-    if (isRestrictedEditor && !window.__clarityread_restricted_toast_shown) {
-      window.__clarityread_restricted_toast_shown = true;
-      
-      // Use safe toast (won't throw if undefined)
-      try {
-        if (typeof ClarityReadToast !== 'undefined' && ClarityReadToast.showToast) {
-          let editorName = 'This editor';
-          if (isGoogleDocs) editorName = 'Google Docs';
-          else if (isOfficeOnline) editorName = 'Microsoft Office Online';
-          else if (isNotionApp) editorName = 'Notion';
-          
-          ClarityReadToast.showToast(
-            `${editorName} content is protected. Workaround: Copy text (Ctrl/Cmd+C) → Click ClarityRead icon → Click "Save Selection" → Read from Saved Content.`,
-            { type: 'info', timeout: 15000 }
-          );
-        }
-      } catch(e) { 
-        // Fallback: log to console if toast unavailable
-        console.info(`[ClarityRead] ${editorName} detected - use copy/paste workaround`); 
-      }
-      
-      // Still try to get any accessible text (comments, UI, etc)
-      const sel = window.getSelection();
-      const s = (sel && typeof sel.toString === 'function') ? sel.toString() : '';
-      if (s && s.trim().length > 40) {
-        safeLog('getTextToRead: returning selection from restricted editor UI', s.length);
-        return s.trim();
-      }
-      
-      return ''; // Empty - will trigger proper error handling in popup
-    }
-    
-    // ✅ Normal flow for accessible sites
     const sel = window.getSelection();
     const s = (sel && typeof sel.toString === 'function') ? sel.toString() : '';
     
     if (s && s.trim().length > 0) {
-      safeLog('getTextToRead: returning selection', s.length);
+      safeLog('getTextToRead returning selection length', s.length);
       return s.trim();
     }
     
-    // Fallback to contenteditable
+    safeLog('getTextToRead start heuristics', {
+      selectionLen: s.length,
+      activeElementTag: (document.activeElement && document.activeElement.tagName) ? document.activeElement.tagName : null,
+      docBodyLen: (document.body && document.body.innerText) ? document.body.innerText.length : 0
+    });
+
     try {
       const editables = Array.from(document.querySelectorAll('[contenteditable="true"]')).filter(isVisible);
       if (editables.length) {
         editables.sort((a,b) => ((b.innerText||'').length - (a.innerText||'').length));
         if ((editables[0].innerText || '').trim().length >= 40) {
-          return editables[0].innerText.trim();
+          const tEd = editables[0].innerText.trim();
+          safeLog('getTextToRead using contenteditable text length', tEd.length);
+          return tEd;
         }
       }
-    } catch(e){ safeLog('contenteditable check failed', e); }
+    } catch(e){ safeLog('getTextToRead contenteditable check failed', e); }
 
-    // Fallback to main node
     const main = getMainNode();
-    let t = (main && main.innerText) ? main.innerText.trim() : '';
-    
+    let t = (main && main.innerText) ? main.innerText.trim() : (document.body && document.body.innerText ? document.body.innerText.trim() : '');
+
     if (t && t.length > 20000) {
+      safeLog('getTextToRead truncated main text to 20000 chars');
       return t.slice(0, 20000);
     }
-    
-    return t || '';
-  } catch (e) { 
-    safeLog('getTextToRead error', e); 
-    return ''; 
-  }
+    safeLog('getTextToRead main text length', (t || '').length);
+    return t ? t : '';
+  } catch (e) { safeLog('getTextToRead err', e); return ''; }
 }
-
-
 
   function detectLanguage() {
     const lang = (document.documentElement.lang || navigator.language || 'en').toLowerCase();
@@ -2120,17 +2003,6 @@ function stopInvertGuard() {
     try {
       safeLog('onMessage received', msg, 'from', sender && sender.tab ? { tabId: sender.tab.id, url: sender.tab.url } : sender);
       if (!msg || !msg.action) { sendResponse({ ok: false }); safeLog('onMessage missing action -> responded false'); return true; }
-      // --- Support-check request (popup asks "is this page supported?")
-if (msg && msg.action === 'clarity_support_check') {
-  try {
-    const res = detectUnsupportedEditor();
-    sendResponse(res);
-  } catch (e) {
-    try { sendResponse({ ok: true }); } catch(_) {}
-  }
-  return true;
-}
-
       // at the top of the onMessage handler (before other cases)
 if (msg && msg.action === 'set_debug') {
   try {
@@ -2146,17 +2018,6 @@ if (msg && msg.action === 'set_debug') {
       switch (msg.action) {
         case 'applySettings':
           try {
-            // If page is unsupported for editor-level injection, skip invasive changes and reply with reason.
-try {
-  const _support = detectUnsupportedEditor();
-  if (_support && _support.unsupported) {
-    safeLog('applySettings skipped due to unsupported page', _support.reason);
-    // respond with unsupported diagnostic so popup can show a friendly notice
-    sendResponse({ ok: false, unsupported: true, reason: _support.reason, message: _support.message });
-    break; // stop further applySettings handling
-  }
-} catch(e){}
-
             if (typeof msg.dys !== 'undefined') {
               if (msg.dys) {
                 try { ensureDysFontInjected(); } catch(e){ safeLog('ensureDysFontInjected threw', e); }
@@ -2426,17 +2287,6 @@ case 'readAloud': {
     } catch (e) { cb(''); }
   }
 
-  // If page is unsupported, respond with diagnostic and don't start TTS/overlay attempts.
-try {
-  const _support = detectUnsupportedEditor();
-  if (_support && _support.unsupported) {
-    safeLog('readAloud aborted due to unsupported page', _support.reason);
-    sendResponse({ ok: false, unsupported: true, reason: _support.reason, message: _support.message });
-    return true; // keep message channel open-consistent
-  }
-} catch(e){}
-
-
   chrome.storage.sync.get(['voice','rate','pitch','highlight'], (store) => {
     const voice = (typeof msg.voice === 'string') ? msg.voice : (store && store.voice) ? store.voice : '';
     const rate = (typeof msg.rate !== 'undefined' && !isNaN(Number(msg.rate))) ? Number(msg.rate) : (store && typeof store.rate !== 'undefined' ? Number(store.rate) : 1);
@@ -2550,15 +2400,6 @@ try {
 }
 
         case 'toggleFocusMode': {
-          try {
-  const _support = detectUnsupportedEditor();
-  if (_support && _support.unsupported) {
-    safeLog('toggleFocusMode skipped due to unsupported page', _support.reason);
-    sendResponse({ ok: false, unsupported: true, reason: _support.reason, message: _support.message });
-    break;
-  }
-} catch(e){}
-
           const res = toggleFocusMode();
           sendResponse(res);
           safeLog('toggleFocusMode responded', res);
@@ -2643,4 +2484,5 @@ sendResponse(resp);
     setTimeout(run, 0);
   }
 })();
+
 

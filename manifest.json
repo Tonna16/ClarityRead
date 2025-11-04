@@ -58,7 +58,8 @@
         "src/fonts/OpenDyslexic-Regular.woff",
         "src/inject.css",
         "src/lib/chart.umd.min.js",
-        "src/toast.css"
+        "src/toast.css",
+        "src/toast.js"
       ],
       "matches": [
         "http://*/*",

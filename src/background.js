@@ -9,6 +9,7 @@
   const safeWarn = (...args) => { try { if (DEBUG) console.warn('[ClarityRead bg]', ...args); } catch (e) {} };
   const safeInfo = (...args) => { try { if (DEBUG) console.info('[ClarityRead bg]', ...args); } catch (e) {} };
 
+const HOSTED_VIEWER_RE = /(?:^|\.)((docs\.google\.com)|(drive\.google\.com)|(googleusercontent\.com)|(office\.com)|(microsoftonline\.com)|(sharepoint\.com)|(slideshare\.net))/i;
 
   function safeRuntimeSendMessage(message) {
     try {
@@ -80,6 +81,13 @@
     }
   }
 
+  function isHostedDocumentViewer(url = '') {
+  try {
+    if (!url) return false;
+    return HOSTED_VIEWER_RE.test(String(url));
+  } catch (e) { return false; }
+}
+
   // Resolves with structured result { ok: boolean, response?, error?, detail?, permissionPattern?, cssError?, userFriendlyMessage? }
   async function sendMessageToTabWithInjection(tabId, message) {
     safeLog('sendMessageToTabWithInjection called', { tabId, action: message && message.action, hintedTarget: message && message._targetTabId });
@@ -118,6 +126,19 @@ if (/receiving end does not exist/i.test(errMsg) || /could not establish connect
               return finish({ ok: false, error: 'invalid-tab', detail: chrome.runtime.lastError ? chrome.runtime.lastError.message : 'no-tab', userFriendlyMessage: 'Target tab not found.' });
             }
 
+            // Pre-check: if this is a hosted document viewer (Google Docs/Office viewers etc.)
+// don't attempt injection or host permission flows — return a structured error
+if (isHostedDocumentViewer(tab.url)) {
+  safeInfo('detected hosted document viewer — aborting injection', tab.url);
+  return finish({
+    ok: false,
+    error: 'viewer-or-iframe',
+    detail: tab.url,
+    userFriendlyMessage: 'This looks like a hosted document viewer (e.g. Google Docs / Office Online) — ClarityRead cannot access this page.'
+  });
+}
+
+
             safeLog('target tab info', { id: tab.id, url: tab.url, discarded: !!tab.discarded, active: !!tab.active, status: tab.status });
 
             if (!tab.url || !isWebUrl(tab.url)) {
@@ -129,9 +150,10 @@ if (/receiving end does not exist/i.test(errMsg) || /could not establish connect
               safeInfo('tab is discarded', tabId, tab.url);
               return finish({ ok: false, error: 'tab-discarded', detail: tab.url, userFriendlyMessage: 'Tab is discarded/suspended by the browser.' });
             }
+// Inject toast helper first so pages have a small UX helper available for friendly messages
+const jsFiles = ['src/toast.js', 'src/contentScript.js'];
+const cssFiles = ['src/inject.css', 'src/toast.css'];
 
-            const jsFile = 'src/contentScript.js';
-            const cssFile = 'src/inject.css';
             let cssErrorMsg = null;
 
             const permissionPattern = buildOriginPermissionPattern(tab.url);
@@ -139,7 +161,7 @@ if (/receiving end does not exist/i.test(errMsg) || /could not establish connect
             if (!permissionPattern) {
               safeInfo('no origin permission pattern (best-effort injection)', tab.url);
               try {
-                chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: [jsFile] }, (injectionResults) => {
+                chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: jsFiles }, (injectionResults) => {
                   if (chrome.runtime.lastError) {
                     safeWarn('scripting.executeScript failed (no-origin-pattern)', chrome.runtime.lastError.message);
                     // viewer/iframe detection
@@ -148,7 +170,7 @@ if (/receiving end does not exist/i.test(errMsg) || /could not establish connect
                     }
                     return finish({ ok: false, error: 'injection-failed', detail: chrome.runtime.lastError.message, userFriendlyMessage: 'Failed to inject the content script.' });
                   }
-                  chrome.scripting.insertCSS({ target: { tabId, allFrames: true }, files: [cssFile] }, (cssRes) => {
+                  chrome.scripting.insertCSS({ target: { tabId, allFrames: true }, files: cssFiles }, (cssRes) => {
                     cssErrorMsg = chrome.runtime.lastError ? String(chrome.runtime.lastError.message || chrome.runtime.lastError) : null;
                     chrome.tabs.sendMessage(tabId, message, (resp2) => {
                       if (chrome.runtime.lastError) {
@@ -191,7 +213,7 @@ if (/receiving end does not exist/i.test(errMsg) || /could not establish connect
 
                   try {
                     safeLog('attempting scripting.executeScript', { tabId, jsFile });
-                    chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: [jsFile] }, (injectionResults) => {
+                    chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: jsFiles }, (injectionResults) => {
                       if (chrome.runtime.lastError) {
                         const lower = (chrome.runtime.lastError.message || '').toLowerCase();
                         if (lower.includes('must request permission') || lower.includes('cannot access contents of the page') || lower.includes('has no access to')) {
@@ -203,7 +225,7 @@ if (/receiving end does not exist/i.test(errMsg) || /could not establish connect
                         return finish({ ok: false, error: 'injection-failed', detail: chrome.runtime.lastError.message, userFriendlyMessage: 'Failed to inject content script.' });
                       }
 
-                      chrome.scripting.insertCSS({ target: { tabId, allFrames: true }, files: [cssFile] }, (cssRes) => {
+                      chrome.scripting.insertCSS({ target: { tabId, allFrames: true }, files: cssFiles }, (cssRes) => {
                         const cssErrorMsg = chrome.runtime.lastError ? String(chrome.runtime.lastError.message || chrome.runtime.lastError) : null;
                         // Now attempt the message to the top-level content script; it should route as needed
                         chrome.tabs.sendMessage(tabId, message, (resp2) => {
@@ -236,7 +258,7 @@ if (/receiving end does not exist/i.test(errMsg) || /could not establish connect
               // fall back to best-effort injection path (similar code above)
               try {
                 safeLog('attempting scripting.executeScript (permission.contains threw)', { tabId, jsFile });
-                chrome.scripting.executeScript({ target: { tabId }, files: [jsFile] }, (injectionResults) => {
+                chrome.scripting.executeScript({ target: { tabId }, files: jsFiles }, (injectionResults) => {
                   if (chrome.runtime.lastError) {
                     safeWarn('scripting.executeScript failed (after permission.contains threw)', chrome.runtime.lastError.message);
                     const lower = (chrome.runtime.lastError.message || '').toLowerCase();
@@ -245,7 +267,7 @@ if (/receiving end does not exist/i.test(errMsg) || /could not establish connect
                     }
                     return finish({ ok: false, error: 'injection-failed', detail: chrome.runtime.lastError.message, userFriendlyMessage: 'Failed to inject content script.' });
                   }
-                  chrome.scripting.insertCSS({ target: { tabId }, files: [cssFile] }, (cssRes) => {
+                  chrome.scripting.insertCSS({ target: { tabId }, files: cssFiles }, (cssRes) => {
                     if (chrome.runtime.lastError) {
                       cssErrorMsg = String(chrome.runtime.lastError.message || chrome.runtime.lastError);
                       safeWarn('insertCSS failed', cssErrorMsg);

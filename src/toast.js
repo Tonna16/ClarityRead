@@ -3,14 +3,17 @@
   global.__clarityread_toast = true;
 
   function ensureContainer() {
-    let c = document.querySelector('.clarity-toast-container');
-    if (!c) {
-      c = document.createElement('div');
-      c.className = 'clarity-toast-container';
-      document.documentElement.appendChild(c);
-    }
-    return c;
+  let c = document.querySelector('.clarity-toast-container');
+  if (!c) {
+    c = document.createElement('div');
+    c.className = 'clarity-toast-container';
+    // prefer appending to body for stability; fall back to documentElement
+    const parent = document.body || document.documentElement || document.head || document;
+    try { parent.appendChild(c); } catch (e) { document.documentElement.appendChild(c); }
   }
+  return c;
+}
+
 
   function showToast(message, { type = 'info', timeout = 4500 } = {}) {
     try {
