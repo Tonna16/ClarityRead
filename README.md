@@ -27,5 +27,3 @@ ClarityRead is privacy-first. By default, all processing (summaries, TTS via bro
 ## Support
 If you have problems, use the repository issues page or email `ttonnaagburu@gmail.com`.
 
-
-

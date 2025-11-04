@@ -4,7 +4,7 @@
   const HANDSHAKE_KEY = '_handshakeSelection';
   const HANDSHAKE_TTL_MS = 30 * 1000; // 30s 
 
-  const DEBUG = true; // set true for debugging, false for release
+  const DEBUG = false; // set true for debugging, false for release
   const safeLog = (...args) => { try { if (DEBUG) console.log('[ClarityRead bg]', ...args); } catch (e) {} };
   const safeWarn = (...args) => { try { if (DEBUG) console.warn('[ClarityRead bg]', ...args); } catch (e) {} };
   const safeInfo = (...args) => { try { if (DEBUG) console.info('[ClarityRead bg]', ...args); } catch (e) {} };
@@ -20,26 +20,6 @@
       safeWarn('safeRuntimeSendMessage threw', err);
     }
   }
- 
-  async function injectContent(tabId) {
-  try {
-    // Inject CSS first
-    await chrome.scripting.insertCSS({
-      target: { tabId },
-      files: ["src/inject.css"]
-    });
-
-    // Inject JS files
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: ["src/lib/Readability.js", "src/contentScript.js"]
-    });
-
-    console.log("ClarityRead: scripts injected into tab", tabId);
-  } catch (err) {
-    console.warn("ClarityRead: injection failed", err);
-  }
-}
 
   function isWebUrl(u = '') {
     if (!u) return false;
@@ -414,7 +394,6 @@ chrome.commands.onCommand.addListener(async (command) => {
 
     // If active tab is a web page, target it
     if (tab && isWebUrl(tab.url || '')) {
-      await injectContent(tab.id); // <-- ensure scripts are loaded
       // send to web tab as before
       if (command === "read-aloud") {
         const result = await sendMessageToTabWithInjection(tab.id, { action: "readAloud" });
@@ -456,7 +435,6 @@ chrome.commands.onCommand.addListener(async (command) => {
     }
 
     if (foundWebTab) {
-        await injectContent(foundWebTab.id);
       // send to discovered web tab
       if (command === "read-aloud") {
         const result = await sendMessageToTabWithInjection(foundWebTab.id, { action: "readAloud" });

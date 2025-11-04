@@ -1,11 +1,10 @@
 document.addEventListener('DOMContentLoaded', () => {
-  const DEBUG = true; // set true for development, false for production
+  const DEBUG = false; // set true for development, false for production
   const $ = id => document.getElementById(id) || null;
  
   const safeLog = (...a) => { try { if (DEBUG) console.log('[ClarityRead popup]', ...a); } catch (e) {} };
-  const safeWarn = (...a) => { try { if (DEBUG) console.warn('[ClarityRead popup]', ...a); } catch (e) {} };
+  const safeWarn = (...a) => { try { if (DEBUG) safeLog()('[ClarityRead popup]', ...a); } catch (e) {} };
   const safeInfo = (...a) => { try { if (DEBUG) console.info('[ClarityRead popup]', ...a); } catch (e) {} };
-
 
   let opLock = false;
 
@@ -47,45 +46,6 @@ async function queryOverlayStateOnActiveTab() {
 
 try { queryOverlayStateOnActiveTab(); } catch(e) {}
 
-// ---------- Add to popup.js inside DOMContentLoaded wrapper ----------
-async function queryTabSupport(activeTabId) {
-  return new Promise((resolve) => {
-    try {
-      chrome.tabs.sendMessage(activeTabId, { action: 'clarity_support_check' }, (resp) => {
-        // If runtime.lastError exists, assume content script not present -> that's OK (we can inject)
-        if (chrome.runtime.lastError) {
-          // content script missing or page doesn't allow messaging => assume ok (we will rely on content script failures)
-          resolve({ ok: true, note: 'no-content-script' });
-          return;
-        }
-        if (!resp) { resolve({ ok: true }); return; }
-        resolve(resp);
-      });
-    } catch (e) { resolve({ ok: true }); }
-  });
-}
-
-// Helper to show user messages (simple toast)
-function showSupportNotice(text, level = 'info') {
-  // try to use your existing toast() if present, otherwise fallback to alert
-  try {
-    if (typeof toast === 'function') {
-      toast(text, level === 'error' ? 'error' : 'info', { duration: 6000 });
-      return;
-    }
-  } catch (e) {}
-  // fallback: small in-popup notice
-  const el = document.createElement('div');
-  el.textContent = text;
-  el.style.padding = '10px';
-  el.style.marginTop = '10px';
-  el.style.borderRadius = '8px';
-  el.style.background = level === 'error' ? '#ffecec' : '#eef6ff';
-  el.style.color = '#111';
-  const container = document.querySelector('.data-panel') || document.querySelector('main') || document.body;
-  container.insertBefore(el, container.firstChild);
-  setTimeout(() => { try { el.remove(); } catch(_){} }, 7000);
-}
 
   try {
     const body = document.querySelector('body');
@@ -175,6 +135,19 @@ function setToStorage(obj) {
     return el;
   }
 
+function getFromStorage(keys) {
+  return new Promise((resolve) => {
+    try { chrome.storage.local.get(keys, (res) => resolve(res || {})); }
+    catch (e) { resolve({}); }
+  });
+}
+function setToStorage(obj) {
+  return new Promise((resolve) => {
+    try { chrome.storage.local.set(obj, () => resolve()); }
+    catch (e) { resolve(); }
+  });
+}
+
 
   function show(msg, type = 'info', ttl = 3500) {
     try {
@@ -201,7 +174,7 @@ function setToStorage(obj) {
       }
       return id;
     } catch (e) {
-      if (DEBUG) safeLog('Toasts.show error', e);
+      if (DEBUG) safeLog()('Toasts.show error', e);
       return null;
     }
   }
@@ -214,7 +187,7 @@ function setToStorage(obj) {
         try { el.remove(); } catch(e) {}
         instances.delete(id);
       }
-    } catch (e) { if (DEBUG) safeLog('Toasts.clear error', e); }
+    } catch (e) { if (DEBUG) safeLog()('Toasts.clear error', e); }
   }
 
   function clearAll() {
@@ -225,7 +198,7 @@ function setToStorage(obj) {
       }
       const c = document.getElementById(containerId);
       if (c) c.remove();
-    } catch (e) { if (DEBUG) safeLog('Toasts.clearAll error', e); }
+    } catch (e) { if (DEBUG) safeLog()('Toasts.clearAll error', e); }
   }
 
   function showProgress(msg = 'Working...', timeoutMs = 60000) {
@@ -259,7 +232,7 @@ function clearToastsLocal() { Toasts.clearAll(); }
     s.setAttribute('data-clarity-chart', '1');
     s.src = src;
     s.onload = () => { safeLog('Chart.js injected and loaded'); if (typeof callback === 'function') callback(); };
-    s.onerror = (e) => { safeLog('Failed to load Chart.js from', src, e); if (typeof callback === 'function') callback(); };
+    s.onerror = (e) => { safeLog()('Failed to load Chart.js from', src, e); if (typeof callback === 'function') callback(); };
     document.head.appendChild(s);
     safeLog('ensureChartReady injected script', src);
   }
@@ -1100,244 +1073,60 @@ try {
     } catch (e) { safeLog('extractSelection threw', e); return null; }
   }
 
- // ✅ PRODUCTION-READY Read Button Handler
-safeOn(readBtn, 'click', async () => {
-  safeLog('readBtn clicked', { isReading, isPaused });
-  if (isReading) { 
-    toast('Already reading. Pause or stop before starting a new read.', 'info'); 
-    return; 
-  }
-  
-  const settings = gatherSettingsObject();
-  
-  // Save settings to sync storage
-  chrome.storage.sync.set({ 
-    voice: settings.voice, 
-    rate: settings.rate, 
-    pitch: settings.pitch, 
-    highlight: settings.highlight 
-  }, async () => {
-    // Ensure voices are loaded
-    const voices = await ensureVoicesLoaded(500);
-    safeLog('voices after ensure', voices.length);
-    
-    // Voice fallback if selected voice not available
-    if (settings.voice && voices.length && !voices.find(v => v.name === settings.voice)) {
-      const fallback = (voices.find(v => v.lang && v.lang.startsWith('en')) || voices[0]);
-      if (fallback) {
-        settings.voice = fallback.name;
-        chrome.storage.sync.set({ voice: settings.voice });
-        persistVoiceOverrideForCurrentSite(settings.voice);
-        safeLog('readBtn voice fallback applied', settings.voice);
-        toast('Selected voice not available — using fallback voice.', 'info', 3000);
-      }
-    }
-
-    // ✅ SPEED READ PATH
-    if (speedToggle && speedToggle.checked) {
-      const chunkSize = Number(chunkSizeInput?.value || 3);
-      const rate = Number(speedRateInput?.value || settings.rate || 1);
-      safeLog('starting speedRead', { chunkSize, rate });
-      
-      readBtn.disabled = true;
-      const res = await sendMessageToActiveTabWithInject({ 
-        action: 'speedRead', 
-        chunkSize, 
-        rate 
-      });
-      readBtn.disabled = false;
-      
-      const r = normalizeBgResponse(res);
-      if (!r || !r.ok) {
-        safeLog('speedRead failed', r);
-        
-        // Handle restricted editors
-        if (r && r.error === 'no-text') {
-          const tab = await findBestWebTab();
-          if (tab && tab.url) {
-            const hostname = (new URL(tab.url).hostname || '').toLowerCase();
-            
-            if (/docs\.google\.com/.test(hostname)) {
-              toast(
-                '💡 Google Docs Workaround: 1) Copy your text (Ctrl/Cmd+C), 2) Open ClarityRead Reader page, 3) Paste and read there!', 
-                'info', 
-                12000
-              );
-              return;
-            }
-            
-            if (/officeapps\.live\.com|office\.com|microsoftonline\.com/.test(hostname)) {
-              toast(
-                '💡 Office Workaround: Copy your text and use the ClarityRead Reader page (link in sidebar) to read it.', 
-                'info', 
-                12000
-              );
-              return;
-            }
-            
-            if (/notion\.so/.test(hostname)) {
-              toast(
-                '💡 Notion Workaround: Copy your text and paste into ClarityRead Reader page.', 
-                'info', 
-                10000
-              );
-              return;
-            }
-          }
-          
-          // Generic no-text error
-          toast(
-            'No text found. Try: 1) Select text on page, 2) Click Read, or 3) Copy text and use Reader page.', 
-            'info', 
-            8000
-          );
-          return;
+  // Read button
+  safeOn(readBtn, 'click', () => {
+    safeLog('readBtn clicked', { isReading, isPaused });
+    if (isReading) { toast('Already reading. Pause or stop before starting a new read.', 'info'); return; }
+    const settings = gatherSettingsObject();
+    chrome.storage.sync.set({ voice: settings.voice, rate: settings.rate, pitch: settings.pitch, highlight: settings.highlight }, async () => {
+      const voices = await ensureVoicesLoaded(500);
+      safeLog('voices after ensure', voices.length);
+      if (settings.voice && voices.length && !voices.find(v => v.name === settings.voice)) {
+        const fallback = (voices.find(v => v.lang && v.lang.startsWith('en')) || voices[0]);
+        if (fallback) {
+          settings.voice = fallback.name;
+          chrome.storage.sync.set({ voice: settings.voice });
+          persistVoiceOverrideForCurrentSite(settings.voice);
+          safeLog('readBtn voice fallback applied', settings.voice);
+          toast('Selected voice not available on this device — using fallback.', 'info', 3000);
         }
-        
-        // Fallback to normal read
-        toast('Speed-read unavailable. Trying normal read...', 'info', 2000);
-        const fallback = await sendMessageToActiveTabWithInject({ 
-          action: 'readAloud', 
-          highlight: settings.highlight,
-          voice: settings.voice,
-          rate: settings.rate,
-          pitch: settings.pitch
-        });
-        if (normalizeBgResponse(fallback)?.ok) {
+      }
+
+      if (speedToggle && speedToggle.checked) {
+        const chunkSize = Number(chunkSizeInput?.value || 3);
+        const rate = Number(speedRateInput?.value || settings.rate || 1);
+        safeLog('starting speedRead', { chunkSize, rate });
+        readBtn.disabled = true;
+        const res = await sendMessageToActiveTabWithInject({ action: 'speedRead', chunkSize, rate });
+        readBtn.disabled = false;
+        const r = normalizeBgResponse(res);
+        if (!r || !r.ok) {
+          safeLog('speedRead failed', r);
+          toast('Speed-read failed. Falling back to normal read.', 'error', 3500);
+          const fallback = await sendMessageToActiveTabWithInject({ action: 'readAloud', highlight: settings.highlight });
+          if (normalizeBgResponse(fallback)?.ok) setReadingStatus('Reading...');
+        } else {
           setReadingStatus('Reading...');
         }
-      } else {
-        setReadingStatus('Reading...');
+        return;
       }
-      return;
-    }
 
-    // ✅ NORMAL READ PATH
-    safeLog('sending readAloud', settings);
-    readBtn.disabled = true;
-    
-    const result = await sendMessageToActiveTabWithInject({ 
-      action: 'readAloud', 
-      highlight: settings.highlight, 
-      voice: settings.voice, 
-      rate: settings.rate, 
-      pitch: settings.pitch 
+      safeLog('sending readAloud', settings);
+      readBtn.disabled = true;
+      const result = await sendMessageToActiveTabWithInject({ action: 'readAloud', highlight: settings.highlight, voice: settings.voice, rate: settings.rate, pitch: settings.pitch });
+      readBtn.disabled = false;
+      safeLog('readAloud send response', result);
+      const r = normalizeBgResponse(result);
+      if (!r || !r.ok) {
+        safeLog('readAloud send failed:', JSON.stringify(r));
+        if (r && r.error === 'no-host-permission') toast('Permission needed to access this site. Click the extension icon on the page and allow access.', 'error', 7000);
+        else if (r && r.error === 'unsupported-page') toast('Cannot control this page (internal/extension page). Open the target tab and try again.', 'error', 6000);
+        else if (r && r.error === 'tab-discarded') toast('Target tab is suspended. Reload the page and try again.', 'error', 6000);
+        else if (r && r.error === 'no-tab') toast('No active tab found to read.', 'error', 4000);
+        else toast('Failed to start reading. See console for details.', 'error', 5000);
+      } else setReadingStatus('Reading...');
     });
-    
-    readBtn.disabled = false;
-    safeLog('readAloud send response', result);
-    
-    const r = normalizeBgResponse(result);
-    if (!r || !r.ok) {
-      safeLog('readAloud send failed:', JSON.stringify(r));
-      
-      // ✅ CONTEXT-AWARE ERROR HANDLING
-      if (r && r.error === 'no-text') {
-        const tab = await findBestWebTab();
-        if (tab && tab.url) {
-          const hostname = (new URL(tab.url).hostname || '').toLowerCase();
-          
-          // Google Docs
-          if (/docs\.google\.com/.test(hostname)) {
-            toast(
-              '💡 Google Docs Detected: Copy your text (Ctrl/Cmd+C), then open ClarityRead Reader page from the sidebar to paste and read it!', 
-              'info', 
-              12000
-            );
-            return;
-          }
-          
-          // Office Online
-          if (/officeapps\.live\.com|office\.com|microsoftonline\.com/.test(hostname)) {
-            toast(
-              '💡 Office Online Detected: Copy your text, then visit ClarityRead Reader page (sidebar link) to read it aloud.', 
-              'info', 
-              12000
-            );
-            return;
-          }
-          
-          // Notion
-          if (/notion\.so/.test(hostname)) {
-            toast(
-              '💡 Notion Detected: Copy text with Ctrl/Cmd+C, then use ClarityRead Reader page (sidebar) to read it.', 
-              'info', 
-              10000
-            );
-            return;
-          }
-        }
-        
-        // Generic no-text message
-        toast(
-          'No readable text found. Try: 1) Select text on the page, 2) Click Read again, or 3) Copy text and use the Reader page.', 
-          'info', 
-          8000
-        );
-        return;
-      }
-      
-      // Permission errors
-      if (r && r.error === 'no-host-permission') {
-        toast(
-          '🔒 Permission Needed: Click the extension icon → Allow ClarityRead on this site, then try again.', 
-          'error', 
-          10000
-        );
-        return;
-      }
-      
-      // Unsupported page
-      if (r && r.error === 'unsupported-page') {
-        toast(
-          '⚠️ Cannot read on extension/internal pages. Try a regular website or use the Reader page for your own text.', 
-          'error', 
-          8000
-        );
-        return;
-      }
-      
-      // Tab suspended
-      if (r && r.error === 'tab-discarded') {
-        toast(
-          '💤 This tab was sleeping. Reload the page and try again.', 
-          'error', 
-          6000
-        );
-        return;
-      }
-      
-      // No tab found
-      if (r && r.error === 'no-tab') {
-        toast(
-          '🔍 No active page found. Open a website, then try again.', 
-          'error', 
-          5000
-        );
-        return;
-      }
-      
-      // Duplicate read
-      if (r && r.error === 'duplicate-read') {
-        toast(
-          '✓ Already reading this! Use Stop to restart.', 
-          'info', 
-          3000
-        );
-        return;
-      }
-      
-      // Generic error
-      toast(
-        '❌ Failed to start reading. Select some text first, or check browser console for details.', 
-        'error', 
-        7000
-      );
-    } else {
-      setReadingStatus('Reading...');
-    }
   });
-});
 
   // Stop
   safeOn(stopBtn, 'click', async () => {
@@ -2337,7 +2126,7 @@ try {
     const modeSubtitle = usedSelection ? 'Selection' : 'Full page';
     const actualSentences = (summary || '').split(/(?<=[.?!])\s+/).map(s => s.trim()).filter(Boolean).length || 0;
     const headerTitle = `Page Summary — ${actualSentences} sentence${actualSentences === 1 ? '' : 's'} (${modeSubtitle})`;
-    createSummaryModal(headerTitle, final);
+    createSummaryModal(headerTitle, summary);
 
     toast('Summary ready', 'success', 3000);
 
@@ -3050,88 +2839,6 @@ safeOn(saveSelectionBtn, 'click', async () => {
   return true;
 });
 
-// ✅ FIRST-TIME USER ONBOARDING (in popup UI, not webpage)
-(function initOnboarding() {
-  chrome.storage.local.get(['clarity_onboarded'], (res) => {
-    if (res.clarity_onboarded) return;
-    
-    // Create overlay in popup window
-    const overlay = document.createElement('div');
-    overlay.style.cssText = `
-      position: fixed;
-      inset: 0;
-      background: rgba(0,0,0,0.85);
-      z-index: 999999;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 20px;
-      backdrop-filter: blur(4px);
-    `;
-    
-    const modal = document.createElement('div');
-    modal.style.cssText = `
-      background: white;
-      border-radius: 16px;
-      padding: 32px;
-      max-width: 480px;
-      box-shadow: 0 25px 80px rgba(0,0,0,0.4);
-      animation: slideIn 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-    `;
-    
-    modal.innerHTML = `
-      <style>
-        @keyframes slideIn {
-          from { opacity: 0; transform: translateY(30px) scale(0.95); }
-          to { opacity: 1; transform: translateY(0) scale(1); }
-        }
-      </style>
-      <div style="text-align: center;">
-        <div style="width: 80px; height: 80px; margin: 0 auto 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 20px; display: flex; align-items: center; justify-content: center; box-shadow: 0 10px 30px rgba(102, 126, 234, 0.3);">
-          <span style="font-size: 40px;">✨</span>
-        </div>
-        <h2 style="margin: 0 0 16px; font-size: 24px; color: #111; font-weight: 700;">Welcome to ClarityRead! 🎉</h2>
-        <div style="color: #555; font-size: 15px; line-height: 1.7; margin-bottom: 24px; text-align: left;">
-          <p style="margin: 12px 0;"><strong>📖 Quick Start:</strong></p>
-          <ol style="margin: 8px 0; padding-left: 24px; line-height: 1.8;">
-            <li>Open any article or webpage</li>
-            <li>Select text (or let ClarityRead auto-detect)</li>
-            <li>Click <strong>"Read"</strong> to start text-to-speech</li>
-            <li>Use <strong>"Focus Mode"</strong> for distraction-free reading</li>
-          </ol>
-          <p style="margin-top: 16px; padding: 12px; background: #fff7e6; border-left: 4px solid #ff9800; border-radius: 6px; font-size: 14px;">
-            <strong>💡 Google Docs/Office Users:</strong> Copy your text (Ctrl/Cmd+C), then click "Save Selection" to read it aloud!
-          </p>
-        </div>
-        <button id="onboarding-cta" style="
-          width: 100%;
-          padding: 14px;
-          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-          color: white;
-          border: none;
-          border-radius: 10px;
-          font-weight: 700;
-          cursor: pointer;
-          font-size: 16px;
-          box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
-          transition: transform 0.2s, box-shadow 0.2s;
-        " onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 8px 25px rgba(102, 126, 234, 0.5)';" onmouseout="this.style.transform=''; this.style.boxShadow='0 6px 20px rgba(102, 126, 234, 0.4)';">
-          Got it, let's go! →
-        </button>
-      </div>
-    `;
-    
-    overlay.appendChild(modal);
-    document.body.appendChild(overlay);
-    
-    document.getElementById('onboarding-cta').addEventListener('click', () => {
-      chrome.storage.local.set({ clarity_onboarded: true });
-      overlay.style.animation = 'fadeOut 0.3s ease';
-      setTimeout(() => overlay.remove(), 300);
-    });
-  });
-})();
-
 
   window.addEventListener('keydown', (e) => {
     try {
@@ -3157,3 +2864,6 @@ safeOn(saveSelectionBtn, 'click', async () => {
   renderSavedList();
   setTimeout(() => { safeLog('delayed loadVoicesIntoSelect'); loadVoicesIntoSelect(); }, 300);
 });
+
+
+
