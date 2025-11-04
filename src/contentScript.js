@@ -69,26 +69,24 @@ try {
 
 
 
-  (function() {
-    if (window.__clarity_reflow_installed) return;
-    window.__clarity_reflow_installed = false;
+ (function() {
+  if (window.__clarity_reflow_installed) return;
+  window.__clarity_reflow_installed = false;
 
-    const REFLOW_STYLE_ID = 'clarityreflow-style';
-    let _prevBodyFontSize = null;
-    let _prevMainNode = null;
-    let _prevMainNodeFontSize = null;
-    let _prevMainNodeLineHeight = null;
+  const REFLOW_STYLE_ID = 'clarityreflow-style';
+  let _prevBodyFontSize = null;
+  let _prevMainNode = null;
+  let _prevMainNodeFontSize = null;
+  let _prevMainNodeLineHeight = null;
 
-    function ensureReflowStyle() {
-      try {
-        if (document.getElementById(REFLOW_STYLE_ID)) return;
-        const st = document.createElement('style');
-        st.id = REFLOW_STYLE_ID;
-        
-        st.type = 'text/css';
-        
+  function ensureReflowStyle() {
+    try {
+      if (document.getElementById(REFLOW_STYLE_ID)) return;
+      const st = document.createElement('style');
+      st.id = REFLOW_STYLE_ID;
+      st.type = 'text/css';
 
-        st.textContent = `
+      st.textContent = `
 :root { --clarity-font-size: 20px; --clarity-line-height: 1.5; --readeasy-font-size: 20px; }
 
 /* Apply reflow only to likely article containers and their descendants */
@@ -157,9 +155,16 @@ html.readeasy-reflow h3 {
 /* keep non-article UI mostly untouched (avoid global star selectors) */
 /* overlay styles are handled separately by the content script's overlay code */
 `;
-        try { (document.head || document.documentElement).appendChild(st); } catch(e) { document.documentElement.appendChild(st); }
-      } catch (e) { /* ignore */ }
-    }
+
+      try { (document.head || document.documentElement).appendChild(st); } catch(e) { document.documentElement.appendChild(st); }
+    } catch (e) { /* ignore */ }
+  }
+
+  // Expose helper so other code can call ensureReflowStyle or apply CSS variables
+  window.__clarity_reflow = window.__clarity_reflow || {};
+  window.__clarity_reflow.ensureReflowStyle = ensureReflowStyle;
+
+
 
     function applyClarityFontSize(px) {
       try {
@@ -1763,22 +1768,24 @@ function speakChunksSequentially(chunks, rate = 1, voiceName) {
   }
 
   // --- Helpers to get page text or selection
-  function getTextToRead() {
+function getTextToRead() {
   try {
-    const sel = window.getSelection();
+    // Try live selection first
+    const sel = window.getSelection ? window.getSelection() : null;
     const s = (sel && typeof sel.toString === 'function') ? sel.toString() : '';
-    
+
     if (s && s.trim().length > 0) {
       safeLog('getTextToRead returning selection length', s.length);
       return s.trim();
     }
-    
+
     safeLog('getTextToRead start heuristics', {
       selectionLen: s.length,
       activeElementTag: (document.activeElement && document.activeElement.tagName) ? document.activeElement.tagName : null,
       docBodyLen: (document.body && document.body.innerText) ? document.body.innerText.length : 0
     });
 
+    // prefer large visible contenteditable editors (e.g., web-based editors)
     try {
       const editables = Array.from(document.querySelectorAll('[contenteditable="true"]')).filter(isVisible);
       if (editables.length) {
@@ -1791,7 +1798,8 @@ function speakChunksSequentially(chunks, rate = 1, voiceName) {
       }
     } catch(e){ safeLog('getTextToRead contenteditable check failed', e); }
 
-    const main = getMainNode();
+    // fallback to main node found by getMainNode()
+    const main = (typeof getMainNode === 'function') ? getMainNode() : (document.body || document.documentElement);
     let t = (main && main.innerText) ? main.innerText.trim() : (document.body && document.body.innerText ? document.body.innerText.trim() : '');
 
     if (t && t.length > 20000) {
@@ -1800,8 +1808,12 @@ function speakChunksSequentially(chunks, rate = 1, voiceName) {
     }
     safeLog('getTextToRead main text length', (t || '').length);
     return t ? t : '';
-  } catch (e) { safeLog('getTextToRead err', e); return ''; }
+  } catch (e) {
+    safeLog('getTextToRead err', e);
+    return '';
+  }
 }
+
 
   function detectLanguage() {
     const lang = (document.documentElement.lang || navigator.language || 'en').toLowerCase();

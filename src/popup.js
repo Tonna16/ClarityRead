@@ -2622,6 +2622,62 @@ async function summarizeSavedItem(item) {
   }
 }
 
+// --- Copy diagnostics UI (optional) ---
+// Add this near the end of your popup initialization (only if you want the button)
+(function addCopyDiagnosticsButton() {
+  try {
+    // don't double-add
+    if (document.getElementById('copyDiagnosticsBtn')) return;
+
+    const container = document.querySelector('.themeRow') || document.querySelector('.toolbar') || document.body;
+    if (!container) return;
+
+    const btn = document.createElement('button');
+    btn.id = 'copyDiagnosticsBtn';
+    btn.className = 'action-btn';
+    btn.style.marginLeft = '8px';
+    btn.title = 'Copy minimal diagnostics for support';
+    const ico = document.createElement('span'); ico.className = 'action-icon'; ico.textContent = '🧾';
+    const txt = document.createElement('span'); txt.className = 'action-text'; txt.textContent = 'Copy diagnostics';
+    btn.appendChild(ico); btn.appendChild(txt);
+    // Try to insert in a reasonable place
+    const ref = document.querySelector('.themeRow > *') || container.firstChild;
+    container.insertBefore(btn, ref || null);
+
+    btn.addEventListener('click', async () => {
+      try {
+        const manifest = chrome && chrome.runtime && chrome.runtime.getManifest ? chrome.runtime.getManifest() : {};
+        const version = manifest.version || manifest.version_name || 'unknown';
+        const ua = navigator.userAgent || '';
+        const stats = await new Promise((res) => chrome.storage.local.get(['stats'], r => res(r && r.stats ? r.stats : {})));
+        const diag = {
+          version,
+          userAgent: ua,
+          statsSummary: {
+            totalPagesRead: stats.totalPagesRead || 0,
+            totalTimeReadSec: stats.totalTimeReadSec || 0,
+            sessions: stats.sessions || 0
+          },
+          timestamp: new Date().toISOString()
+        };
+        const text = JSON.stringify(diag, null, 2);
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(text);
+          toast('Diagnostics copied to clipboard. Paste into your issue/email.', 'success', 4000);
+        } else {
+          // fallback: show diagnostics in a modal (very small) so user can copy manually
+          prompt('Diagnostics (copy manually):', text);
+        }
+      } catch (e) {
+        safeLog('copyDiagnosticsBtn click failed', e);
+        toast('Failed to collect diagnostics.', 'error', 3000);
+      }
+    });
+    safeLog('copy diagnostics button added.');
+  } catch (e) { safeLog('addCopyDiagnosticsButton error', e); }
+})();
+
+
 
 
 try { renderSavedList(); } catch (e) { safeLog('initial renderSavedList failed', e); }
