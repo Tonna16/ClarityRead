@@ -2758,7 +2758,6 @@ safeOn(saveSelectionBtn, 'click', async () => {
   };
   
   try {
-    // ✅ Path 1: Try helper message (preferred)
     const resRaw = await sendMessageToActiveTabWithInject({ action: 'getSelection' });
     safeLog('getSelection via helper', resRaw);
 
@@ -2766,7 +2765,7 @@ safeOn(saveSelectionBtn, 'click', async () => {
     if (res && res.ok === false && res.error === 'no-host-permission') {
       toast('ClarityRead lacks permission to access this site. Open the page and allow access.', 'error', 7000);
       saveSelectionBtn.disabled = false;
-      return; // ✅ Exit completely
+      return; //Exit completely
     }
 
     const selection = extractSelection(resRaw);
@@ -2774,10 +2773,9 @@ safeOn(saveSelectionBtn, 'click', async () => {
 
     if (selection && selection.text && selection.text.trim()) {
       saveWithDedup(selection);
-      return; // ✅ CRITICAL: Exit here to prevent fallback from running
+      return; 
     }
 
-    // ✅ Path 2: Only runs if Path 1 didn't find a selection
     const tab = await findBestWebTab();
     safeLog('saveSelection fallback tab', tab && { id: tab.id, url: tab.url });
     if (!tab || !tab.id) {
@@ -2894,6 +2892,85 @@ safeOn(saveSelectionBtn, 'click', async () => {
   sendResponse({ ok: true });
   return true;
 });
+
+// ✅ FIRST-TIME USER ONBOARDING (in popup UI, not webpage)
+(function initOnboarding() {
+  chrome.storage.local.get(['clarity_onboarded'], (res) => {
+    if (res.clarity_onboarded) return;
+    
+    // Create overlay in popup window
+    const overlay = document.createElement('div');
+    overlay.style.cssText = `
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.85);
+      z-index: 999999;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      backdrop-filter: blur(4px);
+    `;
+    
+    const modal = document.createElement('div');
+    modal.style.cssText = `
+      background: white;
+      border-radius: 16px;
+      padding: 32px;
+      max-width: 480px;
+      box-shadow: 0 25px 80px rgba(0,0,0,0.4);
+      animation: slideIn 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+    `;
+    
+    modal.innerHTML = `
+      <style>
+        @keyframes slideIn {
+          from { opacity: 0; transform: translateY(30px) scale(0.95); }
+          to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+      </style>
+      <div style="text-align: center;">
+        <div style="width: 80px; height: 80px; margin: 0 auto 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 20px; display: flex; align-items: center; justify-content: center; box-shadow: 0 10px 30px rgba(102, 126, 234, 0.3);">
+          <span style="font-size: 40px;">✨</span>
+        </div>
+        <h2 style="margin: 0 0 16px; font-size: 24px; color: #111; font-weight: 700;">Welcome to ClarityRead! 🎉</h2>
+        <div style="color: #555; font-size: 15px; line-height: 1.7; margin-bottom: 24px; text-align: left;">
+          <p style="margin: 12px 0;"><strong>📖 Quick Start:</strong></p>
+          <ol style="margin: 8px 0; padding-left: 24px; line-height: 1.8;">
+            <li>Open any article or webpage</li>
+            <li>Select text (or let ClarityRead auto-detect)</li>
+            <li>Click <strong>"Read"</strong> to start text-to-speech</li>
+            <li>Use <strong>"Focus Mode"</strong> for distraction-free reading</li>
+          </ol>
+        </div>
+        <button id="onboarding-cta" style="
+          width: 100%;
+          padding: 14px;
+          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+          color: white;
+          border: none;
+          border-radius: 10px;
+          font-weight: 700;
+          cursor: pointer;
+          font-size: 16px;
+          box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+          transition: transform 0.2s, box-shadow 0.2s;
+        " onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 8px 25px rgba(102, 126, 234, 0.5)';" onmouseout="this.style.transform=''; this.style.boxShadow='0 6px 20px rgba(102, 126, 234, 0.4)';">
+          Got it, let's go! →
+        </button>
+      </div>
+    `;
+    
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+    
+    document.getElementById('onboarding-cta').addEventListener('click', () => {
+      chrome.storage.local.set({ clarity_onboarded: true });
+      overlay.style.animation = 'fadeOut 0.3s ease';
+      setTimeout(() => overlay.remove(), 300);
+    });
+  });
+})();
 
 
   window.addEventListener('keydown', (e) => {
