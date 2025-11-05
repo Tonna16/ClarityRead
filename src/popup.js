@@ -2946,7 +2946,7 @@ safeOn(saveSelectionBtn, 'click', async () => {
         <button id="onboarding-cta" style="
           width: 100%;
           padding: 14px;
-          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+          background: linear-gradient(135deg, #0b0c13ff 0%, #764ba2 100%);
           color: white;
           border: none;
           border-radius: 10px;
