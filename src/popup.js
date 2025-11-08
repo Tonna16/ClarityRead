@@ -9,6 +9,61 @@ document.addEventListener('DOMContentLoaded', () => {
   let opLock = false;
 
 
+  // popup.js additions
+document.addEventListener('DOMContentLoaded', () => {
+  const connectBtn = document.getElementById('connectGoogleBtn');
+  const statusEl = document.getElementById('googleStatus');
+
+  async function updateStatus() {
+    // try to get token silently
+    try {
+      const token = await new Promise((resolve, reject) => {
+        chrome.identity.getAuthToken({ interactive: false }, (t) => {
+          if (chrome.runtime.lastError) return resolve(null);
+          resolve(t);
+        });
+      });
+      if (token) {
+        statusEl.textContent = 'Connected';
+        connectBtn.textContent = 'Connected';
+        connectBtn.disabled = true;
+      } else {
+        statusEl.textContent = 'Not connected';
+        connectBtn.textContent = 'Connect Google';
+        connectBtn.disabled = false;
+      }
+    } catch (e) {
+      statusEl.textContent = 'Not connected';
+      connectBtn.textContent = 'Connect Google';
+      connectBtn.disabled = false;
+    }
+  }
+
+  connectBtn.addEventListener('click', async () => {
+    try {
+      connectBtn.disabled = true;
+      connectBtn.textContent = 'Connecting…';
+      chrome.identity.getAuthToken({ interactive: true }, (token) => {
+        if (chrome.runtime.lastError || !token) {
+          connectBtn.disabled = false;
+          connectBtn.textContent = 'Connect Google';
+          alert('Failed to connect: ' + (chrome.runtime.lastError && chrome.runtime.lastError.message ? chrome.runtime.lastError.message : 'unknown'));
+          return;
+        }
+        statusEl.textContent = 'Connected';
+        connectBtn.textContent = 'Connected';
+        connectBtn.disabled = true;
+      });
+    } catch (e) {
+      connectBtn.disabled = false;
+      connectBtn.textContent = 'Connect Google';
+      alert('Connect failed: ' + String(e));
+    }
+  });
+
+  updateStatus();
+});
+
 
 function wireSummaryDetailSelect() {
   const sel = document.getElementById('summaryDetailSelect');

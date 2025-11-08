@@ -87,6 +87,46 @@
     } catch (e) { return false; }
   }
 
+  // Insert near top of background.js (after isHostedDocumentViewer)
+// dynamic import style if using modules, otherwise use inline code or adjust bundling.
+
+async function tryHandleGoogleDocsViaApi(tab, message) {
+  try {
+    if (!tab || !tab.url) return { ok: false, error: 'no-tab' };
+
+    // extract docId from docs.google.com URLs like /document/d/<id>/...
+    const m = tab.url.match(/\/document\/d\/([a-zA-Z0-9-_]+)/);
+    if (!m || !m[1]) {
+      return { ok: false, error: 'no-docid', userFriendlyMessage: 'Could not find a Google Docs document id in the URL.' };
+    }
+    const docId = m[1];
+
+    // dynamic import to avoid loading auth code unless needed
+    const { fetchGoogleDocText } = await import(chrome.runtime.getURL('src/googleDocsApi.js'));
+    // try to fetch text; ask for interactive auth if needed (makes the popup/open flow smoother)
+    try {
+      const text = await fetchGoogleDocText(docId, { interactiveIfNecessary: false });
+      if (!text || text.trim().length === 0) {
+        return { ok: false, error: 'empty-doc', userFriendlyMessage: 'Document appears to be empty or inaccessible.' };
+      }
+      // store handshake and open popup for user controls (read aloud in popup)
+      storeHandshakeAndOpenPopup({ text: text.slice(0, 20000), title: tab.title || '', url: tab.url });
+      return { ok: true, deliveredToPopup: true };
+    } catch (err) {
+      // If auth required, surface an actionable message
+      const msg = (err && err.message) ? err.message : String(err);
+      if (/no-token|401|not-authorized|invalid_grant/i.test(msg)) {
+        // Ask the user to connect Google (interactive)
+        return { ok: false, error: 'auth-required', userFriendlyMessage: 'Connect your Google account so ClarityRead can read this document.' };
+      }
+      return { ok: false, error: 'fetch-failed', detail: msg, userFriendlyMessage: 'Failed to fetch document content.' };
+    }
+  } catch (e) {
+    return { ok: false, error: 'unexpected', detail: String(e) };
+  }
+}
+
+
   // Try to show a short notification or fall back to badge/title
   function notifyUser(message, tabId) {
     try {
@@ -145,19 +185,32 @@
             return finish({ ok: false, error: 'invalid-tab', detail: chrome.runtime.lastError ? chrome.runtime.lastError.message : 'no-tab', userFriendlyMessage: 'Target tab not found.' });
           }
 
-          // If this is a hosted document viewer (Google Docs / Office Online / sharepoint), abort early
-          if (isHostedDocumentViewer(tab.url)) {
-            const msg = 'This looks like a hosted document viewer (Google Docs / Office Online). ClarityRead cannot access or modify this page.';
-            safeInfo('detected hosted document viewer — aborting injection', tab.url);
-            // show immediate feedback to the user (notification/badge)
-            try { notifyUser(msg, tabId); } catch (e) {}
-            return finish({
-              ok: false,
-              error: 'viewer-or-iframe',
-              detail: tab.url,
-              userFriendlyMessage: msg
-            });
-          }
+         // If this is a hosted document viewer... first attempt API flow for Google Docs
+if (isHostedDocumentViewer(tab.url)) {
+  // Attempt provider-specific API flow for Google Docs
+  if (/docs\.google\.com/i.test(tab.url)) {
+    const apiRes = await tryHandleGoogleDocsViaApi(tab, message).catch(e => ({ ok:false, error: 'api-ex', detail:String(e)}));
+    if (apiRes && apiRes.ok) {
+      // we opened popup / stored handshake; return friendly result
+      return finish({ ok: true, response: { via: 'google-docs-api', note: 'opened-popup-with-doc' } });
+    }
+    // if API couldn't help because auth required, tell the user to connect instead of trying to inject
+    if (apiRes && apiRes.error === 'auth-required') {
+      notifyUser(apiRes.userFriendlyMessage || 'Please connect Google to access this document.', tab.id);
+      return finish({ ok: false, error: 'auth-required', userFriendlyMessage: apiRes.userFriendlyMessage || 'Connect Google' });
+    }
+    // other failures: show friendly toast and abort (do NOT attempt injection)
+    notifyUser(apiRes.userFriendlyMessage || 'This appears to be a hosted document viewer that ClarityRead cannot modify.', tab.id);
+    return finish({ ok: false, error: 'viewer-or-iframe', detail: tab.url, userFriendlyMessage: apiRes.userFriendlyMessage || 'Hosted viewer' });
+  }
+
+  // For other providers (office.com / sharepoint), immediately abort with friendly message
+  safeInfo('detected hosted document viewer (non-Google) — aborting injection', tab.url);
+  const msg = 'This looks like a hosted document viewer (Office Online / SharePoint). ClarityRead cannot access or modify this page.';
+  notifyUser(msg, tab.id);
+  return finish({ ok: false, error: 'viewer-or-iframe', detail: tab.url, userFriendlyMessage: msg });
+}
+
 
           // Check general page viability
           safeLog('target tab info', { id: tab.id, url: tab.url, discarded: !!tab.discarded, active: !!tab.active, status: tab.status });
