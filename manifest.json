@@ -15,15 +15,8 @@
     "tabs",
     "contextMenus",
     "identity"
-  ], 
-  "oauth2": {
-    "client_id": "506269343424-pvapo4tf45ruijfq30g551o9kmpmgr7e.apps.googleusercontent.com",
-    "scopes": [
-      "https://www.googleapis.com/auth/documents.readonly",
-      "https://www.googleapis.com/auth/drive.readonly",
-      "profile",
-      "email"
-    ],
+  ],
+  
   "host_permissions": [
   "https://docs.google.com/*",
   "https://*.googleusercontent.com/*",
@@ -90,5 +83,4 @@
       "description": "Stop reading aloud"
     }
   }
-}
 }

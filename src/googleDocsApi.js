@@ -1,85 +1,113 @@
 // src/googleDocsApi.js
-import { getGoogleAuthTokenInteractive } from './googleAuth.js';
+// Simple helper to fetch Google Docs content as plain text using chrome.identity token.
+// Exports: fetchGoogleDocText(docId, { interactiveIfNecessary = false })
 
-/**
- * Extracts plain text from Google Docs document structure.
- * The docs API returns a body.content array with nested text runs.
- */
-function extractTextFromDocument(doc) {
-  if (!doc || !doc.body || !Array.isArray(doc.body.content)) return '';
-  const parts = [];
-  for (const block of doc.body.content) {
-    if (!block) continue;
-    // paragraphs and tables etc.
-    if (block.paragraph && Array.isArray(block.paragraph.elements)) {
-      for (const el of block.paragraph.elements) {
-        if (el.textRun && el.textRun.content) parts.push(el.textRun.content);
+export async function fetchGoogleDocText(docId, opts = {}) {
+  const { interactiveIfNecessary = false } = opts || {};
+
+  function getToken(interactive) {
+    return new Promise((resolve, reject) => {
+      try {
+        chrome.identity.getAuthToken({ interactive }, (token) => {
+          if (chrome.runtime.lastError) {
+            return resolve(null); // caller interprets null
+          }
+          resolve(token || null);
+        });
+      } catch (e) {
+        return reject(e);
       }
-    } else if (block.table && Array.isArray(block.table.tableRows)) {
-      // iterate table cells (best-effort)
-      for (const row of block.table.tableRows) {
-        for (const cell of row.tableCells || []) {
-          if (cell.content) {
-            for (const cblock of cell.content) {
-              if (cblock.paragraph && Array.isArray(cblock.paragraph.elements)) {
-                for (const el of cblock.paragraph.elements) {
-                  if (el.textRun && el.textRun.content) parts.push(el.textRun.content);
-                }
-              }
+    });
+  }
+
+  async function removeCachedToken(token) {
+    return new Promise((resolve) => {
+      try {
+        if (!token) return resolve();
+        chrome.identity.removeCachedAuthToken({ token }, () => resolve());
+      } catch (e) { resolve(); }
+    });
+  }
+
+  // get token silently first
+  let token = await getToken(false);
+  if (!token && interactiveIfNecessary) {
+    token = await getToken(true);
+  }
+
+  if (!token) {
+    const err = new Error('no-token');
+    err.message = 'No Google auth token available (user not connected).';
+    throw err;
+  }
+
+  // call the Docs API
+  try {
+    const res = await fetch(`https://docs.googleapis.com/v1/documents/${encodeURIComponent(docId)}`, {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Accept': 'application/json'
+      }
+    });
+
+    if (res.status === 401 || res.status === 403) {
+      // token likely invalid — remove cached token so future interactive flow can reauth
+      await removeCachedToken(token);
+      const err = new Error('not-authorized');
+      err.message = `Auth error (${res.status})`;
+      throw err;
+    }
+
+    if (!res.ok) {
+      const txt = await res.text().catch(() => '');
+      const err = new Error('fetch-failed');
+      err.message = `Docs API error ${res.status}: ${txt}`;
+      throw err;
+    }
+
+    const doc = await res.json();
+
+    // now extract textual content by walking document.body.content
+    function extractTextFromStructuralElements(elements) {
+      if (!Array.isArray(elements)) return '';
+      let out = '';
+      for (const el of elements) {
+        if (el.paragraph && Array.isArray(el.paragraph.elements)) {
+          for (const pEl of el.paragraph.elements) {
+            if (pEl.textRun && typeof pEl.textRun.content === 'string') {
+              out += pEl.textRun.content;
+            } else if (pEl.inlineObjectElement) {
+              // skip images/objects
+            } else if (pEl.autoText) {
+              out += (pEl.autoText && pEl.autoText.content) ? pEl.autoText.content : '';
             }
           }
+          out += '\n';
+        } else if (el.table && Array.isArray(el.table.tableRows)) {
+          for (const row of el.table.tableRows) {
+            for (const cell of row.tableCells) {
+              out += extractTextFromStructuralElements(cell.content) + '\t';
+            }
+            out += '\n';
+          }
+        } else if (el.sectionBreak) {
+          out += '\n';
+        } else if (el.inlineObjectElement) {
+          // ignore
+        } else if (el.textRun && typeof el.textRun.content === 'string') {
+          out += el.textRun.content;
         }
       }
-    }
-    // other block types ignored
-  }
-  return parts.join('').trim();
-}
-
-/**
- * Fetch a Google Doc by document ID and return plain text.
- * Throws on error.
- */
-export async function fetchGoogleDocText(docId, { interactiveIfNecessary = false } = {}) {
-  if (!docId) throw new Error('missing-docId');
-
-  // Try silent first
-  try {
-    let token;
-    try {
-      token = await getGoogleAuthTokenInteractive(false);
-    } catch (silentErr) {
-      if (!interactiveIfNecessary) throw silentErr;
-      // fallthrough to interactive
+      return out;
     }
 
-    if (!token && interactiveIfNecessary) {
-      token = await getGoogleAuthTokenInteractive(true);
-    }
-    if (!token) throw new Error('no-token-obtained');
-
-    const res = await fetch(`https://docs.googleapis.com/v1/documents/${encodeURIComponent(docId)}`, {
-      method: 'GET',
-      headers: { Authorization: `Bearer ${token}` }
-    });
-    if (!res.ok) {
-      // if 401, try interactive token once
-      if (res.status === 401 && interactiveIfNecessary) {
-        // try interactive
-        const token2 = await getGoogleAuthTokenInteractive(true);
-        const r2 = await fetch(`https://docs.googleapis.com/v1/documents/${encodeURIComponent(docId)}`, {
-          headers: { Authorization: `Bearer ${token2}` }
-        });
-        if (!r2.ok) throw new Error(`google-docs-fetch-failed:${r2.status}`);
-        const doc2 = await r2.json();
-        return extractTextFromDocument(doc2);
-      }
-      throw new Error(`google-docs-fetch-failed:${res.status}`);
-    }
-    const doc = await res.json();
-    const text = extractTextFromDocument(doc);
-    return text;
-  } catch (err) {
-    throw err;
+    const body = (doc && doc.body && doc.body.content) ? doc.body.content : [];
+    const text = extractTextFromStructuralElements(body || []);
+    // Trim and normalize multiple newlines
+    const normalized = (text || '').replace(/\r/g, '').replace(/\n{3,}/g, '\n\n').trim();
+    return normalized;
+  } catch (e) {
+    // bubble up the error
+    throw e;
   }
 }

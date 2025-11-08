@@ -185,32 +185,19 @@ async function tryHandleGoogleDocsViaApi(tab, message) {
             return finish({ ok: false, error: 'invalid-tab', detail: chrome.runtime.lastError ? chrome.runtime.lastError.message : 'no-tab', userFriendlyMessage: 'Target tab not found.' });
           }
 
-         // If this is a hosted document viewer... first attempt API flow for Google Docs
-if (isHostedDocumentViewer(tab.url)) {
-  // Attempt provider-specific API flow for Google Docs
-  if (/docs\.google\.com/i.test(tab.url)) {
-    const apiRes = await tryHandleGoogleDocsViaApi(tab, message).catch(e => ({ ok:false, error: 'api-ex', detail:String(e)}));
-    if (apiRes && apiRes.ok) {
-      // we opened popup / stored handshake; return friendly result
-      return finish({ ok: true, response: { via: 'google-docs-api', note: 'opened-popup-with-doc' } });
-    }
-    // if API couldn't help because auth required, tell the user to connect instead of trying to inject
-    if (apiRes && apiRes.error === 'auth-required') {
-      notifyUser(apiRes.userFriendlyMessage || 'Please connect Google to access this document.', tab.id);
-      return finish({ ok: false, error: 'auth-required', userFriendlyMessage: apiRes.userFriendlyMessage || 'Connect Google' });
-    }
-    // other failures: show friendly toast and abort (do NOT attempt injection)
-    notifyUser(apiRes.userFriendlyMessage || 'This appears to be a hosted document viewer that ClarityRead cannot modify.', tab.id);
-    return finish({ ok: false, error: 'viewer-or-iframe', detail: tab.url, userFriendlyMessage: apiRes.userFriendlyMessage || 'Hosted viewer' });
-  }
-
-  // For other providers (office.com / sharepoint), immediately abort with friendly message
-  safeInfo('detected hosted document viewer (non-Google) — aborting injection', tab.url);
-  const msg = 'This looks like a hosted document viewer (Office Online / SharePoint). ClarityRead cannot access or modify this page.';
-  notifyUser(msg, tab.id);
-  return finish({ ok: false, error: 'viewer-or-iframe', detail: tab.url, userFriendlyMessage: msg });
-}
-
+          // If this is a hosted document viewer (Google Docs / Office Online / sharepoint), abort early
+          if (isHostedDocumentViewer(tab.url)) {
+            const msg = 'This looks like a hosted document viewer (Google Docs / Office Online). ClarityRead cannot access or modify this page.';
+            safeInfo('detected hosted document viewer — aborting injection', tab.url);
+            // show immediate feedback to the user (notification/badge)
+            try { notifyUser(msg, tabId); } catch (e) {}
+            return finish({
+              ok: false,
+              error: 'viewer-or-iframe',
+              detail: tab.url,
+              userFriendlyMessage: msg
+            });
+          }
 
           // Check general page viability
           safeLog('target tab info', { id: tab.id, url: tab.url, discarded: !!tab.discarded, active: !!tab.active, status: tab.status });
