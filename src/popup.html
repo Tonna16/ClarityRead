@@ -48,7 +48,7 @@
                 <span class="toggle-label">Invert Colors</span>
               </label>
             </div>
-            
+
             <div id="fontSizeControls" class="font-size-controls" hidden>
               <label class="size-label">
                 Font Size: <span id="fontSizeValue" class="size-value">20px</span>
@@ -69,13 +69,13 @@
 
           <div class="panel read-aloud-panel">
             <h2 class="panel-title">Text to Speech</h2>
-            
+
             <div class="voice-controls">
               <label class="control-label">
                 Voice
                 <select id="voiceSelect" class="voice-select"></select>
               </label>
-              
+
               <div class="audio-settings">
                 <label class="control-label">
                   Speed
@@ -117,7 +117,7 @@
               <span class="toggle-slider"></span>
               <span class="toggle-label">Enable Speed Reading</span>
             </label>
-            
+
             <div class="speed-settings">
               <label class="control-label">
                 Chunk Size
@@ -131,23 +131,24 @@
           </div>
 
           <div class="panel data-panel">
-  <h2 class="panel-title">Data Management</h2>
-  <div class="data-controls">
-    <button id="exportProfilesBtn" class="btn btn-secondary">Export Settings</button>
-    <input type="file" id="importProfilesInput" accept=".json" style="display:none;">
-    <button id="importProfilesBtn" class="btn btn-secondary">Import Settings</button>
-<!-- Add this snippet somewhere inside popup.html (e.g., in header.brand or main content) -->
-<div id="googleConnectArea" class="google-connect-area" style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-  <button id="connectGoogleBtn" class="btn btn-secondary">Connect Google</button>
-  <div id="googleStatus" style="font-size:12px;color:#666;">Not connected</div>
-</div>
+            <h2 class="panel-title">Data Management</h2>
+            <div class="data-controls">
+              <button id="exportProfilesBtn" class="btn btn-secondary">Export Settings</button>
+              <input type="file" id="importProfilesInput" accept=".json" style="display:none;">
+              <button id="importProfilesBtn" class="btn btn-secondary">Import Settings</button>
 
-
-  </div>
+              <!-- Google connect area (no inline handlers, no inline styles) -->
+              <div id="googleConnectArea" class="google-connect-area">
+                <button id="connectGoogleBtn" class="btn btn-secondary">Connect Google</button>
+                <div id="googleStatus" class="google-status-text">Not connected</div>
+              </div>
+            </div>
+          </div>
 
         </section>
 
         <aside class="sidebar">
+          <!-- rest of sidebar... (unchanged) -->
           <div class="panel quick-actions-panel">
             <h2 class="panel-title">Quick Actions</h2>
             <div class="quick-actions">
@@ -155,14 +156,14 @@
                 <span class="action-icon">📝</span>
                 <span class="action-text">Summarize Page</span>
               </button>
-<label for="summaryDetailSelect" style="display:inline-flex;align-items:center;gap:6px;margin-left:8px;">
-  <span style="font-size:12px;">Detail:</span>
-  <select id="summaryDetailSelect" style="font-size:12px;padding:4px;border-radius:6px;min-width:96px;">
-    <option value="concise">Concise</option>
-    <option value="normal" selected>Normal</option>
-    <option value="detailed">Detailed</option>
-  </select>
-</label>
+              <label for="summaryDetailSelect" style="display:inline-flex;align-items:center;gap:6px;margin-left:8px;">
+                <span style="font-size:12px;">Detail:</span>
+                <select id="summaryDetailSelect" style="font-size:12px;padding:4px;border-radius:6px;min-width:96px;">
+                  <option value="concise">Concise</option>
+                  <option value="normal" selected>Normal</option>
+                  <option value="detailed">Detailed</option>
+                </select>
+              </label>
 
               <button id="focusModeBtn" class="action-btn">
                 <span class="action-icon">🎯</span>
@@ -171,13 +172,12 @@
             </div>
           </div>
 
+          <!-- stats, saved content, shortcuts panels unchanged -->
           <div class="panel stats-panel">
             <h2 class="panel-title">Reading Statistics</h2>
-            
             <div class="chart-container">
               <canvas id="statsChart" class="stats-chart"></canvas>
             </div>
-
             <div class="stats-grid">
               <div class="stat-item">
                 <span class="stat-label">Pages Read</span>
@@ -192,9 +192,7 @@
                 <span id="avgSession" class="stat-value">0m 0s</span>
               </div>
             </div>
-
             <div id="badgesContainer" class="achievement-badges"></div>
-
             <div class="stats-actions">
               <button id="resetStatsBtn" class="btn btn-secondary">Reset Stats</button>
               <button id="shareStatsBtn" class="btn btn-secondary">Share Progress</button>

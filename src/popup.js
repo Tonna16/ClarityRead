@@ -1,82 +1,86 @@
 document.addEventListener('DOMContentLoaded', () => {
-  const DEBUG = false; // set true for development, false for production
+
+
+  const DEBUG = false;
   const $ = id => document.getElementById(id) || null;
- 
   const safeLog = (...a) => { try { if (DEBUG) console.log('[ClarityRead popup]', ...a); } catch (e) {} };
-  const safeWarn = (...a) => { try { if (DEBUG) safeLog()('[ClarityRead popup]', ...a); } catch (e) {} };
+  const safeWarn = (...a) => { try { if (DEBUG) console.warn('[ClarityRead popup]', ...a); } catch (e) {} };
   const safeInfo = (...a) => { try { if (DEBUG) console.info('[ClarityRead popup]', ...a); } catch (e) {} };
 
-  let opLock = false;
+  async function init() {
+    // core elements we care about
+    const connectBtn = $('connectGoogleBtn');
+    const statusEl = $('googleStatus');
 
+    // defensive: bail if essential DOM isn't present
+    if (!connectBtn || !statusEl) {
+      safeWarn('Google connect UI not present — skipping connect wiring');
+      return;
+    }
 
-// in popup.js (replace the connect block)
-document.addEventListener('DOMContentLoaded', () => {
-  const connectBtn = document.getElementById('connectGoogleBtn');
-  const statusEl = document.getElementById('googleStatus');
-
-  if (!connectBtn || !statusEl) {
-    // popup missing expected elements — don't throw, just log.
-    try { console.warn('ClarityRead popup: google connect UI elements not found'); } catch (e) {}
-    return;
-  }
-
-  async function updateStatus() {
-    try {
-      const token = await new Promise((resolve) => {
-        chrome.identity.getAuthToken({ interactive: false }, (t) => {
-          if (chrome.runtime.lastError) return resolve(null);
-          resolve(t);
+    async function updateStatus() {
+      try {
+        const token = await new Promise((resolve) => {
+          try {
+            chrome.identity.getAuthToken({ interactive: false }, (t) => {
+              if (chrome.runtime.lastError) return resolve(null);
+              resolve(t || null);
+            });
+          } catch (e) { resolve(null); }
         });
-      });
-      if (token) {
-        statusEl.textContent = 'Connected';
-        connectBtn.textContent = 'Connected';
-        connectBtn.disabled = true;
-      } else {
+
+        if (token) {
+          statusEl.textContent = 'Connected';
+          connectBtn.textContent = 'Connected';
+          connectBtn.disabled = true;
+        } else {
+          statusEl.textContent = 'Not connected';
+          connectBtn.textContent = 'Connect Google';
+          connectBtn.disabled = false;
+        }
+      } catch (e) {
         statusEl.textContent = 'Not connected';
         connectBtn.textContent = 'Connect Google';
         connectBtn.disabled = false;
       }
-    } catch (e) {
-      statusEl.textContent = 'Not connected';
-      connectBtn.textContent = 'Connect Google';
-      connectBtn.disabled = false;
     }
-  }
 
-  connectBtn.addEventListener('click', () => {
-    try {
-      connectBtn.disabled = true;
-      connectBtn.textContent = 'Connecting…';
-      chrome.identity.getAuthToken({ interactive: true }, (token) => {
-        if (chrome.runtime.lastError || !token) {
-          connectBtn.disabled = false;
-          connectBtn.textContent = 'Connect Google';
-          const msg = chrome.runtime.lastError && chrome.runtime.lastError.message ? chrome.runtime.lastError.message : 'unknown';
-          alert('Failed to connect: ' + msg);
-          return;
-        }
-        // connected
-        statusEl.textContent = 'Connected';
-        connectBtn.textContent = 'Connected';
+    connectBtn.addEventListener('click', () => {
+      try {
         connectBtn.disabled = true;
-        // optionally store token or inform background
-        try {
-          chrome.runtime.sendMessage({ action: 'googleConnected' }, () => {});
-        } catch (e) {}
-      });
-    } catch (e) {
-      connectBtn.disabled = false;
-      connectBtn.textContent = 'Connect Google';
-      alert('Connect failed: ' + String(e));
-    }
-  });
+        connectBtn.textContent = 'Connecting…';
 
-  // initialize
-  updateStatus();
-});
+        chrome.identity.getAuthToken({ interactive: true }, (token) => {
+          if (chrome.runtime.lastError || !token) {
+            const msg = chrome.runtime.lastError && chrome.runtime.lastError.message ? chrome.runtime.lastError.message : 'unknown';
+            connectBtn.disabled = false;
+            connectBtn.textContent = 'Connect Google';
+            alert('Failed to connect: ' + msg);
+            safeWarn('getAuthToken failed', chrome.runtime.lastError);
+            return;
+          }
 
+          // success
+          statusEl.textContent = 'Connected';
+          connectBtn.textContent = 'Connected';
+          connectBtn.disabled = true;
 
+          // optionally inform background and/or store token
+          try {
+            chrome.runtime.sendMessage({ action: 'googleConnected' }, () => {});
+          } catch (e) { safeWarn('sendMessage googleConnected failed', e); }
+        });
+      } catch (e) {
+        connectBtn.disabled = false;
+        connectBtn.textContent = 'Connect Google';
+        alert('Connect failed: ' + String(e));
+        safeWarn('connect handler threw', e);
+      }
+    });
+
+    // initialize status
+    updateStatus();
+  }
 
 function wireSummaryDetailSelect() {
   const sel = document.getElementById('summaryDetailSelect');
