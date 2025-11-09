@@ -41,31 +41,31 @@ document.addEventListener('DOMContentLoaded', () => {
 }
 
 
-    connectBtn.addEventListener('click', () => {
-      try {
-        connectBtn.disabled = true;
-        connectBtn.textContent = 'Connecting…';
+ // instead of chrome.identity.getAuthToken({ interactive: true }, ...)
+connectBtn.addEventListener('click', () => {
+  try {
+    connectBtn.disabled = true;
+    connectBtn.textContent = 'Connecting…';
 
-        chrome.identity.getAuthToken({ interactive: true }, (token) => {
-          if (chrome.runtime.lastError || !token) {
-            const msg = chrome.runtime.lastError && chrome.runtime.lastError.message ? chrome.runtime.lastError.message : 'unknown';
-            connectBtn.disabled = false;
-            connectBtn.textContent = 'Connect Google';
-            alert('Failed to connect: ' + msg);
-            safeWarn('getAuthToken failed', chrome.runtime.lastError);
-                    alert('Failed to connect: ' + (chrome.runtime.lastError.message || 'unknown'));
+    chrome.runtime.sendMessage({ action: 'requestGoogleAuth' }, (resp) => {
+      connectBtn.disabled = false;
+      if (!resp || !resp.ok) {
+        const msg = (resp && (resp.detail || resp.error)) ? (resp.detail || resp.error) : 'unknown';
+        connectBtn.textContent = 'Connect Google';
+        alert('Failed to connect: ' + msg);
+        safeWarn('requestGoogleAuth failed', resp);
+        return;
+      }
 
-            return;
-          }
+      // resp.tokenResponse contains the tokens returned from Google
+      const tokens = resp.tokenResponse || {};
+      statusEl.textContent = 'Connected';
+      connectBtn.textContent = 'Connected';
+      connectBtn.disabled = true;
 
-          // success
-          statusEl.textContent = 'Connected';
-          connectBtn.textContent = 'Connected';
-          connectBtn.disabled = true;
-
-          
-      // optional: notify background/other parts that we're connected
-      try { chrome.runtime.sendMessage({ action: 'googleConnected' }, () => {}); } catch (e) { /* noop */ }
+      // optionally store token data somewhere secure or notify background
+      safeLog('Google tokens', tokens);
+      try { chrome.runtime.sendMessage({ action: 'googleConnected', tokens }, () => {}); } catch(e) {}
     });
 
   } catch (e) {
@@ -74,6 +74,8 @@ document.addEventListener('DOMContentLoaded', () => {
     alert('Connect failed: ' + String(e));
   }
 });
+
+
 
     // initialize status
     updateStatus();
@@ -3065,7 +3067,13 @@ safeOn(saveSelectionBtn, 'click', async () => {
   wireSummaryDetailSelect();
   renderSavedList();
   setTimeout(() => { safeLog('delayed loadVoicesIntoSelect'); loadVoicesIntoSelect(); }, 300);
+  // after the init() function body ends, add:
+init().catch(e => safeWarn('popup init failed', e));
+
 });
+
+
+
 
 
 

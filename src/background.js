@@ -772,29 +772,122 @@
             // in src/background.js - inside your onMessage switch
 
 // add inside your onMessage switch
+// Replace existing requestGoogleAuth handler with this (background/service_worker)
 case 'requestGoogleAuth': {
-  safeLog('background: requestGoogleAuth received');
-  try {
-    chrome.identity.getAuthToken({ interactive: true }, (token) => {
-      if (chrome.runtime.lastError) {
-        safeWarn('background: getAuthToken error', chrome.runtime.lastError.message);
-        sendResponse({ ok: false, error: 'getAuthToken_error', detail: chrome.runtime.lastError.message });
-        return;
+  safeLog('background: requestGoogleAuth (launchWebAuthFlow) received');
+  (async () => {
+    try {
+      const clientId = '506269343424-pvapo4tf45ruijfq30g551o9kmpmgr7e.apps.googleusercontent.com'; // <-- replace if different
+      const scopes = [
+        'https://www.googleapis.com/auth/documents.readonly',
+        'openid',
+        'profile',
+        'email'
+      ].join(' ');
+
+      // helper: generate random string
+      function randomString(len = 64) {
+        const arr = new Uint8Array(len);
+        crypto.getRandomValues(arr);
+        return Array.from(arr).map(b => ('0' + b.toString(16)).slice(-2)).join('').slice(0, len);
       }
-      if (!token) {
-        safeWarn('background: getAuthToken returned no token');
-        sendResponse({ ok: false, error: 'no-token' });
-        return;
+
+      // helper: base64url
+      function base64urlEncode(bytes) {
+        let s = '';
+        const chunk = 0xFF;
+        for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+        return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
       }
-      safeLog('background: got token (len)', token.length);
-      sendResponse({ ok: true, token });
-    });
-  } catch (e) {
-    safeWarn('background: requestGoogleAuth threw', e);
-    sendResponse({ ok: false, error: String(e) });
-  }
-  return true; // IMPORTANT: keep message channel open
+
+      // PKCE challenge
+      async function pkceChallengeFromVerifier(verifier) {
+        const enc = new TextEncoder().encode(verifier);
+        const digest = await crypto.subtle.digest('SHA-256', enc);
+        const bytes = new Uint8Array(digest);
+        return base64urlEncode(bytes);
+      }
+
+      const redirectUri = chrome.identity.getRedirectURL(); // e.g. https://<ext-id>.chromiumapp.org/
+      const codeVerifier = randomString(64);
+      const codeChallenge = await pkceChallengeFromVerifier(codeVerifier);
+
+      const authUrl = 'https://accounts.google.com/o/oauth2/v2/auth'
+        + '?response_type=code'
+        + `&client_id=${encodeURIComponent(clientId)}`
+        + `&scope=${encodeURIComponent(scopes)}`
+        + `&redirect_uri=${encodeURIComponent(redirectUri)}`
+        + `&code_challenge=${encodeURIComponent(codeChallenge)}`
+        + `&code_challenge_method=S256`
+        + '&access_type=offline'    // request refresh token
+        + '&prompt=consent';       // force consent so refresh token is returned on first auth
+
+      // launch interactive auth
+      chrome.identity.launchWebAuthFlow({ url: authUrl, interactive: true }, async (redirectResult) => {
+        if (chrome.runtime.lastError) {
+          safeWarn('launchWebAuthFlow error', chrome.runtime.lastError.message);
+          try { sendResponse({ ok: false, error: 'launchWebAuthFlow_failed', detail: chrome.runtime.lastError.message }); }
+          catch (e) {}
+          return;
+        }
+        if (!redirectResult) {
+          try { sendResponse({ ok: false, error: 'no-redirect-url' }); } catch(e) {}
+          return;
+        }
+
+        // parse returned redirect URL for code
+        try {
+          const params = (new URL(redirectResult)).searchParams;
+          const code = params.get('code');
+          if (!code) {
+            const err = params.get('error') || 'no_code';
+            safeWarn('Auth redirect missing code', redirectResult);
+            try { sendResponse({ ok: false, error: 'no_code', detail: err }); } catch(e) {}
+            return;
+          }
+
+          // exchange code for tokens
+          const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+              code,
+              client_id: clientId,
+              code_verifier: codeVerifier,
+              redirect_uri: redirectUri,
+              grant_type: 'authorization_code'
+            })
+          });
+
+          const tokenJson = await tokenRes.json();
+          if (!tokenRes.ok) {
+            safeWarn('token exchange failed', tokenJson);
+            try { sendResponse({ ok: false, error: 'token_exchange_failed', detail: tokenJson }); } catch(e) {}
+            return;
+          }
+
+          // success: tokenJson contains access_token, refresh_token (maybe), expires_in, id_token, etc.
+          safeLog('token exchange success', {
+            hasAccessToken: !!tokenJson.access_token,
+            hasRefresh: !!tokenJson.refresh_token
+          });
+
+          try { sendResponse({ ok: true, tokenResponse: tokenJson }); } catch(e) {}
+          return;
+        } catch (ex) {
+          safeWarn('requestGoogleAuth exchange error', ex);
+          try { sendResponse({ ok: false, error: String(ex) }); } catch(e) {}
+          return;
+        }
+      });
+    } catch (e) {
+      safeWarn('background: requestGoogleAuth threw', e);
+      try { sendResponse({ ok: false, error: String(e) }); } catch(e) {}
+    }
+  })();
+  return true; // keep channel open while async work completes
 }
+
 
 
 case 'getCachedToken': {
