@@ -9,15 +9,20 @@ document.addEventListener('DOMContentLoaded', () => {
   let opLock = false;
 
 
-  // popup.js additions
+// in popup.js (replace the connect block)
 document.addEventListener('DOMContentLoaded', () => {
   const connectBtn = document.getElementById('connectGoogleBtn');
   const statusEl = document.getElementById('googleStatus');
 
+  if (!connectBtn || !statusEl) {
+    // popup missing expected elements — don't throw, just log.
+    try { console.warn('ClarityRead popup: google connect UI elements not found'); } catch (e) {}
+    return;
+  }
+
   async function updateStatus() {
-    // try to get token silently
     try {
-      const token = await new Promise((resolve, reject) => {
+      const token = await new Promise((resolve) => {
         chrome.identity.getAuthToken({ interactive: false }, (t) => {
           if (chrome.runtime.lastError) return resolve(null);
           resolve(t);
@@ -39,7 +44,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  connectBtn.addEventListener('click', async () => {
+  connectBtn.addEventListener('click', () => {
     try {
       connectBtn.disabled = true;
       connectBtn.textContent = 'Connecting…';
@@ -47,12 +52,18 @@ document.addEventListener('DOMContentLoaded', () => {
         if (chrome.runtime.lastError || !token) {
           connectBtn.disabled = false;
           connectBtn.textContent = 'Connect Google';
-          alert('Failed to connect: ' + (chrome.runtime.lastError && chrome.runtime.lastError.message ? chrome.runtime.lastError.message : 'unknown'));
+          const msg = chrome.runtime.lastError && chrome.runtime.lastError.message ? chrome.runtime.lastError.message : 'unknown';
+          alert('Failed to connect: ' + msg);
           return;
         }
+        // connected
         statusEl.textContent = 'Connected';
         connectBtn.textContent = 'Connected';
         connectBtn.disabled = true;
+        // optionally store token or inform background
+        try {
+          chrome.runtime.sendMessage({ action: 'googleConnected' }, () => {});
+        } catch (e) {}
       });
     } catch (e) {
       connectBtn.disabled = false;
@@ -61,8 +72,10 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
+  // initialize
   updateStatus();
 });
+
 
 
 function wireSummaryDetailSelect() {

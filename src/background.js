@@ -5,7 +5,7 @@
   const HANDSHAKE_KEY = '_handshakeSelection';
   const HANDSHAKE_TTL_MS = 30 * 1000; // 30s 
 
-  const DEBUG = false; // set true for debugging, false for release
+  const DEBUG = false; // toggle for troubleshooting
   const safeLog = (...args) => { try { if (DEBUG) console.log('[ClarityRead bg]', ...args); } catch (e) {} };
   const safeWarn = (...args) => { try { if (DEBUG) console.warn('[ClarityRead bg]', ...args); } catch (e) {} };
   const safeInfo = (...args) => { try { if (DEBUG) console.info('[ClarityRead bg]', ...args); } catch (e) {} };
@@ -14,11 +14,8 @@
 
   function safeRuntimeSendMessage(message) {
     try {
-      chrome.runtime.sendMessage(message, () => {
-        // swallow runtime.lastError intentionally
-      });
+      chrome.runtime.sendMessage(message, () => {});
     } catch (err) {
-      // service worker might be shutting down; ignore
       safeWarn('safeRuntimeSendMessage threw', err);
     }
   }
@@ -26,21 +23,15 @@
   function isWebUrl(u = '') {
     if (!u) return false;
     const s = String(u).toLowerCase();
-    // exclude internal or special pages
     return !/^(chrome:\/\/|about:|chrome-extension:\/\/|edge:\/\/|file:\/\/|view-source:|moz-extension:\/\/)/.test(s);
   }
 
   function buildOriginPermissionPattern(url) {
     try {
       const u = new URL(url);
-      // ignore unsupported protocols
       if (!u.protocol || !/^https?:$/.test(u.protocol)) return null;
-      // pattern like "https://example.com/*" or "http://host:port/*"
       return `${u.protocol}//${u.hostname}${u.port ? `:${u.port}` : ''}/*`;
-    } catch (e) {
-      // invalid URL (data:, about:, extension-internal, etc.) -> no valid origin pattern
-      return null;
-    }
+    } catch (e) { return null; }
   }
 
   function requestHostPermissionForUrl(url) {
@@ -50,7 +41,6 @@
         safeWarn('requestHostPermissionForUrl called for unsupported URL', url);
         return resolve({ ok: false, error: 'invalid-origin', detail: 'URL is not a web origin (cannot request host permission)' });
       }
-
       try {
         chrome.permissions.request({ origins: [originPattern] }, (granted) => {
           if (chrome.runtime.lastError) {
@@ -66,7 +56,6 @@
     });
   }
 
-  // Small helper to unwrap nested background/content responses
   function unwrapResponseMaybe(obj) {
     try {
       let r = obj;
@@ -76,9 +65,7 @@
         depth++;
       }
       return r;
-    } catch (e) {
-      return obj;
-    }
+    } catch (e) { return obj; }
   }
 
   function isHostedDocumentViewer(url = '') {
@@ -93,18 +80,15 @@
     try {
       if (!tab || !tab.url) return { ok: false, error: 'no-tab' };
 
-      // extract docId from docs.google.com URLs like /document/d/<id>/...
       const m = tab.url.match(/\/document\/d\/([a-zA-Z0-9-_]+)/);
       if (!m || !m[1]) {
         return { ok: false, error: 'no-docid', userFriendlyMessage: 'Could not find a Google Docs document id in the URL.' };
       }
       const docId = m[1];
 
-      // dynamic import to avoid loading auth code unless needed
       try {
         const modUrl = chrome.runtime.getURL('src/googleDocsApi.js');
         const { fetchGoogleDocText } = await import(modUrl);
-        // try to fetch text; ask for interactive auth if needed (non-interactive first)
         const text = await fetchGoogleDocText(docId, { interactiveIfNecessary: false });
         if (!text || text.trim().length === 0) {
           return { ok: false, error: 'empty-doc', userFriendlyMessage: 'Document appears to be empty or inaccessible.' };
@@ -115,7 +99,6 @@
       } catch (err) {
         const msg = (err && err.message) ? err.message : String(err);
         if (/no-token|401|not-authorized|invalid_grant/i.test(msg)) {
-          // Ask the user to connect Google (interactive)
           return { ok: false, error: 'auth-required', userFriendlyMessage: 'Connect your Google account so ClarityRead can read this document.' };
         }
         return { ok: false, error: 'fetch-failed', detail: msg, userFriendlyMessage: 'Failed to fetch document content.' };
@@ -125,10 +108,8 @@
     }
   }
 
-  // Try to show a short notification or fall back to badge/title
   function notifyUser(message, tabId) {
     try {
-      // Try system notification (requires "notifications" permission in manifest)
       if (chrome.notifications && typeof chrome.notifications.create === 'function') {
         try {
           chrome.notifications.create('', {
@@ -138,18 +119,13 @@
             message: message
           }, () => {});
           return;
-        } catch (e) {
-          // fall through to badge fallback
-          safeWarn('notifications.create failed', e);
-        }
+        } catch (e) { safeWarn('notifications.create failed', e); }
       }
 
-      // Fallback: set a small badge + tooltip on the tab (if available)
       if (typeof tabId !== 'undefined' && tabId !== null && chrome.action && chrome.action.setBadgeText) {
         try {
           chrome.action.setBadgeText({ tabId, text: '!' });
           chrome.action.setTitle({ tabId, title: message });
-          // clear badge after a short time
           setTimeout(() => {
             try { chrome.action.setBadgeText({ tabId, text: '' }); } catch (e) {}
           }, 5000);
@@ -157,11 +133,8 @@
         } catch (e) { safeWarn('badge fallback failed', e); }
       }
 
-      // As a last resort, send runtime message so a popup or options page (if open) can show it
       safeRuntimeSendMessage({ action: 'userNotice', message });
-    } catch (e) {
-      safeWarn('notifyUser outer error', e);
-    }
+    } catch (e) { safeWarn('notifyUser outer error', e); }
   }
 
   // helper: promisified chrome.tabs.get
@@ -178,7 +151,7 @@
     });
   }
 
-  // Resolves with structured result { ok: boolean, response?, error?, detail?, permissionPattern?, cssError?, userFriendlyMessage? }
+  // sendMessageToTabWithInjection (defensive, unchanged in behavior)
   async function sendMessageToTabWithInjection(tabId, message) {
     safeLog('sendMessageToTabWithInjection called', { tabId, action: message && message.action, hintedTarget: message && message._targetTabId });
 
@@ -195,14 +168,12 @@
     };
 
     return await new Promise(async (resolve) => {
-      // safety timeout
       const SAFETY_MS = 10000;
       const to = setTimeout(() => {
         try { finishOnce({ ok: false, error: 'send-timeout', userFriendlyMessage: 'Timed out trying to reach the page.' }, resolve); } catch(e) {}
       }, SAFETY_MS);
 
       try {
-        // get tab info
         const gi = await getTabInfo(tabId);
         if (gi.error || !gi.tab) {
           safeWarn('chrome.tabs.get failed for', tabId, gi.error || 'no-tab');
@@ -211,11 +182,9 @@
         }
         const tab = gi.tab;
 
-        // Pre-check: if this is a hosted document viewer (Google Docs/Office viewers etc.)
         if (isHostedDocumentViewer(tab.url)) {
           safeInfo('detected hosted document viewer — attempting provider-specific handling', tab.url);
 
-          // provider-specific: Google Docs
           if (/docs\.google\.com/i.test(tab.url)) {
             try {
               const apiRes = await tryHandleGoogleDocsViaApi(tab, message);
@@ -223,13 +192,11 @@
                 clearTimeout(to);
                 return finishOnce({ ok: true, response: { via: 'google-docs-api', note: 'opened-popup-with-doc' } }, resolve);
               }
-              // if requires auth -> inform user and do not inject
               if (apiRes && apiRes.error === 'auth-required') {
                 notifyUser(apiRes.userFriendlyMessage || 'Please connect Google to access this document.', tab.id);
                 clearTimeout(to);
                 return finishOnce({ ok: false, error: 'auth-required', userFriendlyMessage: apiRes.userFriendlyMessage || 'Connect Google' }, resolve);
               }
-              // other failures -> don't attempt injection
               notifyUser(apiRes.userFriendlyMessage || 'This appears to be a hosted document viewer that ClarityRead cannot modify.', tab.id);
               clearTimeout(to);
               return finishOnce({ ok: false, error: 'viewer-or-iframe', detail: tab.url, userFriendlyMessage: apiRes.userFriendlyMessage || 'Hosted viewer' }, resolve);
@@ -240,8 +207,6 @@
             }
           }
 
-          // For other hosted viewers (Office/SharePoint), abort with friendly message
-          safeInfo('detected hosted document viewer (non-Google) — aborting injection', tab.url);
           const msg = 'This looks like a hosted document viewer (Office Online / SharePoint). ClarityRead cannot access or modify this page.';
           notifyUser(msg, tab.id);
           clearTimeout(to);
@@ -262,7 +227,6 @@
           return finishOnce({ ok: false, error: 'tab-discarded', detail: tab.url, userFriendlyMessage: 'Tab is discarded/suspended by the browser.' }, resolve);
         }
 
-        // attempt direct sendMessage first
         try {
           safeLog('attempting direct sendMessage', { tabId, action: message && message.action });
           chrome.tabs.sendMessage(tabId, message, async (response) => {
@@ -273,7 +237,6 @@
               return finishOnce({ ok: true, response: unwrapped, cssError: null }, resolve);
             }
 
-            // direct sendMessage errored -> attempt injection flows
             const errMsg = (chrome.runtime.lastError && chrome.runtime.lastError.message) ? String(chrome.runtime.lastError.message) : 'unknown';
             if (/receiving end does not exist/i.test(errMsg) || /could not establish connection/i.test(errMsg)) {
               safeLog('initial sendMessage: no receiver (will attempt injection).', errMsg);
@@ -281,14 +244,12 @@
               safeWarn('initial sendMessage error', errMsg);
             }
 
-            // Inject toast helper + contentScript now (best-effort)
             const jsFiles = ['src/toast.js', 'src/contentScript.js'];
             const cssFiles = ['src/inject.css', 'src/toast.css'];
 
             let cssErrorMsg = null;
             const permissionPattern = buildOriginPermissionPattern(tab.url);
 
-            // If no permission pattern, attempt best-effort injection (no host permission)
             if (!permissionPattern) {
               safeLog('no origin permission pattern (best-effort injection)', tab.url);
               try {
@@ -329,16 +290,13 @@
               return;
             }
 
-            // If we have permissionPattern -> check permissions
             try {
               chrome.permissions.contains({ origins: [permissionPattern] }, (has) => {
                 try {
                   if (chrome.runtime.lastError) {
                     safeWarn('chrome.permissions.contains error', chrome.runtime.lastError);
-                    // fall through to best-effort injection below
                   } else if (!has) {
                     safeInfo('missing host permission for origin', permissionPattern);
-                    // notify user how to fix
                     try { notifyUser('ClarityRead needs permission to access this site. Click Allow to grant host permission.', tabId); } catch(e){}
                     clearTimeout(to);
                     return finishOnce({
@@ -350,7 +308,6 @@
                     }, resolve);
                   }
 
-                  // attempt scripted injection
                   try {
                     safeLog('attempting scripting.executeScript', { tabId, jsFiles });
                     chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: jsFiles }, (injectionResults) => {
@@ -370,7 +327,6 @@
 
                       chrome.scripting.insertCSS({ target: { tabId, allFrames: true }, files: cssFiles }, (cssRes) => {
                         const cssErr = chrome.runtime.lastError ? String(chrome.runtime.lastError.message || chrome.runtime.lastError) : null;
-                        // Now attempt the message to the top-level content script; it should route as needed
                         chrome.tabs.sendMessage(tabId, message, (resp2) => {
                           if (chrome.runtime.lastError) {
                             const msg2 = (chrome.runtime.lastError.message || '').toLowerCase();
@@ -404,7 +360,6 @@
               });
             } catch (pcEx) {
               safeWarn('permission.contains threw', pcEx);
-              // fallback to best-effort injection path (similar code above)
               try {
                 safeLog('attempting scripting.executeScript (permission.contains threw)', { tabId, jsFiles });
                 chrome.scripting.executeScript({ target: { tabId }, files: jsFiles }, (injectionResults) => {
@@ -474,33 +429,59 @@
       chrome.storage.local.set({ [HANDSHAKE_KEY]: payload }, () => {
         safeLog('handshake stored', payload);
 
-        const popupUrl = chrome.runtime.getURL('src/popup.html');
+        // Try a couple of common popup paths to avoid mismatch:
+        const popupCandidates = [
+          chrome.runtime.getURL('src/popup.html'),
+          chrome.runtime.getURL('popup.html')
+        ];
 
-        chrome.tabs.query({ url: popupUrl }, (tabs) => {
-          if (chrome.runtime.lastError) {
-            safeWarn('tabs.query for popup failed', chrome.runtime.lastError);
-            chrome.windows.create({ url: popupUrl, type: 'popup', width: 800, height: 600 }, () => {});
-            return;
-          }
-
-          if (tabs && tabs.length > 0) {
-            const t = tabs[0];
-            try {
-              chrome.windows.update(t.windowId, { focused: true }, () => {
-                chrome.tabs.update(t.id, { active: true }, () => {
-                  safeLog('focused existing popup tab', t.id);
+        (async () => {
+          try {
+            for (const candidate of popupCandidates) {
+              try {
+                const found = await new Promise(resolve => {
+                  chrome.tabs.query({ url: candidate }, (tabs) => {
+                    if (chrome.runtime.lastError) return resolve(null);
+                    resolve(tabs && tabs.length > 0 ? tabs[0] : null);
+                  });
                 });
-              });
-            } catch (e) {
-              safeWarn('failed to focus existing popup', e);
-              chrome.windows.create({ url: popupUrl, type: 'popup', width: 800, height: 600 }, () => {});
+
+                if (found) {
+                  try {
+                    chrome.windows.update(found.windowId, { focused: true }, () => {
+                      chrome.tabs.update(found.id, { active: true }, () => {
+                        safeLog('focused existing popup tab', found.id, candidate);
+                      });
+                    });
+                    return;
+                  } catch (e) {
+                    safeWarn('failed to focus existing popup (candidate)', candidate, e);
+                    // if that failed, try to open new window below
+                  }
+                }
+              } catch (e) {
+                safeWarn('popup candidate query failed', candidate, e);
+              }
             }
-          } else {
-            chrome.windows.create({ url: popupUrl, type: 'popup', width: 800, height: 600 }, () => {
-              safeLog('opened new popup window for handshake');
+
+            // none found — open the first candidate that exists in extension (use src/popup.html by default)
+            // Choose candidate order but open with whichever file your project has. If your popup is at src/popup.html keep that file there.
+            const openUrl = popupCandidates[0];
+            chrome.windows.create({ url: openUrl, type: 'popup', width: 800, height: 600 }, () => {
+              safeLog('opened new popup window for handshake', openUrl);
             });
+          } catch (e) {
+            safeWarn('error in popup open flow', e);
+            // fallback to a simple attempt at root popup
+            try {
+              chrome.windows.create({ url: chrome.runtime.getURL('popup.html'), type: 'popup', width: 800, height: 600 }, () => {
+                safeLog('fallback popup open attempted');
+              });
+            } catch (e2) {
+              safeWarn('fallback popup open failed', e2);
+            }
           }
-        });
+        })();
       });
     } catch (e) {
       safeWarn('storeHandshakeAndOpenPopup failed', e);

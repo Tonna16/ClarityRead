@@ -136,9 +136,12 @@
     <button id="exportProfilesBtn" class="btn btn-secondary">Export Settings</button>
     <input type="file" id="importProfilesInput" accept=".json" style="display:none;">
     <button id="importProfilesBtn" class="btn btn-secondary">Import Settings</button>
-    <!-- inside header or somewhere obvious -->
-<button id="connectGoogleBtn" class="btn btn-secondary">Connect Google</button>
-<span id="googleStatus" style="margin-left:8px;font-size:0.9rem;color:#666">Not connected</span>
+<!-- Add this snippet somewhere inside popup.html (e.g., in header.brand or main content) -->
+<div id="googleConnectArea" class="google-connect-area" style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+  <button id="connectGoogleBtn" class="btn btn-secondary">Connect Google</button>
+  <div id="googleStatus" style="font-size:12px;color:#666;">Not connected</div>
+</div>
+
 
   </div>
 
