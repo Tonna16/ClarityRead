@@ -1,3 +1,4 @@
+// src/background.js
 (() => {
   'use strict';
 
@@ -87,45 +88,42 @@
     } catch (e) { return false; }
   }
 
-  // Insert near top of background.js (after isHostedDocumentViewer)
-// dynamic import style if using modules, otherwise use inline code or adjust bundling.
-
-async function tryHandleGoogleDocsViaApi(tab, message) {
-  try {
-    if (!tab || !tab.url) return { ok: false, error: 'no-tab' };
-
-    // extract docId from docs.google.com URLs like /document/d/<id>/...
-    const m = tab.url.match(/\/document\/d\/([a-zA-Z0-9-_]+)/);
-    if (!m || !m[1]) {
-      return { ok: false, error: 'no-docid', userFriendlyMessage: 'Could not find a Google Docs document id in the URL.' };
-    }
-    const docId = m[1];
-
-    // dynamic import to avoid loading auth code unless needed
-    const { fetchGoogleDocText } = await import(chrome.runtime.getURL('src/googleDocsApi.js'));
-    // try to fetch text; ask for interactive auth if needed (makes the popup/open flow smoother)
+  // --- Google Docs API helper (expects src/googleDocsApi.js to export fetchGoogleDocText)
+  async function tryHandleGoogleDocsViaApi(tab, message) {
     try {
-      const text = await fetchGoogleDocText(docId, { interactiveIfNecessary: false });
-      if (!text || text.trim().length === 0) {
-        return { ok: false, error: 'empty-doc', userFriendlyMessage: 'Document appears to be empty or inaccessible.' };
-      }
-      // store handshake and open popup for user controls (read aloud in popup)
-      storeHandshakeAndOpenPopup({ text: text.slice(0, 20000), title: tab.title || '', url: tab.url });
-      return { ok: true, deliveredToPopup: true };
-    } catch (err) {
-      // If auth required, surface an actionable message
-      const msg = (err && err.message) ? err.message : String(err);
-      if (/no-token|401|not-authorized|invalid_grant/i.test(msg)) {
-        // Ask the user to connect Google (interactive)
-        return { ok: false, error: 'auth-required', userFriendlyMessage: 'Connect your Google account so ClarityRead can read this document.' };
-      }
-      return { ok: false, error: 'fetch-failed', detail: msg, userFriendlyMessage: 'Failed to fetch document content.' };
-    }
-  } catch (e) {
-    return { ok: false, error: 'unexpected', detail: String(e) };
-  }
-}
+      if (!tab || !tab.url) return { ok: false, error: 'no-tab' };
 
+      // extract docId from docs.google.com URLs like /document/d/<id>/...
+      const m = tab.url.match(/\/document\/d\/([a-zA-Z0-9-_]+)/);
+      if (!m || !m[1]) {
+        return { ok: false, error: 'no-docid', userFriendlyMessage: 'Could not find a Google Docs document id in the URL.' };
+      }
+      const docId = m[1];
+
+      // dynamic import to avoid loading auth code unless needed
+      try {
+        const modUrl = chrome.runtime.getURL('src/googleDocsApi.js');
+        const { fetchGoogleDocText } = await import(modUrl);
+        // try to fetch text; ask for interactive auth if needed (non-interactive first)
+        const text = await fetchGoogleDocText(docId, { interactiveIfNecessary: false });
+        if (!text || text.trim().length === 0) {
+          return { ok: false, error: 'empty-doc', userFriendlyMessage: 'Document appears to be empty or inaccessible.' };
+        }
+        // store handshake and open popup for user controls (read aloud in popup)
+        storeHandshakeAndOpenPopup({ text: text.slice(0, 20000), title: tab.title || '', url: tab.url });
+        return { ok: true, deliveredToPopup: true };
+      } catch (err) {
+        const msg = (err && err.message) ? err.message : String(err);
+        if (/no-token|401|not-authorized|invalid_grant/i.test(msg)) {
+          // Ask the user to connect Google (interactive)
+          return { ok: false, error: 'auth-required', userFriendlyMessage: 'Connect your Google account so ClarityRead can read this document.' };
+        }
+        return { ok: false, error: 'fetch-failed', detail: msg, userFriendlyMessage: 'Failed to fetch document content.' };
+      }
+    } catch (e) {
+      return { ok: false, error: 'unexpected', detail: String(e) };
+    }
+  }
 
   // Try to show a short notification or fall back to badge/title
   function notifyUser(message, tabId) {
@@ -166,242 +164,301 @@ async function tryHandleGoogleDocsViaApi(tab, message) {
     }
   }
 
+  // helper: promisified chrome.tabs.get
+  function getTabInfo(tabId) {
+    return new Promise((resolve) => {
+      try {
+        chrome.tabs.get(tabId, (tab) => {
+          if (chrome.runtime.lastError) return resolve({ error: chrome.runtime.lastError });
+          resolve({ tab });
+        });
+      } catch (e) {
+        resolve({ error: e });
+      }
+    });
+  }
+
   // Resolves with structured result { ok: boolean, response?, error?, detail?, permissionPattern?, cssError?, userFriendlyMessage? }
   async function sendMessageToTabWithInjection(tabId, message) {
     safeLog('sendMessageToTabWithInjection called', { tabId, action: message && message.action, hintedTarget: message && message._targetTabId });
-    return new Promise((resolve) => {
-      if (typeof tabId === 'undefined' || tabId === null) {
-        return resolve({ ok: false, error: 'invalid-tab-id', userFriendlyMessage: 'No valid tab to target.' });
+
+    if (typeof tabId === 'undefined' || tabId === null) {
+      return { ok: false, error: 'invalid-tab-id', userFriendlyMessage: 'No valid tab to target.' };
+    }
+
+    let settled = false;
+    const finishOnce = (r, finishPromiseResolve) => {
+      if (!settled) {
+        settled = true;
+        finishPromiseResolve(r);
       }
+    };
 
-      let settled = false;
-      let finish = (r) => { if (!settled) { settled = true; resolve(r); } };
-
-      try {
-        // FIRST: fetch tab info and pre-check hosted viewers / unsupported pages.
-        chrome.tabs.get(tabId, (tab) => {
-          if (chrome.runtime.lastError || !tab) {
-            safeWarn('chrome.tabs.get failed for', tabId, chrome.runtime.lastError);
-            return finish({ ok: false, error: 'invalid-tab', detail: chrome.runtime.lastError ? chrome.runtime.lastError.message : 'no-tab', userFriendlyMessage: 'Target tab not found.' });
-          }
-
-          // If this is a hosted document viewer (Google Docs / Office Online / sharepoint), abort early
-          if (isHostedDocumentViewer(tab.url)) {
-            const msg = 'This looks like a hosted document viewer (Google Docs / Office Online). ClarityRead cannot access or modify this page.';
-            safeInfo('detected hosted document viewer — aborting injection', tab.url);
-            // show immediate feedback to the user (notification/badge)
-            try { notifyUser(msg, tabId); } catch (e) {}
-            return finish({
-              ok: false,
-              error: 'viewer-or-iframe',
-              detail: tab.url,
-              userFriendlyMessage: msg
-            });
-          }
-
-          // Check general page viability
-          safeLog('target tab info', { id: tab.id, url: tab.url, discarded: !!tab.discarded, active: !!tab.active, status: tab.status });
-
-          if (!tab.url || !isWebUrl(tab.url)) {
-            safeInfo('tab url unsupported for injection', tab.url);
-            return finish({
-              ok: false,
-              error: 'unsupported-page',
-              detail: tab.url || '',
-              userFriendlyMessage: 'This page cannot be modified by the extension.'
-            });
-          }
-
-          if (tab.discarded) {
-            safeInfo('tab is discarded', tabId, tab.url);
-            return finish({ ok: false, error: 'tab-discarded', detail: tab.url, userFriendlyMessage: 'Tab is discarded/suspended by the browser.' });
-          }
-
-          // Now attempt direct sendMessage first (fast path) — if no receiver we'll fall back to injection flows.
-          try {
-            safeLog('attempting direct sendMessage', { tabId, action: message && message.action });
-            chrome.tabs.sendMessage(tabId, message, (response) => {
-              if (!chrome.runtime.lastError) {
-                safeLog('sendMessage direct succeeded', { tabId, action: message && message.action, response });
-                const unwrapped = unwrapResponseMaybe(response);
-                return finish({ ok: true, response: unwrapped, cssError: null });
-              }
-
-              // There was an error in direct sendMessage -> plan injection / permission checks
-              const errMsg = (chrome.runtime.lastError && chrome.runtime.lastError.message) ? String(chrome.runtime.lastError.message) : 'unknown';
-              if (/receiving end does not exist/i.test(errMsg) || /could not establish connection/i.test(errMsg)) {
-                safeLog('initial sendMessage: no receiver (will attempt injection).', errMsg);
-              } else {
-                safeWarn('initial sendMessage error', errMsg);
-              }
-
-              // Inject toast helper + contentScript now (best-effort)
-              // Inject toast helper first so pages have a small UX helper available for friendly messages
-              const jsFiles = ['src/toast.js', 'src/contentScript.js'];
-              const cssFiles = ['src/inject.css', 'src/toast.css'];
-
-              let cssErrorMsg = null;
-              const permissionPattern = buildOriginPermissionPattern(tab.url);
-
-              // If no permission pattern, attempt best-effort injection (no host permission)
-              if (!permissionPattern) {
-                safeLog('no origin permission pattern (best-effort injection)', tab.url);
-                try {
-                  chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: jsFiles }, (injectionResults) => {
-                    if (chrome.runtime.lastError) {
-                      safeWarn('scripting.executeScript failed (no-origin-pattern)', chrome.runtime.lastError.message);
-                      if (tab.url && /sharepoint\.com|office\.com|microsoftonline\.com|docs\.google\.com/.test(tab.url)) {
-                        return finish({ ok: false, error: 'viewer-or-iframe', detail: 'Page may be a hosted document viewer or cross-origin iframe', userFriendlyMessage: 'This looks like a hosted document viewer (e.g. SharePoint/Office/Docs) — ClarityRead cannot access it.' });
-                      }
-                      return finish({ ok: false, error: 'injection-failed', detail: chrome.runtime.lastError.message, userFriendlyMessage: 'Failed to inject the content script.' });
-                    }
-                    chrome.scripting.insertCSS({ target: { tabId, allFrames: true }, files: cssFiles }, (cssRes) => {
-                      cssErrorMsg = chrome.runtime.lastError ? String(chrome.runtime.lastError.message || chrome.runtime.lastError) : null;
-                      chrome.tabs.sendMessage(tabId, message, (resp2) => {
-                        if (chrome.runtime.lastError) {
-                          const msg2 = (chrome.runtime.lastError.message || '').toLowerCase();
-                          safeWarn('sendMessage after inject failed (no-origin-pattern)', chrome.runtime.lastError.message);
-                          if (msg2.includes('receiving end does not exist') || msg2.includes('no receiver')) {
-                            return finish({ ok: false, error: 'no-receiver-after-inject', detail: chrome.runtime.lastError.message, cssError: cssErrorMsg, userFriendlyMessage: 'Content script did not respond after injection.' });
-                          }
-                          return finish({ ok: false, error: 'no-receiver-after-inject', detail: chrome.runtime.lastError.message, userFriendlyMessage: 'Message delivery failed after injection.' });
-                        }
-                        const unwrapped2 = unwrapResponseMaybe(resp2);
-                        return finish({ ok: true, response: unwrapped2, cssError: cssErrorMsg || null });
-                      });
-                    });
-                  });
-                } catch (ex) {
-                  safeWarn('best-effort executeScript threw', ex);
-                  return finish({ ok: false, error: 'executeScript-exception', detail: String(ex), userFriendlyMessage: 'Unexpected error attempting to inject content script.' });
-                }
-                return;
-              }
-
-              // If we have permissionPattern -> check permissions
-              try {
-                chrome.permissions.contains({ origins: [permissionPattern] }, (has) => {
-                  try {
-                    if (chrome.runtime.lastError) {
-                      safeWarn('chrome.permissions.contains error', chrome.runtime.lastError);
-                      // fall through to best-effort injection below
-                    } else if (!has) {
-                      safeInfo('missing host permission for origin', permissionPattern);
-                      // notify user how to fix
-                      try { notifyUser('ClarityRead needs permission to access this site. Click Allow to grant host permission.', tabId); } catch(e){}
-                      return finish({
-                        ok: false,
-                        error: 'no-host-permission',
-                        detail: 'host-permission-missing',
-                        permissionPattern,
-                        userFriendlyMessage: 'This site needs permission to let ClarityRead access the page. Click Allow to grant access.'
-                      });
-                    }
-
-                    // attempt scripted injection
-                    try {
-                      safeLog('attempting scripting.executeScript', { tabId, jsFiles });
-                      chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: jsFiles }, (injectionResults) => {
-                        if (chrome.runtime.lastError) {
-                          const lower = (chrome.runtime.lastError.message || '').toLowerCase();
-                          if (lower.includes('must request permission') || lower.includes('cannot access contents of the page') || lower.includes('has no access to')) {
-                            return finish({ ok: false, error: 'no-host-permission', detail: chrome.runtime.lastError.message, permissionPattern, userFriendlyMessage: 'Host permission required.' });
-                          }
-                          if (tab.url && /sharepoint\.com|office\.com|microsoftonline\.com|docs\.google\.com/.test(tab.url)) {
-                            return finish({ ok: false, error: 'viewer-or-iframe', detail: 'Page may be a hosted document viewer or cross-origin iframe', permissionPattern, userFriendlyMessage: 'This looks like a hosted document viewer (unsupported).' });
-                          }
-                          return finish({ ok: false, error: 'injection-failed', detail: chrome.runtime.lastError.message, userFriendlyMessage: 'Failed to inject content script.' });
-                        }
-
-                        chrome.scripting.insertCSS({ target: { tabId, allFrames: true }, files: cssFiles }, (cssRes) => {
-                          const cssErr = chrome.runtime.lastError ? String(chrome.runtime.lastError.message || chrome.runtime.lastError) : null;
-                          // Now attempt the message to the top-level content script; it should route as needed
-                          chrome.tabs.sendMessage(tabId, message, (resp2) => {
-                            if (chrome.runtime.lastError) {
-                              const msg2 = (chrome.runtime.lastError.message || '').toLowerCase();
-                              if (msg2.includes('must request permission') || msg2.includes('cannot access contents of the page') || msg2.includes('has no access to')) {
-                                return finish({ ok: false, error: 'no-host-permission', detail: chrome.runtime.lastError.message, permissionPattern, userFriendlyMessage: 'Host permission required.' });
-                              }
-                              if (msg2.includes('receiving end does not exist') || msg2.includes('no receiver')) {
-                                return finish({ ok: false, error: 'no-receiver-after-inject', detail: chrome.runtime.lastError.message, cssError: cssErr, userFriendlyMessage: 'Content script did not respond after injection.' });
-                              }
-                              return finish({ ok: false, error: 'no-receiver-after-inject', detail: chrome.runtime.lastError.message, userFriendlyMessage: 'Message delivery failed after injection.' });
-                            }
-                            const unwrapped2 = unwrapResponseMaybe(resp2);
-                            return finish({ ok: true, response: unwrapped2, cssError: cssErr || null });
-                          });
-                        });
-                      });
-                    } catch (ex) {
-                      safeWarn('scripting.executeScript threw', ex);
-                      return finish({ ok: false, error: 'executeScript-exception', detail: String(ex), userFriendlyMessage: 'Unexpected error trying to inject script.' });
-                    }
-                  } catch (outerExecCheckErr) {
-                    safeWarn('permission.contains callback outer error', outerExecCheckErr);
-                    return finish({ ok: false, error: 'permission-check-error', detail: String(outerExecCheckErr), userFriendlyMessage: 'Error while checking permissions.' });
-                  }
-                });
-              } catch (pcEx) {
-                safeWarn('permission.contains threw', pcEx);
-                // fallback to best-effort injection path (similar code above)
-                try {
-                  safeLog('attempting scripting.executeScript (permission.contains threw)', { tabId, jsFiles });
-                  chrome.scripting.executeScript({ target: { tabId }, files: jsFiles }, (injectionResults) => {
-                    if (chrome.runtime.lastError) {
-                      safeWarn('scripting.executeScript failed (after permission.contains threw)', chrome.runtime.lastError.message);
-                      const lower = (chrome.runtime.lastError.message || '').toLowerCase();
-                      if (lower.includes('must request permission') || lower.includes('cannot access contents of the page') || lower.includes('has no access to')) {
-                        return finish({ ok: false, error: 'no-host-permission', detail: chrome.runtime.lastError.message, permissionPattern, userFriendlyMessage: 'Host permission required.' });
-                      }
-                      return finish({ ok: false, error: 'injection-failed', detail: chrome.runtime.lastError.message, userFriendlyMessage: 'Failed to inject content script.' });
-                    }
-                    chrome.scripting.insertCSS({ target: { tabId }, files: cssFiles }, (cssRes) => {
-                      if (chrome.runtime.lastError) {
-                        cssErrorMsg = String(chrome.runtime.lastError.message || chrome.runtime.lastError);
-                        safeWarn('insertCSS failed', cssErrorMsg);
-                      } else {
-                        safeLog('insertCSS succeeded');
-                      }
-                      chrome.tabs.sendMessage(tabId, message, (resp2) => {
-                        if (chrome.runtime.lastError) {
-                          const msg2 = (chrome.runtime.lastError.message || '').toLowerCase();
-                          safeWarn('sendMessage after inject failed', chrome.runtime.lastError.message);
-                          if (msg2.includes('must request permission') || msg2.includes('cannot access contents of the page') || msg2.includes('has no access to')) {
-                            return finish({ ok: false, error: 'no-host-permission', detail: chrome.runtime.lastError.message, permissionPattern, userFriendlyMessage: 'Host permission required.' });
-                          }
-                          return finish({ ok: false, error: 'no-receiver-after-inject', detail: chrome.runtime.lastError.message, userFriendlyMessage: 'Message delivery failed after injection.' });
-                        }
-                        const unwrapped2 = unwrapResponseMaybe(resp2);
-                        return finish({ ok: true, response: unwrapped2, cssError: cssErrorMsg || null });
-                      });
-                    });
-                  });
-                } catch (finalEx) {
-                  safeWarn('executeScript second attempt threw', finalEx);
-                  return finish({ ok: false, error: 'executeScript-exception', detail: String(finalEx), userFriendlyMessage: 'Unexpected injection error.' });
-                }
-              }
-            });
-          } catch (err) {
-            safeWarn('sendMessage direct path outer catch', err);
-            return finish({ ok: false, error: 'send-exception', detail: String(err), userFriendlyMessage: 'Unexpected error attempting to send message to tab.' });
-          }
-        });
-      } catch (err) {
-        safeWarn('sendMessageToTabWithInjection outer catch', err);
-        finish({ ok: false, error: 'send-exception', detail: String(err), userFriendlyMessage: 'Unexpected error attempting to send message to tab.' });
-      }
-
-      // Safety timeout to avoid unresolved promises
+    return await new Promise(async (resolve) => {
+      // safety timeout
       const SAFETY_MS = 10000;
       const to = setTimeout(() => {
-        try { finish({ ok: false, error: 'send-timeout', userFriendlyMessage: 'Timed out trying to reach the page.' }); } catch(e) {}
+        try { finishOnce({ ok: false, error: 'send-timeout', userFriendlyMessage: 'Timed out trying to reach the page.' }, resolve); } catch(e) {}
       }, SAFETY_MS);
-      const origFinish = finish;
-      finish = (r) => {
-        try { clearTimeout(to); } catch(e) { /* ignore */ }
-        origFinish(r);
-      };
+
+      try {
+        // get tab info
+        const gi = await getTabInfo(tabId);
+        if (gi.error || !gi.tab) {
+          safeWarn('chrome.tabs.get failed for', tabId, gi.error || 'no-tab');
+          clearTimeout(to);
+          return finishOnce({ ok: false, error: 'invalid-tab', detail: gi.error ? (gi.error.message || String(gi.error)) : 'no-tab', userFriendlyMessage: 'Target tab not found.' }, resolve);
+        }
+        const tab = gi.tab;
+
+        // Pre-check: if this is a hosted document viewer (Google Docs/Office viewers etc.)
+        if (isHostedDocumentViewer(tab.url)) {
+          safeInfo('detected hosted document viewer — attempting provider-specific handling', tab.url);
+
+          // provider-specific: Google Docs
+          if (/docs\.google\.com/i.test(tab.url)) {
+            try {
+              const apiRes = await tryHandleGoogleDocsViaApi(tab, message);
+              if (apiRes && apiRes.ok) {
+                clearTimeout(to);
+                return finishOnce({ ok: true, response: { via: 'google-docs-api', note: 'opened-popup-with-doc' } }, resolve);
+              }
+              // if requires auth -> inform user and do not inject
+              if (apiRes && apiRes.error === 'auth-required') {
+                notifyUser(apiRes.userFriendlyMessage || 'Please connect Google to access this document.', tab.id);
+                clearTimeout(to);
+                return finishOnce({ ok: false, error: 'auth-required', userFriendlyMessage: apiRes.userFriendlyMessage || 'Connect Google' }, resolve);
+              }
+              // other failures -> don't attempt injection
+              notifyUser(apiRes.userFriendlyMessage || 'This appears to be a hosted document viewer that ClarityRead cannot modify.', tab.id);
+              clearTimeout(to);
+              return finishOnce({ ok: false, error: 'viewer-or-iframe', detail: tab.url, userFriendlyMessage: apiRes.userFriendlyMessage || 'Hosted viewer' }, resolve);
+            } catch (e) {
+              safeWarn('tryHandleGoogleDocsViaApi failed', e);
+              clearTimeout(to);
+              return finishOnce({ ok: false, error: 'api-handler-failed', detail: String(e) }, resolve);
+            }
+          }
+
+          // For other hosted viewers (Office/SharePoint), abort with friendly message
+          safeInfo('detected hosted document viewer (non-Google) — aborting injection', tab.url);
+          const msg = 'This looks like a hosted document viewer (Office Online / SharePoint). ClarityRead cannot access or modify this page.';
+          notifyUser(msg, tab.id);
+          clearTimeout(to);
+          return finishOnce({ ok: false, error: 'viewer-or-iframe', detail: tab.url, userFriendlyMessage: msg }, resolve);
+        }
+
+        safeLog('target tab info', { id: tab.id, url: tab.url, discarded: !!tab.discarded, active: !!tab.active, status: tab.status });
+
+        if (!tab.url || !isWebUrl(tab.url)) {
+          safeInfo('tab url unsupported for injection', tab.url);
+          clearTimeout(to);
+          return finishOnce({ ok: false, error: 'unsupported-page', detail: tab.url || '', userFriendlyMessage: 'This page cannot be modified by the extension.' }, resolve);
+        }
+
+        if (tab.discarded) {
+          safeInfo('tab is discarded', tabId, tab.url);
+          clearTimeout(to);
+          return finishOnce({ ok: false, error: 'tab-discarded', detail: tab.url, userFriendlyMessage: 'Tab is discarded/suspended by the browser.' }, resolve);
+        }
+
+        // attempt direct sendMessage first
+        try {
+          safeLog('attempting direct sendMessage', { tabId, action: message && message.action });
+          chrome.tabs.sendMessage(tabId, message, async (response) => {
+            if (!chrome.runtime.lastError) {
+              safeLog('sendMessage direct succeeded', { tabId, action: message && message.action, response });
+              clearTimeout(to);
+              const unwrapped = unwrapResponseMaybe(response);
+              return finishOnce({ ok: true, response: unwrapped, cssError: null }, resolve);
+            }
+
+            // direct sendMessage errored -> attempt injection flows
+            const errMsg = (chrome.runtime.lastError && chrome.runtime.lastError.message) ? String(chrome.runtime.lastError.message) : 'unknown';
+            if (/receiving end does not exist/i.test(errMsg) || /could not establish connection/i.test(errMsg)) {
+              safeLog('initial sendMessage: no receiver (will attempt injection).', errMsg);
+            } else {
+              safeWarn('initial sendMessage error', errMsg);
+            }
+
+            // Inject toast helper + contentScript now (best-effort)
+            const jsFiles = ['src/toast.js', 'src/contentScript.js'];
+            const cssFiles = ['src/inject.css', 'src/toast.css'];
+
+            let cssErrorMsg = null;
+            const permissionPattern = buildOriginPermissionPattern(tab.url);
+
+            // If no permission pattern, attempt best-effort injection (no host permission)
+            if (!permissionPattern) {
+              safeLog('no origin permission pattern (best-effort injection)', tab.url);
+              try {
+                chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: jsFiles }, (injectionResults) => {
+                  if (chrome.runtime.lastError) {
+                    safeWarn('scripting.executeScript failed (no-origin-pattern)', chrome.runtime.lastError.message);
+                    if (tab.url && /sharepoint\.com|office\.com|microsoftonline\.com|docs\.google\.com/.test(tab.url)) {
+                      clearTimeout(to);
+                      return finishOnce({ ok: false, error: 'viewer-or-iframe', detail: 'Page may be a hosted document viewer or cross-origin iframe', userFriendlyMessage: 'This looks like a hosted document viewer (e.g. SharePoint/Office/Docs) — ClarityRead cannot access it.' }, resolve);
+                    }
+                    clearTimeout(to);
+                    return finishOnce({ ok: false, error: 'injection-failed', detail: chrome.runtime.lastError.message, userFriendlyMessage: 'Failed to inject the content script.' }, resolve);
+                  }
+                  chrome.scripting.insertCSS({ target: { tabId, allFrames: true }, files: cssFiles }, (cssRes) => {
+                    cssErrorMsg = chrome.runtime.lastError ? String(chrome.runtime.lastError.message || chrome.runtime.lastError) : null;
+                    chrome.tabs.sendMessage(tabId, message, (resp2) => {
+                      if (chrome.runtime.lastError) {
+                        const msg2 = (chrome.runtime.lastError.message || '').toLowerCase();
+                        safeWarn('sendMessage after inject failed (no-origin-pattern)', chrome.runtime.lastError.message);
+                        if (msg2.includes('receiving end does not exist') || msg2.includes('no receiver')) {
+                          clearTimeout(to);
+                          return finishOnce({ ok: false, error: 'no-receiver-after-inject', detail: chrome.runtime.lastError.message, cssError: cssErrorMsg, userFriendlyMessage: 'Content script did not respond after injection.' }, resolve);
+                        }
+                        clearTimeout(to);
+                        return finishOnce({ ok: false, error: 'no-receiver-after-inject', detail: chrome.runtime.lastError.message, userFriendlyMessage: 'Message delivery failed after injection.' }, resolve);
+                      }
+                      const unwrapped2 = unwrapResponseMaybe(resp2);
+                      clearTimeout(to);
+                      return finishOnce({ ok: true, response: unwrapped2, cssError: cssErrorMsg || null }, resolve);
+                    });
+                  });
+                });
+              } catch (ex) {
+                safeWarn('best-effort executeScript threw', ex);
+                clearTimeout(to);
+                return finishOnce({ ok: false, error: 'executeScript-exception', detail: String(ex), userFriendlyMessage: 'Unexpected error attempting to inject content script.' }, resolve);
+              }
+              return;
+            }
+
+            // If we have permissionPattern -> check permissions
+            try {
+              chrome.permissions.contains({ origins: [permissionPattern] }, (has) => {
+                try {
+                  if (chrome.runtime.lastError) {
+                    safeWarn('chrome.permissions.contains error', chrome.runtime.lastError);
+                    // fall through to best-effort injection below
+                  } else if (!has) {
+                    safeInfo('missing host permission for origin', permissionPattern);
+                    // notify user how to fix
+                    try { notifyUser('ClarityRead needs permission to access this site. Click Allow to grant host permission.', tabId); } catch(e){}
+                    clearTimeout(to);
+                    return finishOnce({
+                      ok: false,
+                      error: 'no-host-permission',
+                      detail: 'host-permission-missing',
+                      permissionPattern,
+                      userFriendlyMessage: 'This site needs permission to let ClarityRead access the page. Click Allow to grant access.'
+                    }, resolve);
+                  }
+
+                  // attempt scripted injection
+                  try {
+                    safeLog('attempting scripting.executeScript', { tabId, jsFiles });
+                    chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: jsFiles }, (injectionResults) => {
+                      if (chrome.runtime.lastError) {
+                        const lower = (chrome.runtime.lastError.message || '').toLowerCase();
+                        if (lower.includes('must request permission') || lower.includes('cannot access contents of the page') || lower.includes('has no access to')) {
+                          clearTimeout(to);
+                          return finishOnce({ ok: false, error: 'no-host-permission', detail: chrome.runtime.lastError.message, permissionPattern, userFriendlyMessage: 'Host permission required.' }, resolve);
+                        }
+                        if (tab.url && /sharepoint\.com|office\.com|microsoftonline\.com|docs\.google\.com/.test(tab.url)) {
+                          clearTimeout(to);
+                          return finishOnce({ ok: false, error: 'viewer-or-iframe', detail: 'Page may be a hosted document viewer or cross-origin iframe', permissionPattern, userFriendlyMessage: 'This looks like a hosted document viewer (unsupported).' }, resolve);
+                        }
+                        clearTimeout(to);
+                        return finishOnce({ ok: false, error: 'injection-failed', detail: chrome.runtime.lastError.message, userFriendlyMessage: 'Failed to inject content script.' }, resolve);
+                      }
+
+                      chrome.scripting.insertCSS({ target: { tabId, allFrames: true }, files: cssFiles }, (cssRes) => {
+                        const cssErr = chrome.runtime.lastError ? String(chrome.runtime.lastError.message || chrome.runtime.lastError) : null;
+                        // Now attempt the message to the top-level content script; it should route as needed
+                        chrome.tabs.sendMessage(tabId, message, (resp2) => {
+                          if (chrome.runtime.lastError) {
+                            const msg2 = (chrome.runtime.lastError.message || '').toLowerCase();
+                            if (msg2.includes('must request permission') || msg2.includes('cannot access contents of the page') || msg2.includes('has no access to')) {
+                              clearTimeout(to);
+                              return finishOnce({ ok: false, error: 'no-host-permission', detail: chrome.runtime.lastError.message, permissionPattern, userFriendlyMessage: 'Host permission required.' }, resolve);
+                            }
+                            if (msg2.includes('receiving end does not exist') || msg2.includes('no receiver')) {
+                              clearTimeout(to);
+                              return finishOnce({ ok: false, error: 'no-receiver-after-inject', detail: chrome.runtime.lastError.message, cssError: cssErr, userFriendlyMessage: 'Content script did not respond after injection.' }, resolve);
+                            }
+                            clearTimeout(to);
+                            return finishOnce({ ok: false, error: 'no-receiver-after-inject', detail: chrome.runtime.lastError.message, userFriendlyMessage: 'Message delivery failed after injection.' }, resolve);
+                          }
+                          const unwrapped2 = unwrapResponseMaybe(resp2);
+                          clearTimeout(to);
+                          return finishOnce({ ok: true, response: unwrapped2, cssError: cssErr || null }, resolve);
+                        });
+                      });
+                    });
+                  } catch (ex) {
+                    safeWarn('scripting.executeScript threw', ex);
+                    clearTimeout(to);
+                    return finishOnce({ ok: false, error: 'executeScript-exception', detail: String(ex), userFriendlyMessage: 'Unexpected error trying to inject script.' }, resolve);
+                  }
+                } catch (outerExecCheckErr) {
+                  safeWarn('permission.contains callback outer error', outerExecCheckErr);
+                  clearTimeout(to);
+                  return finishOnce({ ok: false, error: 'permission-check-error', detail: String(outerExecCheckErr), userFriendlyMessage: 'Error while checking permissions.' }, resolve);
+                }
+              });
+            } catch (pcEx) {
+              safeWarn('permission.contains threw', pcEx);
+              // fallback to best-effort injection path (similar code above)
+              try {
+                safeLog('attempting scripting.executeScript (permission.contains threw)', { tabId, jsFiles });
+                chrome.scripting.executeScript({ target: { tabId }, files: jsFiles }, (injectionResults) => {
+                  if (chrome.runtime.lastError) {
+                    safeWarn('scripting.executeScript failed (after permission.contains threw)', chrome.runtime.lastError.message);
+                    const lower = (chrome.runtime.lastError.message || '').toLowerCase();
+                    if (lower.includes('must request permission') || lower.includes('cannot access contents of the page') || lower.includes('has no access to')) {
+                      clearTimeout(to);
+                      return finishOnce({ ok: false, error: 'no-host-permission', detail: chrome.runtime.lastError.message, permissionPattern, userFriendlyMessage: 'Host permission required.' }, resolve);
+                    }
+                    clearTimeout(to);
+                    return finishOnce({ ok: false, error: 'injection-failed', detail: chrome.runtime.lastError.message, userFriendlyMessage: 'Failed to inject content script.' }, resolve);
+                  }
+                  chrome.scripting.insertCSS({ target: { tabId }, files: cssFiles }, (cssRes) => {
+                    if (chrome.runtime.lastError) {
+                      cssErrorMsg = String(chrome.runtime.lastError.message || chrome.runtime.lastError);
+                      safeWarn('insertCSS failed', cssErrorMsg);
+                    } else {
+                      safeLog('insertCSS succeeded');
+                    }
+                    chrome.tabs.sendMessage(tabId, message, (resp2) => {
+                      if (chrome.runtime.lastError) {
+                        const msg2 = (chrome.runtime.lastError.message || '').toLowerCase();
+                        safeWarn('sendMessage after inject failed', chrome.runtime.lastError.message);
+                        if (msg2.includes('must request permission') || msg2.includes('cannot access contents of the page') || msg2.includes('has no access to')) {
+                          clearTimeout(to);
+                          return finishOnce({ ok: false, error: 'no-host-permission', detail: chrome.runtime.lastError.message, permissionPattern, userFriendlyMessage: 'Host permission required.' }, resolve);
+                        }
+                        clearTimeout(to);
+                        return finishOnce({ ok: false, error: 'no-receiver-after-inject', detail: chrome.runtime.lastError.message, userFriendlyMessage: 'Message delivery failed after injection.' }, resolve);
+                      }
+                      const unwrapped2 = unwrapResponseMaybe(resp2);
+                      clearTimeout(to);
+                      return finishOnce({ ok: true, response: unwrapped2, cssError: cssErrorMsg || null }, resolve);
+                    });
+                  });
+                });
+              } catch (finalEx) {
+                safeWarn('executeScript second attempt threw', finalEx);
+                clearTimeout(to);
+                return finishOnce({ ok: false, error: 'executeScript-exception', detail: String(finalEx), userFriendlyMessage: 'Unexpected injection error.' }, resolve);
+              }
+            }
+          });
+        } catch (err) {
+          safeWarn('sendMessage direct path outer catch', err);
+          clearTimeout(to);
+          return finishOnce({ ok: false, error: 'send-exception', detail: String(err), userFriendlyMessage: 'Unexpected error attempting to send message to tab.' }, resolve);
+        }
+      } catch (err) {
+        safeWarn('sendMessageToTabWithInjection outer catch', err);
+        clearTimeout(to);
+        return finishOnce({ ok: false, error: 'send-exception', detail: String(err), userFriendlyMessage: 'Unexpected error attempting to send message to tab.' }, resolve);
+      }
     });
   }
 
