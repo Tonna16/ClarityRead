@@ -824,4 +824,49 @@ html, body {
   .controls-panel {
     order: 1;
   }
+
+  /* Google connect area in data panel */
+.google-connect-area {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto; /* push to the right inside data-controls if space exists */
+  align-self: center;
+  min-width: 200px;
+}
+
+.google-connect-area .google-status-text {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* Small modifier for the connect button to match other buttons but slightly compact */
+#connectGoogleBtn {
+  padding: 8px 12px;
+  min-width: 120px;
+}
+
+/* Diagnostics button style (re-uses action-btn visual, but compact) */
+#copyDiagnosticsBtn {
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-primary);
+  cursor: pointer;
+  min-height: 36px;
+}
+
+#copyDiagnosticsBtn .action-icon { font-size: 16px; }
+#copyDiagnosticsBtn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 }

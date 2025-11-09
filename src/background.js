@@ -777,7 +777,7 @@ case 'requestGoogleAuth': {
   safeLog('background: requestGoogleAuth (launchWebAuthFlow) received');
   (async () => {
     try {
-      const clientId = '506269343424-pvapo4tf45ruijfq30g551o9kmpmgr7e.apps.googleusercontent.com'; // <-- replace if different
+      const clientId = '506269343424-lg7pjmvv6pltek80uvk4cej1mr5vpd2m.apps.googleusercontent.com'; // <-- replace if different
       const scopes = [
         'https://www.googleapis.com/auth/documents.readonly',
         'openid',
@@ -808,7 +808,7 @@ case 'requestGoogleAuth': {
         return base64urlEncode(bytes);
       }
 
-      const redirectUri = chrome.identity.getRedirectURL(); // e.g. https://<ext-id>.chromiumapp.org/
+      const redirectUri = chrome.identity.getRedirectURL(); 
       const codeVerifier = randomString(64);
       const codeChallenge = await pkceChallengeFromVerifier(codeVerifier);
 

@@ -45,35 +45,50 @@ document.addEventListener('DOMContentLoaded', () => {
 connectBtn.addEventListener('click', () => {
   try {
     connectBtn.disabled = true;
+    const prevText = connectBtn.textContent;
     connectBtn.textContent = 'Connecting…';
+    statusEl.textContent = 'Connecting…';
 
     chrome.runtime.sendMessage({ action: 'requestGoogleAuth' }, (resp) => {
-      connectBtn.disabled = false;
-      if (!resp || !resp.ok) {
-        const msg = (resp && (resp.detail || resp.error)) ? (resp.detail || resp.error) : 'unknown';
-        connectBtn.textContent = 'Connect Google';
-        alert('Failed to connect: ' + msg);
-        safeWarn('requestGoogleAuth failed', resp);
+      // runtime-level errors (no listener, etc.)
+      if (chrome.runtime.lastError) {
+        safeWarn('requestGoogleAuth runtime.lastError', chrome.runtime.lastError);
+        connectBtn.disabled = false;
+        connectBtn.textContent = prevText || 'Connect Google';
+        statusEl.textContent = 'Not connected';
+        alert('Failed to connect: ' + (chrome.runtime.lastError.message || 'runtime error'));
         return;
       }
 
-      // resp.tokenResponse contains the tokens returned from Google
+      // normal response handling
+      connectBtn.disabled = false;
+      if (!resp || !resp.ok) {
+        const msg = (resp && (resp.detail || resp.error)) ? (resp.detail || resp.error) : 'unknown';
+        safeWarn('requestGoogleAuth failed', resp);
+        connectBtn.textContent = prevText || 'Connect Google';
+        statusEl.textContent = (resp && resp.error === 'access_denied') ? 'Access denied / app not verified' : 'Not connected';
+        alert('Failed to connect: ' + String(msg));
+        return;
+      }
+
+      // success
       const tokens = resp.tokenResponse || {};
+      safeLog('Google tokens', tokens);
       statusEl.textContent = 'Connected';
       connectBtn.textContent = 'Connected';
       connectBtn.disabled = true;
 
-      // optionally store token data somewhere secure or notify background
-      safeLog('Google tokens', tokens);
       try { chrome.runtime.sendMessage({ action: 'googleConnected', tokens }, () => {}); } catch(e) {}
     });
-
   } catch (e) {
     connectBtn.disabled = false;
     connectBtn.textContent = 'Connect Google';
+    statusEl.textContent = 'Not connected';
     alert('Connect failed: ' + String(e));
+    safeWarn('connect click handler threw', e);
   }
 });
+
 
 
 
@@ -2697,30 +2712,38 @@ async function summarizeSavedItem(item) {
 // Add this near the end of your popup initialization (only if you want the button)
 (function addCopyDiagnosticsButton() {
   try {
-    // don't double-add
     if (document.getElementById('copyDiagnosticsBtn')) return;
 
-    const container = document.querySelector('.themeRow') || document.querySelector('.toolbar') || document.body;
+    // prefer to put diagnostics beside the data-controls area (next to Connect / Import / Export)
+    const dataControls = document.querySelector('.data-controls');
+    const container = dataControls || document.querySelector('.google-connect-area') || document.body;
     if (!container) return;
 
     const btn = document.createElement('button');
     btn.id = 'copyDiagnosticsBtn';
-    btn.className = 'action-btn';
-    btn.style.marginLeft = '8px';
+    btn.setAttribute('type', 'button');
+    btn.className = 'btn'; // base button style so it matches
     btn.title = 'Copy minimal diagnostics for support';
+
     const ico = document.createElement('span'); ico.className = 'action-icon'; ico.textContent = '🧾';
     const txt = document.createElement('span'); txt.className = 'action-text'; txt.textContent = 'Copy diagnostics';
     btn.appendChild(ico); btn.appendChild(txt);
-    // Try to insert in a reasonable place
-    const ref = document.querySelector('.themeRow > *') || container.firstChild;
-    container.insertBefore(btn, ref || null);
+
+    // append into data-controls (or fallback)
+    if (dataControls) dataControls.appendChild(btn);
+    else container.appendChild(btn);
 
     btn.addEventListener('click', async () => {
       try {
+        btn.disabled = true;
         const manifest = chrome && chrome.runtime && chrome.runtime.getManifest ? chrome.runtime.getManifest() : {};
         const version = manifest.version || manifest.version_name || 'unknown';
         const ua = navigator.userAgent || '';
-        const stats = await new Promise((res) => chrome.storage.local.get(['stats'], r => res(r && r.stats ? r.stats : {})));
+        const stats = await new Promise((res) => {
+          try { chrome.storage.local.get(['stats'], r => res(r && r.stats ? r.stats : {})); }
+          catch (e) { res({}); }
+        });
+
         const diag = {
           version,
           userAgent: ua,
@@ -2729,24 +2752,34 @@ async function summarizeSavedItem(item) {
             totalTimeReadSec: stats.totalTimeReadSec || 0,
             sessions: stats.sessions || 0
           },
+          popupUrl: window.location.href,
           timestamp: new Date().toISOString()
         };
+
         const text = JSON.stringify(diag, null, 2);
+
         if (navigator.clipboard && navigator.clipboard.writeText) {
           await navigator.clipboard.writeText(text);
-          toast('Diagnostics copied to clipboard. Paste into your issue/email.', 'success', 4000);
+          if (typeof toast === 'function') toast('Diagnostics copied to clipboard. Paste into your issue/email.', 'success', 4000);
+          else alert('Diagnostics copied to clipboard. Paste into your issue/email.');
         } else {
-          // fallback: show diagnostics in a modal (very small) so user can copy manually
-          prompt('Diagnostics (copy manually):', text);
+          window.prompt('Diagnostics (copy manually):', text);
         }
       } catch (e) {
-        safeLog('copyDiagnosticsBtn click failed', e);
-        toast('Failed to collect diagnostics.', 'error', 3000);
+        safeWarn('copyDiagnosticsBtn click failed', e);
+        if (typeof toast === 'function') toast('Failed to collect diagnostics.', 'error', 3000);
+        else alert('Failed to collect diagnostics: ' + (e && e.message ? e.message : String(e)));
+      } finally {
+        btn.disabled = false;
       }
     });
+
     safeLog('copy diagnostics button added.');
-  } catch (e) { safeLog('addCopyDiagnosticsButton error', e); }
+  } catch (e) {
+    safeWarn('addCopyDiagnosticsButton error', e);
+  }
 })();
+
 
 
 
