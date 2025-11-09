@@ -5,7 +5,7 @@
   const HANDSHAKE_KEY = '_handshakeSelection';
   const HANDSHAKE_TTL_MS = 30 * 1000; // 30s 
 
-  const DEBUG = false; // toggle for troubleshooting
+  const DEBUG = true; // toggle for troubleshooting
   const safeLog = (...args) => { try { if (DEBUG) console.log('[ClarityRead bg]', ...args); } catch (e) {} };
   const safeWarn = (...args) => { try { if (DEBUG) console.warn('[ClarityRead bg]', ...args); } catch (e) {} };
   const safeInfo = (...args) => { try { if (DEBUG) console.info('[ClarityRead bg]', ...args); } catch (e) {} };
@@ -769,6 +769,49 @@
           safeRuntimeSendMessage({ action: 'readingResumed' });
           respondOnce({ ok: true });
           return true;
+            // in src/background.js - inside your onMessage switch
+
+// add inside your onMessage switch
+case 'requestGoogleAuth': {
+  safeLog('background: requestGoogleAuth received');
+  try {
+    chrome.identity.getAuthToken({ interactive: true }, (token) => {
+      if (chrome.runtime.lastError) {
+        safeWarn('background: getAuthToken error', chrome.runtime.lastError.message);
+        sendResponse({ ok: false, error: 'getAuthToken_error', detail: chrome.runtime.lastError.message });
+        return;
+      }
+      if (!token) {
+        safeWarn('background: getAuthToken returned no token');
+        sendResponse({ ok: false, error: 'no-token' });
+        return;
+      }
+      safeLog('background: got token (len)', token.length);
+      sendResponse({ ok: true, token });
+    });
+  } catch (e) {
+    safeWarn('background: requestGoogleAuth threw', e);
+    sendResponse({ ok: false, error: String(e) });
+  }
+  return true; // IMPORTANT: keep message channel open
+}
+
+
+case 'getCachedToken': {
+  // silent (non-interactive) token check
+  try {
+    chrome.identity.getAuthToken({ interactive: false }, (token) => {
+      if (chrome.runtime.lastError) {
+        sendResponse({ ok: false, error: chrome.runtime.lastError.message || 'no-token' });
+        return;
+      }
+      sendResponse({ ok: true, token: token || null });
+    });
+  } catch (e) {
+    sendResponse({ ok: false, error: String(e) });
+  }
+  return true;
+}
 
         // allow popup to ask background for persisted overlay state for a given tab
         case 'getOverlayState': {
@@ -792,6 +835,8 @@
         case 'speedRead':
         case 'detectLanguage':
         case 'getSelection':
+        case 'requestGoogleAuth':
+        case 'getCachedToken':
         case 'clarity_apply_font_size':
         case 'clarity_extract_main':
         case 'clarity_query_overlay': {
