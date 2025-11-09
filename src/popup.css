@@ -869,4 +869,69 @@ html, body {
   cursor: not-allowed;
 }
 
+/* New: Accounts & Support panel */
+.google-panel {
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+
+/* layout inside the panel */
+.google-controls {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
+/* connect area: keep status text modest */
+.google-connect-area {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* status small muted text */
+.google-status-text {
+  font-size: 13px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  margin-left: 6px;
+}
+
+/* support actions (right side) */
+.support-actions {
+  margin-left: 6px;
+}
+
+/* Make the Google panel stack on small widths */
+@media (max-width: 640px) {
+  .google-controls {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .google-connect-area {
+    justify-content: space-between;
+    width: 100%;
+  }
+
+  .support-actions {
+    width: 100%;
+  }
+
+  #connectGoogleBtn, #copyDiagnosticsBtn {
+    width: 100%;
+  }
+}
+
+/* small visual polish for secondary buttons in this panel */
+.google-panel .btn-secondary {
+  min-width: 140px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+
 }

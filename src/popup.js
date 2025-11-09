@@ -2710,35 +2710,19 @@ async function summarizeSavedItem(item) {
 
 // --- Copy diagnostics UI (optional) ---
 // Add this near the end of your popup initialization (only if you want the button)
+// attach handlers to existing static button (no DOM creation)
 (function addCopyDiagnosticsButton() {
   try {
-    if (document.getElementById('copyDiagnosticsBtn')) return;
-
-    // prefer to put diagnostics beside the data-controls area (next to Connect / Import / Export)
-    const dataControls = document.querySelector('.data-controls');
-    const container = dataControls || document.querySelector('.google-connect-area') || document.body;
-    if (!container) return;
-
-    const btn = document.createElement('button');
-    btn.id = 'copyDiagnosticsBtn';
-    btn.setAttribute('type', 'button');
-    btn.className = 'btn'; // base button style so it matches
-    btn.title = 'Copy minimal diagnostics for support';
-
-    const ico = document.createElement('span'); ico.className = 'action-icon'; ico.textContent = '🧾';
-    const txt = document.createElement('span'); txt.className = 'action-text'; txt.textContent = 'Copy diagnostics';
-    btn.appendChild(ico); btn.appendChild(txt);
-
-    // append into data-controls (or fallback)
-    if (dataControls) dataControls.appendChild(btn);
-    else container.appendChild(btn);
+    const btn = document.getElementById('copyDiagnosticsBtn');
+    if (!btn) { safeWarn('copyDiagnosticsBtn not found - skipping attach'); return; }
 
     btn.addEventListener('click', async () => {
       try {
         btn.disabled = true;
-        const manifest = chrome && chrome.runtime && chrome.runtime.getManifest ? chrome.runtime.getManifest() : {};
+        const manifest = (chrome && chrome.runtime && chrome.runtime.getManifest) ? chrome.runtime.getManifest() : {};
         const version = manifest.version || manifest.version_name || 'unknown';
         const ua = navigator.userAgent || '';
+
         const stats = await new Promise((res) => {
           try { chrome.storage.local.get(['stats'], r => res(r && r.stats ? r.stats : {})); }
           catch (e) { res({}); }
@@ -2766,7 +2750,7 @@ async function summarizeSavedItem(item) {
           window.prompt('Diagnostics (copy manually):', text);
         }
       } catch (e) {
-        safeWarn('copyDiagnosticsBtn click failed', e);
+        safeWarn('copyDiagnosticsBtn failed', e);
         if (typeof toast === 'function') toast('Failed to collect diagnostics.', 'error', 3000);
         else alert('Failed to collect diagnostics: ' + (e && e.message ? e.message : String(e)));
       } finally {
@@ -2774,11 +2758,10 @@ async function summarizeSavedItem(item) {
       }
     });
 
-    safeLog('copy diagnostics button added.');
-  } catch (e) {
-    safeWarn('addCopyDiagnosticsButton error', e);
-  }
+    safeLog('attached diagnostics handler.');
+  } catch (e) { safeWarn('addCopyDiagnosticsButton error', e); }
 })();
+
 
 
 

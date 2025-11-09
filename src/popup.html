@@ -136,14 +136,27 @@
               <button id="exportProfilesBtn" class="btn btn-secondary">Export Settings</button>
               <input type="file" id="importProfilesInput" accept=".json" style="display:none;">
               <button id="importProfilesBtn" class="btn btn-secondary">Import Settings</button>
-
-              <!-- Google connect area (no inline handlers, no inline styles) -->
-              <div id="googleConnectArea" class="google-connect-area">
-                <button id="connectGoogleBtn" class="btn btn-secondary">Connect Google</button>
-                <div id="googleStatus" class="google-status-text">Not connected</div>
-              </div>
             </div>
           </div>
+          <!-- new panel: Accounts & Support -->
+<div class="panel google-panel">
+  <h2 class="panel-title">Accounts & Support</h2>
+
+  <div class="google-controls">
+    <div class="google-connect-area" aria-live="polite">
+      <button id="connectGoogleBtn" class="btn btn-secondary" aria-label="Connect Google account">Connect Google</button>
+      <div id="googleStatus" class="google-status-text" aria-hidden="false">Not connected</div>
+    </div>
+
+    <div class="support-actions">
+      <button id="copyDiagnosticsBtn" class="btn btn-secondary" aria-label="Copy diagnostics for support">
+        <span class="action-icon">🧾</span>
+        <span class="action-text">Copy diagnostics</span>
+      </button>
+    </div>
+  </div>
+</div>
+
 
         </section>
 
