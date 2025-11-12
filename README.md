@@ -23,7 +23,9 @@ ClarityRead is privacy-first. By default, all processing (summaries, TTS via bro
 - Select text on any webpage and press **Summarize Page** to summarize either the selection or the full page.
 - Use the export/import buttons to back up or restore saved content and preferences.
 - Additional features are shown in the demo.
+- I created a webpage for this app, which includes the privacy policy, terms of service, demo video, and more. The link to view it is here:https://tonna16.github.io/clarityread-site/ 
 
 ## Support
 If you have problems, use the repository issues page or email `ttonnaagburu@gmail.com`.
+
 
