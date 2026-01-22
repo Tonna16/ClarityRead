@@ -1,0 +1,93 @@
+{
+  "manifest_version": 3,
+  "name": "ClarityRead — Reading Mode + Dyslexia Support",
+  "version": "0.1.0",
+  "description": "Toggle dyslexia-friendly font, reflow text, contrast, and read-aloud on any page.",
+  "icons": {
+    "16": "assets/icons/icon16.png",
+    "48": "assets/icons/icon48.png",
+    "128": "assets/icons/icon128.png"
+  },
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting",
+    "tabs",
+    "contextMenus",
+    "identity"
+  ],
+  "oauth2": {
+    "client_id": "506269343424-pvapo4tf45ruijfq30g551o9kmpmgr7e.apps.googleusercontent.com",
+    "scopes": [
+      "https://www.googleapis.com/auth/documents.readonly",
+      "openid",
+      "profile",
+      "email"
+    ]
+  },
+  "host_permissions": [
+    "https://docs.google.com/*",
+    "https://*.googleusercontent.com/*",
+    "https://*.office.com/*",
+    "https://*.microsoftonline.com/*",
+    "https://*/*"
+  ],
+  "action": {
+    "default_icon": {
+      "16": "assets/icons/icon16.png",
+      "48": "assets/icons/icon48.png"
+    }
+  },
+  "background": {
+    "service_worker": "src/background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "src/lib/Readability.js",
+        "src/contentScript.js"
+      ],
+      "css": [
+        "src/inject.css"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true,
+      "match_about_blank": true
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "src/fonts/OpenDyslexic-Regular.woff2",
+        "src/fonts/OpenDyslexic-Regular.woff",
+        "src/inject.css",
+        "src/lib/chart.umd.min.js",
+        "src/toast.css",
+        "src/toast.js"
+      ],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ]
+    }
+  ],
+  "commands": {
+    "read-aloud": {
+      "suggested_key": {
+        "default": "Alt+R"
+      },
+      "description": "Start reading aloud the main content"
+    },
+    "stop-reading": {
+      "suggested_key": {
+        "default": "Alt+S"
+      },
+      "description": "Stop reading aloud"
+    }
+  }
+}
