@@ -1,7 +1,7 @@
 document.addEventListener('DOMContentLoaded', () => {
 
 
-  const DEBUG = true;
+  const DEBUG = false;
   const $ = id => document.getElementById(id) || null;
   const safeLog = (...a) => { try { if (DEBUG) console.log('[ClarityRead popup]', ...a); } catch (e) {} };
   const safeWarn = (...a) => { try { if (DEBUG) console.warn('[ClarityRead popup]', ...a); } catch (e) {} };
@@ -987,8 +987,8 @@ chrome.storage.sync.get(['dys','reflow','contrast','invert','fontSize','fontFami
 
       if (tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://') || tab.url.startsWith('about:')) {
         safeLog('initPerSiteUI internal url, using sync settings');
-chartWrapperhrome.storage.sync.get(['dys','reflow','contrast','invert','fontSize','fontFamily','voice','rate','pitch','highlight'], (syncRes) => {          setUI({
-            dys: syncRes.dys ?? DEFAULTS.dys,
+   chrome.storage.sync.get(['dys','reflow','contrast','invert','fontSize','fontFamily','voice','rate','pitch','highlight'], (syncRes) => {
+          setUI({            dys: syncRes.dys ?? DEFAULTS.dys,
             reflow: syncRes.reflow ?? DEFAULTS.reflow,
             contrast: syncRes.contrast ?? DEFAULTS.contrast,
             invert: syncRes.invert ?? DEFAULTS.invert,
