@@ -148,8 +148,7 @@ html, body {
 
 .content-grid {
   display: grid;
-  grid-template-columns: 1fr 320px;
-  gap: 20px;
+  grid-template-columns: minmax(360px, 1fr) minmax(340px, 1.1fr);  gap: 20px;
   height: 100%;
 }
 
