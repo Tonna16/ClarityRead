@@ -180,7 +180,6 @@ const CHUNK_SIZE_CHARS = 4000;
 const MAX_INPUT_CHARS = 120000;
 
  const IDF_FILENAME = 'idf.json'; // place idf.json in your extension's root/public so chrome.runtime.getURL finds it
- const MERGED_HANDSHAKES_KEY = '_merged_handshake_hashes';
 
  let chart = null;
 
@@ -2643,99 +2642,12 @@ playBtn.addEventListener('click', async () => {
 }
 
 
-function mergeHandshakeIntoSavedReads() {
-  try {
-    chrome.storage.local.get(['savedReads', 'clarity_last_selection', '_handshakeSelection', MERGED_HANDSHAKES_KEY], (res) => {
-      let saved = Array.isArray(res.savedReads) ? res.savedReads.slice() : [];
-      const handshake = res._handshakeSelection || null;
-      const storedSel = res.clarity_last_selection || null;
-      const mergedHashes = (res[MERGED_HANDSHAKES_KEY] && typeof res[MERGED_HANDSHAKES_KEY] === 'object') ? res[MERGED_HANDSHAKES_KEY] : {};
 
-      // Decide candidate (handshake wins)
-      const candidate = (handshake && handshake.text) ? handshake : ((storedSel && storedSel.text) ? storedSel : null);
-
-      // If no transient candidate, still ensure savedReads are deduped and render
-      if (!candidate || !candidate.text) {
-        const cleaned = dedupeSavedArray(saved);
-        if (cleaned.length !== saved.length) {
-          chrome.storage.local.set({ savedReads: cleaned }, () => { renderSavedList(); });
-        } else {
-          renderSavedList();
-        }
-        // also clear transient keys just in case (best-effort)
-        try { chrome.storage.local.remove(['clarity_last_selection', '_handshakeSelection'], () => {}); } catch(e){}
-        return;
-      }
-
-      // Normalize candidate key
-      const candKey = normalizeForCompare(candidate.text || '');
-      if (!candKey) {
-        // nothing useful to merge
-        renderSavedList();
-        try { chrome.storage.local.remove(['clarity_last_selection', '_handshakeSelection'], () => {}); } catch(e){}
-        return;
-      }
-
-      // If this candidate hash was already merged previously, skip merging
-      if (mergedHashes[candKey]) {
-        safeLog('mergeHandshakeIntoSavedReads: candidate already merged (hash present), skipping.', candKey);
-        // clear transient keys and render
-        try { chrome.storage.local.remove(['clarity_last_selection', '_handshakeSelection'], () => { renderSavedList(); }); } catch(e){ renderSavedList(); }
-        return;
-      }
-
-      const now = Date.now();
-      if (candidate.ts && (now - candidate.ts) > (5 * 60 * 1000)) {
-        safeLog('mergeHandshakeIntoSavedReads: candidate stale, ignoring', { ageMs: now - candidate.ts });
-        try { chrome.storage.local.remove(['clarity_last_selection', '_handshakeSelection'], () => { renderSavedList(); }); } catch(e){ renderSavedList(); }
-        return;
-      }
-
-      const already = saved.some(it => normalizeForCompare(it.text) === candKey);
-      if (already) {
-        safeLog('mergeHandshakeIntoSavedReads: candidate duplicate of existing saved read, skipping persist.');
-        // mark hash as merged anyway so future runs skip quickly
-        mergedHashes[candKey] = Date.now();
-        chrome.storage.local.set({ [MERGED_HANDSHAKES_KEY]: mergedHashes }, () => {
-          try { chrome.storage.local.remove(['clarity_last_selection', '_handshakeSelection'], () => { renderSavedList(); }); } catch(e){ renderSavedList(); }
-        });
-        return;
-      }
-
-      // Build new item and persist
-      const newItem = {
-        id: `${Date.now()}-${Math.floor(Math.random() * 90000 + 10000)}`,
-        text: String(candidate.text || '').trim(),
-        title: (candidate.title || String(candidate.text || '').slice(0, 80)).trim(),
-        url: candidate.url || '',
-        ts: Date.now()
-      };
-
-      saved.push(newItem);
-
-      const deduped = dedupeSavedArray(saved);
-
-      // Persist both savedReads and the merged-hashes registry in one go
-      mergedHashes[candKey] = Date.now();
-      chrome.storage.local.set({ savedReads: deduped, [MERGED_HANDSHAKES_KEY]: mergedHashes }, () => {
-        // Remove transient keys now that we merged
-        chrome.storage.local.remove(['clarity_last_selection', '_handshakeSelection'], () => {
-          safeLog('mergeHandshakeIntoSavedReads: merged candidate and persisted', newItem.id);
-          renderSavedList();
-        });
-      });
-    });
-  } catch (e) {
-    safeLog('mergeHandshakeIntoSavedReads failed', e);
-    try { renderSavedList(); } catch (e2) { safeLog('renderSavedList fallback failed', e2); }
-  }
-}
 
 try {
-  mergeHandshakeIntoSavedReads();
+  renderSavedList();
 } catch (e) {
-  safeLog('initial mergeHandshakeIntoSavedReads failed', e);
-  renderSavedList(); // fallback if merge fails
+    safeLog('initial renderSavedList failed', e);
 }
 
 
