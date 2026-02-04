@@ -789,8 +789,8 @@
           safeLog('background: requestGoogleAuth received');
           (async () => {
             try {
-              const clientId = '506269343424-pvapo4tf45ruijfq30g551o9kmpmgr7e.apps.googleusercontent.com';              const scopes = [
-                'https://www.googleapis.com/auth/documents.readonly',
+const clientId = '506269343424-oab73lpnmcpqb3je50sedbf6avo3snsd.apps.googleusercontent.com';
+              const scopes = [                'https://www.googleapis.com/auth/documents.readonly',
                 'openid',
                 'profile',
                 'email'
