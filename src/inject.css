@@ -1,4 +1,8 @@
-
+/* Base font family overrides for user-selected fonts */
+html.clarityread-font,
+html.clarityread-font * {
+  font-family: var(--clarity-font-family, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif) !important;
+}
 /* Just keep the scoped dyslexic styling: */
 html.readeasy-dyslexic,
 html.readeasy-dyslexic *,
@@ -189,8 +193,7 @@ html.clarityread-reflow .page-content {
 #readeasy-reader-overlay,
 #clarityread-overlay {
   /* default overlay font - do NOT force OpenDyslexic here */
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
-  box-sizing: border-box !important;
+ font-family: var(--clarity-font-family, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif) !important;  box-sizing: border-box !important;
   background: linear-gradient(135deg, #fff, #f9fafb) !important;
   color: #1f2937 !important;
   padding: 24px !important;

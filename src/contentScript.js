@@ -297,8 +297,7 @@ html.readeasy-reflow h3 {
         // overlay revert
         try {
           const overlay = document.getElementById('readeasy-reader-overlay') || document.getElementById('clarityread-overlay');
-          if (overlay) { overlay.style.fontSize = ''; overlay.style.fontFamily = ''; }
-        } catch(e){}
+          if (overlay) { overlay.style.fontSize = ''; }        } catch(e){}
 
         // clear saved main overrides
         _prevMainNode = null;
@@ -657,8 +656,7 @@ html.readeasy-dyslexic *::placeholder { font-family: var(--readeasy-dys-font) !i
 
     try {
       const overlay = document.getElementById('readeasy-reader-overlay') || document.getElementById('clarityread-overlay');
-      if (overlay) { overlay.style.fontFamily = ''; }
-    } catch(e){}
+      if (overlay) { overlay.style.fontFamily = getOverlayFontFamilyFallback(); }    } catch(e){}
 
     try {
       // remove injected styles from same-origin iframes
@@ -958,6 +956,31 @@ window.__clarity_read_extract = function() {
   }
 };
 
+const FONT_FAMILY_MAP = {
+  system: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+  opendyslexic: '"OpenDyslexic", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+  lexend: '"Lexend", "Trebuchet MS", "Segoe UI", sans-serif',
+  atkinson: '"Atkinson Hyperlegible", "Segoe UI", sans-serif',
+  'comic-sans': '"Comic Sans MS", "Comic Sans", cursive',
+  verdana: 'Verdana, Geneva, sans-serif',
+  arial: 'Arial, Helvetica, sans-serif',
+  georgia: 'Georgia, "Times New Roman", serif'
+};
+
+function resolveFontFamily(selection) {
+  if (!selection) return '';
+  return FONT_FAMILY_MAP[selection] || '';
+}
+
+function getOverlayFontFamilyFallback() {
+  try {
+    const cssVar = getComputedStyle(document.documentElement).getPropertyValue('--clarity-font-family');
+    if (cssVar && cssVar.trim()) return cssVar.trim();
+  } catch (e) {}
+  const dys = document.documentElement.classList.contains('readeasy-dyslexic') || document.documentElement.classList.contains('clarityread-dyslexic');
+  return dys ? FONT_FAMILY_MAP.opendyslexic : FONT_FAMILY_MAP.system;
+}
+
 function createReaderOverlay(text) {
   removeReaderOverlay();
 
@@ -969,7 +992,6 @@ function createReaderOverlay(text) {
   overlay.setAttribute('role','dialog');
   overlay.setAttribute('aria-label','Reader overlay');
 
-  const dys = document.documentElement.classList.contains('readeasy-dyslexic') || document.documentElement.classList.contains('clarityread-dyslexic');
   overlay.style.position = 'fixed';
   overlay.style.inset = '6%';
   overlay.style.zIndex = 2147483647;
@@ -979,8 +1001,7 @@ function createReaderOverlay(text) {
   overlay.style.overflow = 'auto';
   overlay.style.borderRadius = '8px';
   overlay.style.boxShadow = '0 8px 30px rgba(0,0,0,0.35)';
-  overlay.style.fontFamily = dys ? "'OpenDyslexic', system-ui, Arial, sans-serif" : "system-ui, Arial, sans-serif";
-  overlay.style.lineHeight = '1.8';
+  overlay.style.fontFamily = getOverlayFontFamilyFallback();  overlay.style.lineHeight = '1.8';
   overlay.style.fontSize = '18px';
   overlay.style.whiteSpace = 'pre-wrap';
   overlay.style.touchAction = 'manipulation';
@@ -2063,7 +2084,32 @@ if (msg && msg.action === 'set_debug') {
       switch (msg.action) {
         case 'applySettings':
           try {
-            if (typeof msg.dys !== 'undefined') {
+            if (typeof msg.fontFamily !== 'undefined') {
+              try {
+                const resolved = resolveFontFamily(String(msg.fontFamily || ''));
+                if (!resolved || msg.fontFamily === 'system') {
+                  document.documentElement.classList.remove('clarityread-font');
+                  document.documentElement.style.removeProperty('--clarity-font-family');
+                } else {
+                  document.documentElement.style.setProperty('--clarity-font-family', resolved);
+                  document.documentElement.classList.add('clarityread-font');
+                }
+              } catch (e) { safeLog('applySettings fontFamily failed', e); }
+            }
+
+            if (typeof msg.fontFamily !== 'undefined') {
+              const shouldUseDys = String(msg.fontFamily) === 'opendyslexic';
+              if (shouldUseDys) {
+                try { ensureDysFontInjected(); } catch(e){ safeLog('ensureDysFontInjected threw', e); }
+                try { document.documentElement.classList.add('readeasy-dyslexic'); } catch(e){}
+                try { document.documentElement.classList.add('clarityread-dyslexic'); } catch(e){}
+              } else {
+                try { document.documentElement.classList.remove('readeasy-dyslexic'); } catch(e){}
+                try { document.documentElement.classList.remove('clarityread-dyslexic'); } catch(e){}
+              }
+            }
+
+            if (typeof msg.dys !== 'undefined' && typeof msg.fontFamily === 'undefined') {
               if (msg.dys) {
                 try { ensureDysFontInjected(); } catch(e){ safeLog('ensureDysFontInjected threw', e); }
                 try { document.documentElement.classList.add('readeasy-dyslexic'); } catch(e){}
@@ -2157,9 +2203,8 @@ if (typeof msg.invert !== 'undefined') {
             try {
               const overlay = document.getElementById('readeasy-reader-overlay') || document.getElementById('clarityread-overlay');
               if (overlay) {
-                if (typeof msg.dys !== 'undefined') {
-                  if (msg.dys) overlay.style.fontFamily = "'OpenDyslexic', system-ui, Arial, sans-serif";
-                  else overlay.style.fontFamily = '';
+                   if (typeof msg.fontFamily !== 'undefined' || typeof msg.dys !== 'undefined') {
+                  overlay.style.fontFamily = getOverlayFontFamilyFallback();
                 }
                 if (typeof msg.fontSize !== 'undefined' && msg.fontSize) {
                   overlay.style.fontSize = (typeof msg.fontSize === 'number') ? `${msg.fontSize}px` : String(msg.fontSize);
@@ -2167,8 +2212,7 @@ if (typeof msg.invert !== 'undefined') {
               }
             } catch (e) { safeLog('applySettings overlay update failed', e); }
 
-            safeLog('applySettings applied', { dys: !!msg.dys, reflow: !!msg.reflow, fontSize: msg.fontSize });
-          } catch (e) {
+safeLog('applySettings applied', { dys: !!msg.dys, reflow: !!msg.reflow, fontSize: msg.fontSize, fontFamily: msg.fontFamily });          } catch (e) {
             safeLog('applySettings failed', e);
           }
           sendResponse({ ok: true });

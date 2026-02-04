@@ -8,6 +8,16 @@ document.addEventListener('DOMContentLoaded', () => {
   const safeInfo = (...a) => { try { if (DEBUG) console.info('[ClarityRead popup]', ...a); } catch (e) {} };
 
   let opLock = false;
+   const FONT_FAMILY_OPTIONS = new Map([
+    ['system', 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'],
+    ['opendyslexic', '"OpenDyslexic", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'],
+    ['lexend', '"Lexend", "Trebuchet MS", "Segoe UI", sans-serif'],
+    ['atkinson', '"Atkinson Hyperlegible", "Segoe UI", sans-serif'],
+    ['comic-sans', '"Comic Sans MS", "Comic Sans", cursive'],
+    ['verdana', 'Verdana, Geneva, sans-serif'],
+    ['arial', 'Arial, Helvetica, sans-serif'],
+    ['georgia', 'Georgia, "Times New Roman", serif']
+  ]);
 
   async function init() {
     // core elements we care about
@@ -146,7 +156,7 @@ async function queryOverlayStateOnActiveTab() {
     const res = await sendMessageToActiveTabWithInject({ action: 'clarity_query_overlay' });
     const r = normalizeBgResponse(res);
     const btn = document.getElementById('focusModeBtn');
-    const textEl = btn ? btn.querySelector('.action-text') : null;
+        const textEl = getFocusModeTextEl();
     if (btn && textEl && r && typeof r.overlayActive !== 'undefined') {
       if (r.overlayActive) { btn.classList.add('active'); textEl.textContent = `Close ${_focusModeOriginalText}`; }
       else { btn.classList.remove('active'); textEl.textContent = _focusModeOriginalText; }
@@ -335,8 +345,7 @@ function clearToastsLocal() { Toasts.clearAll(); }
     safeLog('ensureChartReady injected script', src);
   }
 
-  const requiredIds = ['dyslexicToggle','reflowToggle','contrastToggle','invertToggle','readBtn','pauseBtn','stopBtn','pagesRead','timeRead','avgSession','statsChart','voiceSelect'];
-  const elPresence = requiredIds.reduce((acc, id) => (acc[id]=!!document.getElementById(id), acc), {});
+const requiredIds = ['reflowToggle','contrastToggle','invertToggle','readBtn','pauseBtn','stopBtn','pagesRead','timeRead','avgSession','statsChart','voiceSelect'];  const elPresence = requiredIds.reduce((acc, id) => (acc[id]=!!document.getElementById(id), acc), {});
   safeLog('Popup element presence:', elPresence);
 
   ensureChartReady(() => { try { if (typeof loadStats === 'function') loadStats(); } catch (e) { safeLog('ensureChartReady callback loadStats threw', e); } });
@@ -370,7 +379,7 @@ function clearToastsLocal() { Toasts.clearAll(); }
   const badgesContainer = $('badgesContainer');
   const themeToggleBtn = $('themeToggleBtn');
   const chartWrapper = document.querySelector('.chartWrapper') || document.querySelector('.chart-container');
-
+   const fontFamilySelect = $('fontFamilySelect');
   const speedToggle = $('speedToggle');
   const chunkSizeInput = $('chunkSize');
   const speedRateInput = $('speedRate');
@@ -380,12 +389,18 @@ function clearToastsLocal() { Toasts.clearAll(); }
   const savedListEl = $('savedList');
   const shareStatsBtn = $('shareStatsBtn');
 
+  
+function getFocusModeTextEl() {
+  const btn = document.getElementById('focusModeBtn');
+  if (!btn) return null;
+  return btn.querySelector('.btn-text') || btn.querySelector('.action-text') || null;
+}
+
 
 chrome.runtime.onMessage.addListener((msg) => {
   try {
     const btn = document.getElementById('focusModeBtn');
-    const textEl = btn ? btn.querySelector('.action-text') : null;
-    if (!btn) return;
+    const textEl = getFocusModeTextEl();    if (!btn) return;
     if (msg && (msg.action === 'clarity_overlay_state')) {
       if (msg.overlayActive) { btn.classList.add('active'); if (textEl) textEl.textContent = `Close ${_focusModeOriginalText}`; }
       else { btn.classList.remove('active'); if (textEl) textEl.textContent = _focusModeOriginalText; }
@@ -571,10 +586,10 @@ try {
   }
 
   // preserve the original focus button text (only the action-text, not icon)
-  const _focusModeOriginalText = (focusModeBtn && focusModeBtn.querySelector('.action-text')) ? focusModeBtn.querySelector('.action-text').textContent : 'Focus Mode';
-
-  const DEFAULTS = { dys: false, reflow: false, contrast: false, invert: false, fontSize: 20 };
-  const safeOn = (el, ev, fn) => { if (el) el.addEventListener(ev, fn); };
+ const _focusModeOriginalText = (focusModeBtn && (focusModeBtn.querySelector('.btn-text') || focusModeBtn.querySelector('.action-text')))
+    ? (focusModeBtn.querySelector('.btn-text') || focusModeBtn.querySelector('.action-text')).textContent
+    : 'Focus Mode';
+  const DEFAULTS = { dys: false, reflow: false, contrast: false, invert: false, fontSize: 20, fontFamily: 'system' };  const safeOn = (el, ev, fn) => { if (el) el.addEventListener(ev, fn); };
 
   let isReading = false;
   let isPaused = false;
@@ -953,13 +968,14 @@ async function sendMessageToActiveTabWithInject(message, _retry = 0) {
       const tab = tabs && tabs[0];
       safeLog('initPerSiteUI tab', tab && { id: tab.id, url: tab.url });
       if (!tab || !tab.url) {
-        chrome.storage.sync.get(['dys','reflow','contrast','invert','fontSize','voice','rate','pitch','highlight'], (syncRes) => {
+chrome.storage.sync.get(['dys','reflow','contrast','invert','fontSize','fontFamily','voice','rate','pitch','highlight'], (syncRes) => {
           safeLog('initPerSiteUI no tab -> using sync defaults', syncRes);
           setUI({
             dys: syncRes.dys ?? DEFAULTS.dys,
             reflow: syncRes.reflow ?? DEFAULTS.reflow,
             contrast: syncRes.contrast ?? DEFAULTS.contrast,
             invert: syncRes.invert ?? DEFAULTS.invert,
+                        fontFamily: syncRes.fontFamily ?? DEFAULTS.fontFamily,
             fontSize: syncRes.fontSize ?? DEFAULTS.fontSize,
             voice: syncRes.voice || '',
             rate: syncRes.rate || 1,
@@ -972,13 +988,13 @@ async function sendMessageToActiveTabWithInject(message, _retry = 0) {
 
       if (tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://') || tab.url.startsWith('about:')) {
         safeLog('initPerSiteUI internal url, using sync settings');
-        chrome.storage.sync.get(['dys','reflow','contrast','invert','fontSize','voice','rate','pitch','highlight'], (syncRes) => {
-          setUI({
+chartWrapperhrome.storage.sync.get(['dys','reflow','contrast','invert','fontSize','fontFamily','voice','rate','pitch','highlight'], (syncRes) => {          setUI({
             dys: syncRes.dys ?? DEFAULTS.dys,
             reflow: syncRes.reflow ?? DEFAULTS.reflow,
             contrast: syncRes.contrast ?? DEFAULTS.contrast,
             invert: syncRes.invert ?? DEFAULTS.invert,
             fontSize: syncRes.fontSize ?? DEFAULTS.fontSize,
+                        fontFamily: syncRes.fontFamily ?? DEFAULTS.fontFamily,
             voice: syncRes.voice || '',
             rate: syncRes.rate || 1,
             pitch: syncRes.pitch || 1,
@@ -999,14 +1015,14 @@ async function sendMessageToActiveTabWithInject(message, _retry = 0) {
           setUI(siteSettings);
           if (siteSettings.voice) setTimeout(() => { if (voiceSelect) voiceSelect.value = siteSettings.voice; safeLog('applied site voice override', siteSettings.voice); }, 200);
         } else {
-          chrome.storage.sync.get(['dys','reflow','contrast','invert','fontSize','voice','rate','pitch','highlight'], (syncRes) => {
-            safeLog('initPerSiteUI no siteSettings, using sync', syncRes);
+ chrome.storage.sync.get(['dys','reflow','contrast','invert','fontSize','fontFamily','voice','rate','pitch','highlight'], (syncRes) => {            safeLog('initPerSiteUI no siteSettings, using sync', syncRes);
             setUI({
               dys: syncRes.dys ?? DEFAULTS.dys,
               reflow: syncRes.reflow ?? DEFAULTS.reflow,
               contrast: syncRes.contrast ?? DEFAULTS.contrast,
               invert: syncRes.invert ?? DEFAULTS.invert,
               fontSize: syncRes.fontSize ?? DEFAULTS.fontSize,
+                            fontFamily: syncRes.fontFamily ?? DEFAULTS.fontFamily,
               voice: syncRes.voice || '',
               rate: syncRes.rate || 1,
               pitch: syncRes.pitch || 1,
@@ -1033,6 +1049,10 @@ async function sendMessageToActiveTabWithInject(message, _retry = 0) {
     if (rateInput) rateInput.value = settings.rate ?? 1;
     if (pitchInput) pitchInput.value = settings.pitch ?? 1;
     if (highlightCheckbox) highlightCheckbox.checked = !!settings.highlight;
+     if (fontFamilySelect) {
+      const selection = settings.fontFamily ?? DEFAULTS.fontFamily;
+      fontFamilySelect.value = FONT_FAMILY_OPTIONS.has(selection) ? selection : DEFAULTS.fontFamily;
+    }
   }
 
   function clamp(n, lo, hi) {
@@ -1042,12 +1062,15 @@ async function sendMessageToActiveTabWithInject(message, _retry = 0) {
   }
 
   function gatherSettingsObject() {
+     const fontFamilyValue = fontFamilySelect?.value ?? DEFAULTS.fontFamily;
+    const fontFamily = FONT_FAMILY_OPTIONS.has(fontFamilyValue) ? fontFamilyValue : DEFAULTS.fontFamily;
+    const dysFromFont = fontFamily === 'opendyslexic';
     const obj = {
-      dys: dysToggle?.checked ?? false,
-      reflow: reflowToggle?.checked ?? false,
+      dys: dysToggle?.checked ?? dysFromFont,      reflow: reflowToggle?.checked ?? false,
       contrast: contrastToggle?.checked ?? false,
       invert: invertToggle?.checked ?? false,
       fontSize: fontSizeSlider ? Number(fontSizeSlider.value) : DEFAULTS.fontSize,
+            fontFamily,
       voice: voiceSelect?.value ?? '',
       rate: rateInput ? clamp(rateInput.value, 0.5, 3) : 1,
       pitch: pitchInput ? clamp(pitchInput.value, 0.5, 2) : 1,
@@ -1072,8 +1095,7 @@ async function sendMessageToActiveTabWithInject(message, _retry = 0) {
         // after successful applySettings response, also ensure overlay font updates immediately in case overlay is open
 try {
   if (res && res.ok) {
-    sendMessageToActiveTabWithInject({ action: 'applySettings', dys: settings.dys, fontSize: settings.fontSize }).catch(() => {});
-  }
+sendMessageToActiveTabWithInject({ action: 'applySettings', dys: settings.dys, fontSize: settings.fontSize, fontFamily: settings.fontFamily }).catch(() => {});  }
 } catch (e) { safeLog('overlay font immediate update failed', e); }
 
         return res;
@@ -1117,6 +1139,7 @@ try {
   safeOn(reflowToggle, 'change', () => { if (sizeOptions) sizeOptions.hidden = !reflowToggle.checked; gatherAndSendSettings({ showToast: false }); });
   safeOn(contrastToggle, 'change', () => { if (contrastToggle?.checked && invertToggle) invertToggle.checked = false; gatherAndSendSettings({ showToast: false }); });
   safeOn(invertToggle, 'change', () => { if (invertToggle?.checked && contrastToggle) contrastToggle.checked = false; gatherAndSendSettings({ showToast: false }); });
+    safeOn(fontFamilySelect, 'change', () => gatherAndSendSettings({ showToast: true }));
   // slider uses input -> don't show toast on each input event (silent)
   safeOn(fontSizeSlider, 'input', () => { if (fontSizeValue) fontSizeValue.textContent = `${fontSizeSlider.value}px`; gatherAndSendSettings({ showToast: false }); });
   safeOn(rateInput, 'input', () => gatherAndSendSettings({ showToast: false }));
@@ -1267,8 +1290,8 @@ safeOn(focusModeBtn, 'click', async () => {
   focusModeBtn.disabled = true;
   
   // Show helpful loading message
-  const originalText = focusModeBtn.querySelector('.btn-text')?.textContent || 'Focus Mode';
-  const textEl = focusModeBtn.querySelector('.btn-text');
+   const originalText = getFocusModeTextEl()?.textContent || 'Focus Mode';
+  const textEl = getFocusModeTextEl();
   if (textEl) textEl.textContent = 'Opening...';
   
   const res = await sendMessageToActiveTabWithInject({ action: 'toggleFocusMode' });
@@ -1277,15 +1300,17 @@ safeOn(focusModeBtn, 'click', async () => {
   safeLog('toggleFocusMode response', res);
   const r = normalizeBgResponse(res);
   
-  if (!r || !r.ok) {
-    if (textEl) textEl.textContent = originalText;
-    
-    if (r && r.error === 'no-host-permission') {
-      toast('Permission required. Click the extension icon on the page to grant access.', 'error', 7000);
-    } else if (r && r.error === 'tab-discarded') {
-      toast('Page is inactive. Reload and try again.', 'error', 5000);
-    } else {
-      toast('Could not open Focus Mode. Try refreshing the page.', 'error', 5000);
+ if (!r || !r.ok) {
+      if (textEl) textEl.textContent = originalText;
+
+      if (r && r.error === 'no-host-permission') {
+        toast('Permission required. Click the extension icon on the page to grant access.', 'error', 7000);
+      } else if (r && r.error === 'no-text') {
+        toast('No readable text found. Try selecting text or opening an article page.', 'error', 6000);
+      } else if (r && r.error === 'tab-discarded') {
+        toast('Page is inactive. Reload and try again.', 'error', 5000);
+      } else {
+        toast('Could not open Focus Mode. Try refreshing the page.', 'error', 5000);
     }
   } else {
     if (textEl) {
@@ -2356,8 +2381,7 @@ importSettingsInput.addEventListener('change', (ev) => {
   r.onload = (e) => {
     try {
       const imported = JSON.parse(e.target.result);
-      const keys = ['dys','reflow','contrast','invert','fontSize','voice','rate','pitch','highlight'];
-      const valid = keys.some(k => k in imported);
+      const keys = ['dys','reflow','contrast','invert','fontSize','fontFamily','voice','rate','pitch','highlight'];      const valid = keys.some(k => k in imported);
       if (!valid) { toast('Invalid settings file.', 'error'); importSettingsInput.value = ''; return; }
 
       const toApply = {};
