@@ -17,13 +17,24 @@ export async function getGoogleAuthTokenInteractive(interactive = false) {
   });
 }
 
+export async function removeCachedGoogleAuthToken(token) {
+  return new Promise((resolve) => {
+    try {
+      if (!token) return resolve();
+      chrome.identity.removeCachedAuthToken({ token }, () => resolve());
+    } catch (e) {
+      resolve();
+    }
+  });
+}
+
 // Revoke token (optional)
 export async function revokeGoogleAuthToken(token) {
   try {
     if (!token) return;
     // invalidate locally and at Google
     await fetch(`https://accounts.google.com/o/oauth2/revoke?token=${token}`);
-    chrome.identity.removeCachedAuthToken({ token }, () => {});
+        await removeCachedGoogleAuthToken(token);
     return true;
   } catch (e) {
     return false;

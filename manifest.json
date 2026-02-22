@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ClarityRead — Reading Mode + Dyslexia Support",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Toggle dyslexia-friendly font, reflow text, contrast, and read-aloud on any page.",
   "icons": {
     "16": "assets/icons/icon16.png",
@@ -17,7 +17,7 @@
     "identity"
   ],
   "oauth2": {
-    "client_id": "506269343424-oab73lpnmcpqb3je50sedbf6avo3snsd.apps.googleusercontent.com",    "scopes": [
+    "client_id": "506269343424-jblcatpku4ui7tlaqe4pvn9d63rhjpmt.apps.googleusercontent.com",    "scopes": [
       "https://www.googleapis.com/auth/documents.readonly",
       "openid",
       "profile",

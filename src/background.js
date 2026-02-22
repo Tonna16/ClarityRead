@@ -1,9 +1,12 @@
-// src/background.js
+
+import { GOOGLE_OAUTH_SCOPES, getOAuthClientIdForRuntime, getOAuthRuntimeSelection } from './config/oauthConfig.js';
 (() => {
   'use strict';
 
   const HANDSHAKE_KEY = '_handshakeSelection';
   const HANDSHAKE_TTL_MS = 30 * 1000; // 30s
+
+
 
   // default debug off; can be toggled at runtime via message 'set_debug'
   let DEBUG = false;
@@ -13,6 +16,14 @@
   const safeInfo = (...args) => { try { if (DEBUG) console.info('[ClarityRead bg]', ...args); } catch (e) {} };
 
   const HOSTED_VIEWER_RE = /(?:^|\.)((docs\.google\.com)|(drive\.google\.com)|(googleusercontent\.com)|(office\.com)|(microsoftonline\.com)|(sharepoint\.com)|(slideshare\.net))/i;
+
+
+    try {
+    const oauthSelection = getOAuthRuntimeSelection(chrome?.runtime?.id || '');
+    console.info('[ClarityRead bg] OAuth runtime selection', oauthSelection);
+  } catch (e) {
+    console.warn('[ClarityRead bg] Failed to resolve OAuth runtime selection', e);
+  }
 
   // init DEBUG from storage if set previously
   try {
@@ -789,12 +800,22 @@
           safeLog('background: requestGoogleAuth received');
           (async () => {
             try {
-const clientId = '506269343424-oab73lpnmcpqb3je50sedbf6avo3snsd.apps.googleusercontent.com';
-              const scopes = [                'https://www.googleapis.com/auth/documents.readonly',
-                'openid',
-                'profile',
-                'email'
-              ].join(' ');
+const runtimeId = chrome?.runtime?.id || '';
+              const clientId = getOAuthClientIdForRuntime(runtimeId);
+              const redirectUri = chrome.identity.getRedirectURL();
+
+              const scopes = GOOGLE_OAUTH_SCOPES.join(' ');
+
+              if (!clientId) {
+  return respondOnce({
+    ok: false,
+    error: 'oauth_client_not_configured',
+    detail: {
+      runtimeId,
+      redirectUri
+    }
+  });
+}
 
               function randomString(len = 64) {
                 const arr = new Uint8Array(len);
@@ -815,7 +836,6 @@ const clientId = '506269343424-oab73lpnmcpqb3je50sedbf6avo3snsd.apps.googleuserc
                 return base64urlEncode(bytes);
               }
 
-              const redirectUri = chrome.identity.getRedirectURL();
               const codeVerifier = randomString(64);
               const codeChallenge = await pkceChallengeFromVerifier(codeVerifier);
 
