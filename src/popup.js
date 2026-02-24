@@ -70,7 +70,7 @@ document.addEventListener('DOMContentLoaded', () => {
 }
 
 
- // instead of chrome.identity.getAuthToken({ interactive: true }, ...)
+// popup.js — improved connect handler (copy/paste replace)
 connectBtn.addEventListener('click', () => {
   try {
     connectBtn.disabled = true;
@@ -85,25 +85,38 @@ connectBtn.addEventListener('click', () => {
         connectBtn.disabled = false;
         connectBtn.textContent = prevText || 'Connect Google';
         statusEl.textContent = 'Not connected';
-        alert('Failed to connect: ' + (chrome.runtime.lastError.message || 'runtime error'));
+        // show a clearer message
+        alert('Failed to connect (runtime error): ' + (chrome.runtime.lastError.message || JSON.stringify(chrome.runtime.lastError)));
         return;
       }
 
       // normal response handling
       connectBtn.disabled = false;
+
+      // log the full response for debugging
+      console.log('requestGoogleAuth response:', resp);
+
       if (!resp || !resp.ok) {
-        const msg = (resp && (resp.detail || resp.error)) ? (resp.detail || resp.error) : 'unknown';
+        // build a human readable message from resp.detail or resp.error (may be object)
+        let detail = resp && resp.detail ? resp.detail : (resp && resp.error ? resp.error : 'unknown');
+        // if detail is an object, stringify it for visibility
+        if (typeof detail === 'object') {
+          try { detail = JSON.stringify(detail, null, 2); } catch (e) { detail = String(detail); }
+        }
         safeWarn('requestGoogleAuth failed', resp);
         connectBtn.textContent = prevText || 'Connect Google';
         statusEl.textContent = (resp && resp.error === 'access_denied') ? 'Access denied / app not verified' : 'Not connected';
-        alert('Failed to connect: ' + String(msg));
+        alert('Failed to connect: ' + detail);
         return;
       }
 
-      // success
-      const tokens = resp.tokenResponse || {};
-      safeLog('Google tokens', tokens);
-     // after success handling
+
+     
+ 
+
+     const tokens = resp.tokenResponse || {};
+     safeLog('Google tokens', tokens);
+
 statusEl.textContent = 'Connected';
 connectBtn.textContent = 'Connected';
 connectBtn.disabled = true;

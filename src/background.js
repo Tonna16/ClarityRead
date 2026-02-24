@@ -796,113 +796,32 @@ import { GOOGLE_OAUTH_SCOPES, getOAuthClientIdForRuntime, getOAuthRuntimeSelecti
           return true;
 
         // requestGoogleAuth: performs interactive launchWebAuthFlow and responds via respondOnce
-        case 'requestGoogleAuth': {
-          safeLog('background: requestGoogleAuth received');
-          (async () => {
-            try {
-const runtimeId = chrome?.runtime?.id || '';
-              const clientId = getOAuthClientIdForRuntime(runtimeId);
-              const redirectUri = chrome.identity.getRedirectURL();
-
-              const scopes = GOOGLE_OAUTH_SCOPES.join(' ');
-
-              if (!clientId) {
-  return respondOnce({
-    ok: false,
-    error: 'oauth_client_not_configured',
-    detail: {
-      runtimeId,
-      redirectUri
-    }
-  });
-}
-
-              function randomString(len = 64) {
-                const arr = new Uint8Array(len);
-                crypto.getRandomValues(arr);
-                return Array.from(arr).map(b => ('0' + b.toString(16)).slice(-2)).join('').slice(0, len);
-              }
-
-              function base64urlEncode(bytes) {
-                let s = '';
-                for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
-                return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-              }
-
-              async function pkceChallengeFromVerifier(verifier) {
-                const enc = new TextEncoder().encode(verifier);
-                const digest = await crypto.subtle.digest('SHA-256', enc);
-                const bytes = new Uint8Array(digest);
-                return base64urlEncode(bytes);
-              }
-
-              const codeVerifier = randomString(64);
-              const codeChallenge = await pkceChallengeFromVerifier(codeVerifier);
-
-              const authUrl = 'https://accounts.google.com/o/oauth2/v2/auth'
-                + '?response_type=code'
-                + `&client_id=${encodeURIComponent(clientId)}`
-                + `&scope=${encodeURIComponent(scopes)}`
-                + `&redirect_uri=${encodeURIComponent(redirectUri)}`
-                + `&code_challenge=${encodeURIComponent(codeChallenge)}`
-                + `&code_challenge_method=S256`
-                + '&access_type=offline'
-                + '&prompt=consent';
-
-              chrome.identity.launchWebAuthFlow({ url: authUrl, interactive: true }, async (redirectResult) => {
-                if (chrome.runtime.lastError) {
-                  safeWarn('launchWebAuthFlow error', chrome.runtime.lastError.message);
-                  return respondOnce({ ok: false, error: 'launchWebAuthFlow_failed', detail: chrome.runtime.lastError.message });
-                }
-                if (!redirectResult) {
-                  return respondOnce({ ok: false, error: 'no-redirect-url' });
-                }
-
-                try {
-                  const params = (new URL(redirectResult)).searchParams;
-                  const code = params.get('code');
-                  if (!code) {
-                    const err = params.get('error') || 'no_code';
-                    safeWarn('Auth redirect missing code', redirectResult);
-                    return respondOnce({ ok: false, error: 'no_code', detail: err });
-                  }
-
-                  const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                    body: new URLSearchParams({
-                      code,
-                      client_id: clientId,
-                      code_verifier: codeVerifier,
-                      redirect_uri: redirectUri,
-                      grant_type: 'authorization_code'
-                    })
-                  });
-
-                  const tokenJson = await tokenRes.json();
-                  if (!tokenRes.ok) {
-                    safeWarn('token exchange failed', tokenJson);
-                    return respondOnce({ ok: false, error: 'token_exchange_failed', detail: tokenJson });
-                  }
-
-                  safeLog('token exchange success', {
-                    hasAccessToken: !!tokenJson.access_token,
-                    hasRefresh: !!tokenJson.refresh_token
-                  });
-
-                  return respondOnce({ ok: true, tokenResponse: tokenJson });
-                } catch (ex) {
-                  safeWarn('requestGoogleAuth exchange error', ex);
-                  return respondOnce({ ok: false, error: String(ex) });
-                }
-              });
-            } catch (e) {
-              safeWarn('background: requestGoogleAuth threw', e);
-              return respondOnce({ ok: false, error: String(e) });
-            }
-          })();
-          return true;
+       case 'requestGoogleAuth': {
+  try {
+    // Try Chrome's getAuthToken first (works in Chrome)
+    if (chrome?.identity?.getAuthToken) {
+      chrome.identity.getAuthToken({ interactive: true }, (token) => {
+        if (!chrome.runtime.lastError && token) {
+          return respondOnce({ ok: true, token, via: 'getAuthToken' });
         }
+
+        // If Edge says unsupported, fall back:
+        const msg = chrome.runtime.lastError?.message || '';
+        if (/not supported on microsoft edge/i.test(msg) && chrome?.identity?.launchWebAuthFlow) {
+          // TODO: call your PKCE launchWebAuthFlow implementation here
+          return respondOnce({ ok: false, error: 'edge-needs-launchwebauthflow', detail: msg });
+        }
+
+        return respondOnce({ ok: false, error: 'getAuthToken_failed', detail: msg });
+      });
+      return true;
+    }
+
+    return respondOnce({ ok: false, error: 'identity-api-missing' });
+  } catch (e) {
+    return respondOnce({ ok: false, error: 'exception', detail: String(e) });
+  }
+}
 
         case 'getCachedToken': {
           try {

@@ -6,7 +6,7 @@ export const DEFAULT_OAUTH_CLIENT_ID = '506269343424-jblcatpku4ui7tlaqe4pvn9d63r
 // Map extension runtime IDs to OAuth clients.
 // Add your Chrome Web Store extension ID here when available.
 export const OAUTH_CLIENT_ID_BY_EXTENSION_ID = Object.freeze({
-  // 'your_store_extension_id_here': 'your_store_oauth_client_id_here.apps.googleusercontent.com'
+  'oamkfkffdbbhfnllhhjoklfknihebdhi': '506269343424-426l9lh5s460726j6dpdgl5uu3f23qkm.apps.googleusercontent.com'
 });
 
 export const GOOGLE_OAUTH_SCOPES = Object.freeze([
