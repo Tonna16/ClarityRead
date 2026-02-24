@@ -61,6 +61,37 @@ import { GOOGLE_OAUTH_SCOPES, getOAuthClientIdForRuntime, getOAuthRuntimeSelecti
     });
   }
 
+  function removeCachedAuthTokenAsync(token) {
+    return new Promise((resolve) => {
+      try {
+        if (!token || !chrome?.identity?.removeCachedAuthToken) return resolve();
+        chrome.identity.removeCachedAuthToken({ token }, () => resolve());
+      } catch (e) {
+        resolve();
+      }
+    });
+  }
+
+  async function clearStoredGoogleOAuthMetadata() {
+    return new Promise((resolve) => {
+      try {
+        chrome.storage.local.remove([GOOGLE_OAUTH_STORE_KEY], () => resolve());
+      } catch (e) {
+        resolve();
+      }
+    });
+  }
+
+  async function revokeAccessTokenBestEffort(token) {
+    if (!token) return;
+    try {
+      await fetch(`https://accounts.google.com/o/oauth2/revoke?token=${encodeURIComponent(token)}`);
+    } catch (e) {
+      safeWarn('token revoke failed (ignored)', e);
+    }
+  }
+
+
   function launchWebAuthFlowAsync(authUrl, interactive = true) {
     return new Promise((resolve) => {
       try {
@@ -123,6 +154,7 @@ import { GOOGLE_OAUTH_SCOPES, getOAuthClientIdForRuntime, getOAuthRuntimeSelecti
     const raw = `${error || ''} ${detail || ''}`.trim();
     if (/access_denied/i.test(raw)) return { error: 'access_denied', detail: raw };
     if (/invalid_grant/i.test(raw)) return { error: 'invalid_grant', detail: raw };
+     if (/redirect_uri_mismatch/i.test(raw)) return { error: 'redirect_uri_mismatch', detail: raw };
     if (/user did not approve|cancel|closed|interaction_required/i.test(raw)) return { error: 'auth_cancelled', detail: raw };
     if (/exchange|token endpoint|fetch/i.test(raw)) return { error: 'oauth_exchange_failed', detail: raw };
     return { error: error || 'oauth_failed', detail: raw || 'unknown oauth error' };
@@ -186,8 +218,7 @@ import { GOOGLE_OAUTH_SCOPES, getOAuthClientIdForRuntime, getOAuthRuntimeSelecti
   async function runGoogleWebAuthFlowInteractive() {
     try {
       const clientId = getOAuthClientIdForRuntime(chrome?.runtime?.id || '');
-      const redirectUri = chrome.identity.getRedirectURL();
-      const { codeVerifier, codeChallenge } = await createPkcePair();
+      const redirectUri = chrome.identity.getRedirectURL('oauth2');      const { codeVerifier, codeChallenge } = await createPkcePair();
       const authUrl = buildGoogleAuthorizeUrl({
         clientId,
         redirectUri,
@@ -1075,8 +1106,7 @@ import { GOOGLE_OAUTH_SCOPES, getOAuthClientIdForRuntime, getOAuthRuntimeSelecti
                   });
                 }
 
-          if (!/not supported on microsoft edge/i.test(auth.error || '') && !/oauth2 not granted/i.test(auth.error || '')) {
-                  return respondOnce({ ok: false, ...normalizeAuthError('getAuthToken_failed', auth.error || '') });
+ if (!/not supported on microsoft edge/i.test(auth.error || '') && !/oauth2 not granted/i.test(auth.error || '') && !/browser not supported/i.test(auth.error || '')) {                  return respondOnce({ ok: false, ...normalizeAuthError('getAuthToken_failed', auth.error || '') });
                 }
               }
 
@@ -1132,6 +1162,35 @@ import { GOOGLE_OAUTH_SCOPES, getOAuthClientIdForRuntime, getOAuthRuntimeSelecti
           return true;
         }
 
+
+        
+        case 'disconnectGoogleAuth': {
+          (async () => {
+            try {
+              const stored = await storageLocalGet([GOOGLE_OAUTH_STORE_KEY]);
+              const storedAccessToken = stored?.[GOOGLE_OAUTH_STORE_KEY]?.accessToken || null;
+              let identityToken = null;
+
+              if (chrome?.identity?.getAuthToken) {
+                const cached = await getAuthTokenAsync(false);
+                identityToken = cached?.token || null;
+                if (identityToken) {
+                  await removeCachedAuthTokenAsync(identityToken);
+                }
+              }
+
+              await removeCachedAuthTokenAsync(storedAccessToken);
+              await clearStoredGoogleOAuthMetadata();
+              await revokeAccessTokenBestEffort(identityToken || storedAccessToken);
+
+              return respondOnce({ ok: true });
+            } catch (e) {
+              return respondOnce({ ok: false, error: 'disconnect_failed', detail: String(e) });
+            }
+          })();
+          return true;
+        }
+        
         case 'getOverlayState': {
           (async () => {
             try {

@@ -22,6 +22,7 @@ document.addEventListener('DOMContentLoaded', () => {
   async function init() {
     // core elements we care about
     const connectBtn = $('connectGoogleBtn');
+        const disconnectBtn = $('disconnectGoogleBtn');
     const statusEl = $('googleStatus');
 
     // defensive: bail if essential DOM isn't present
@@ -30,113 +31,102 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
- async function updateStatus() {
-  try {
-    chrome.runtime.sendMessage({ action: 'getCachedToken' }, (resp) => {
-      const connectBtn = $('connectGoogleBtn');
-      const statusEl = $('googleStatus');
-      if (!connectBtn || !statusEl) return;
-
-      if (!resp || !resp.ok || !resp.token) {
-        statusEl.textContent = 'Not connected';
-        connectBtn.textContent = 'Connect Google';
-        connectBtn.disabled = false;
-        connectBtn.classList.remove('btn-primary', 'connect-active');
-        connectBtn.classList.add('btn-secondary');
-        connectBtn.setAttribute('aria-pressed', 'false');
-        return;
-      }
-
-      statusEl.textContent = 'Connected';
-      connectBtn.textContent = 'Connected';
-      connectBtn.disabled = true;
-      // visually flip to primary look when connected
-      connectBtn.classList.remove('btn-secondary');
-      connectBtn.classList.add('btn-primary', 'connect-active');
-      connectBtn.setAttribute('aria-pressed', 'true');
-    });
-  } catch (e) {
-    const connectBtn = $('connectGoogleBtn');
-    const statusEl = $('googleStatus');
-    if (statusEl) statusEl.textContent = 'Not connected';
-    if (connectBtn) {
-      connectBtn.textContent = 'Connect Google';
-      connectBtn.disabled = false;
-      connectBtn.classList.remove('btn-primary', 'connect-active');
-      connectBtn.classList.add('btn-secondary');
-      connectBtn.setAttribute('aria-pressed', 'false');
-    }
-  }
-}
-
-
-// popup.js — improved connect handler (copy/paste replace)
-connectBtn.addEventListener('click', () => {
-  try {
-    connectBtn.disabled = true;
-    const prevText = connectBtn.textContent;
-    connectBtn.textContent = 'Connecting…';
-    statusEl.textContent = 'Connecting…';
-
-    chrome.runtime.sendMessage({ action: 'requestGoogleAuth' }, (resp) => {
-      // runtime-level errors (no listener, etc.)
-      if (chrome.runtime.lastError) {
-        safeWarn('requestGoogleAuth runtime.lastError', chrome.runtime.lastError);
-        connectBtn.disabled = false;
-        connectBtn.textContent = prevText || 'Connect Google';
-        statusEl.textContent = 'Not connected';
-        // show a clearer message
-        alert('Failed to connect (runtime error): ' + (chrome.runtime.lastError.message || JSON.stringify(chrome.runtime.lastError)));
-        return;
-      }
-
-      // normal response handling
-      connectBtn.disabled = false;
-
-      // log the full response for debugging
-      console.log('requestGoogleAuth response:', resp);
-
-      if (!resp || !resp.ok) {
-        // build a human readable message from resp.detail or resp.error (may be object)
-        let detail = resp && resp.detail ? resp.detail : (resp && resp.error ? resp.error : 'unknown');
-        // if detail is an object, stringify it for visibility
-        if (typeof detail === 'object') {
-          try { detail = JSON.stringify(detail, null, 2); } catch (e) { detail = String(detail); }
-        }
-        safeWarn('requestGoogleAuth failed', resp);
-        connectBtn.textContent = prevText || 'Connect Google';
-        statusEl.textContent = (resp && resp.error === 'access_denied') ? 'Access denied / app not verified' : 'Not connected';
-        alert('Failed to connect: ' + detail);
-        return;
-      }
-
-
-     
+     function setGoogleConnectionUi(isConnected) {
+      statusEl.textContent = isConnected ? 'Connected' : 'Not connected';
  
 
-     const tokens = resp.tokenResponse || {};
-     safeLog('Google tokens', tokens);
-
-statusEl.textContent = 'Connected';
-connectBtn.textContent = 'Connected';
-connectBtn.disabled = true;
-connectBtn.classList.remove('btn-secondary');
-connectBtn.classList.add('btn-primary', 'connect-active');
-connectBtn.setAttribute('aria-pressed', 'true');
+      connectBtn.textContent = 'Connect Google';
+      connectBtn.disabled = !!isConnected;      connectBtn.classList.remove('btn-primary', 'connect-active');
+      connectBtn.classList.add('btn-secondary');
+      connectBtn.setAttribute('aria-pressed', isConnected ? 'true' : 'false');
 
 
-      try { chrome.runtime.sendMessage({ action: 'googleConnected', tokens }, () => {}); } catch(e) {}
+
+       if (disconnectBtn) {
+        disconnectBtn.hidden = !isConnected;
+        disconnectBtn.disabled = false;
+      }
+    }
+
+     async function updateStatus() {
+      try {
+        chrome.runtime.sendMessage({ action: 'getCachedToken' }, (resp) => {
+          const isConnected = !!(resp && resp.ok && resp.token);
+          setGoogleConnectionUi(isConnected);
+        });
+      } catch (e) {
+        setGoogleConnectionUi(false);
+      }
+    }
+
+    connectBtn.addEventListener('click', () => {
+      try {
+        connectBtn.disabled = true;
+        connectBtn.textContent = 'Connecting…';
+        statusEl.textContent = 'Connecting…';
+      
+      }
+
+
+       chrome.runtime.sendMessage({ action: 'requestGoogleAuth' }, (resp) => {
+          if (chrome.runtime.lastError) {
+            safeWarn('requestGoogleAuth runtime.lastError', chrome.runtime.lastError);
+            setGoogleConnectionUi(false);
+            alert('Failed to connect (runtime error): ' + (chrome.runtime.lastError.message || JSON.stringify(chrome.runtime.lastError)));
+            return;
+          }
+
+           if (!resp || !resp.ok) {
+            let detail = resp && resp.detail ? resp.detail : (resp && resp.error ? resp.error : 'unknown');
+            if (typeof detail === 'object') {
+              try { detail = JSON.stringify(detail, null, 2); } catch (e) { detail = String(detail); }
+            }
+            safeWarn('requestGoogleAuth failed', resp);
+            setGoogleConnectionUi(false);
+            statusEl.textContent = (resp && resp.error === 'access_denied') ? 'Connect failed (OAuth setup issue)' : 'Not connected';
+            alert('Failed to connect: ' + detail);
+            return;
+          }
+
+          const tokens = resp.tokenResponse || {};
+          safeLog('Google tokens', tokens);
+          setGoogleConnectionUi(true);
+
+
+try { chrome.runtime.sendMessage({ action: 'googleConnected', tokens }, () => {}); } catch(e) {}
+        });
+      } catch (e) {
+        setGoogleConnectionUi(false);
+        alert('Connect failed: ' + String(e));
+        safeWarn('connect click handler threw', e);
+      }
     });
-  } catch (e) {
-    connectBtn.disabled = false;
-    connectBtn.textContent = 'Connect Google';
-    statusEl.textContent = 'Not connected';
-    alert('Connect failed: ' + String(e));
-    safeWarn('connect click handler threw', e);
-  }
-});
+  
 
 
+     if (disconnectBtn) {
+      disconnectBtn.addEventListener('click', () => {
+        disconnectBtn.disabled = true;
+        statusEl.textContent = 'Disconnecting…';
+        chrome.runtime.sendMessage({ action: 'disconnectGoogleAuth' }, (resp) => {
+          if (chrome.runtime.lastError) {
+            disconnectBtn.disabled = false;
+            safeWarn('disconnectGoogleAuth runtime.lastError', chrome.runtime.lastError);
+            alert('Failed to disconnect: ' + chrome.runtime.lastError.message);
+            return;
+          }
+
+          if (!resp || !resp.ok) {
+            disconnectBtn.disabled = false;
+            safeWarn('disconnectGoogleAuth failed', resp);
+            alert('Failed to disconnect Google. Please try again.');
+            return;
+          }
+
+          setGoogleConnectionUi(false);
+        });
+      });
+    }
 
 
     // initialize status

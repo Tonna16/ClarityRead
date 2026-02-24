@@ -672,8 +672,14 @@ html, body {
 }
 
 #connectGoogleBtn,
+#disconnectGoogleBtn,
 #copyDiagnosticsBtn {
   width: 100%;
+}
+
+#disconnectGoogleBtn {
+  border-color: #ef4444;
+  color: #b91c1c;
 }
 
 .btn-primary.connect-active {
