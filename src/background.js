@@ -19,10 +19,7 @@ import { GOOGLE_OAUTH_SCOPES, getOAuthClientIdForRuntime, getOAuthRuntimeSelecti
   const safeInfo = (...args) => { try { if (DEBUG) console.info('[ClarityRead bg]', ...args); } catch (e) {} };
 
 
-   function base64UrlEncode(bytes) {
-    const bin = String.fromCharCode(...bytes);
-    return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
-  }
+   
 
   function randomString(length = 64) {
     const arr = new Uint8Array(length);
@@ -1064,9 +1061,7 @@ import { GOOGLE_OAUTH_SCOPES, getOAuthClientIdForRuntime, getOAuthRuntimeSelecti
        case 'requestGoogleAuth': {
  (async () => {
             try {
-               const oauthClientId = getOAuthClientIdForRuntime(chrome?.runtime?.id || '');
               if (chrome?.identity?.getAuthToken) {
-                      chrome.identity.getAuthToken({ interactive: true }, async (token) => {
                 const auth = await getAuthTokenAsync(true);
                 if (auth.token) {
                   return respondOnce({
@@ -1080,17 +1075,15 @@ import { GOOGLE_OAUTH_SCOPES, getOAuthClientIdForRuntime, getOAuthRuntimeSelecti
                   });
                 }
 
-         if (!/not supported on microsoft edge/i.test(auth.error || '') && !/oauth2 not granted/i.test(auth.error || '')) {
+          if (!/not supported on microsoft edge/i.test(auth.error || '') && !/oauth2 not granted/i.test(auth.error || '')) {
                   return respondOnce({ ok: false, ...normalizeAuthError('getAuthToken_failed', auth.error || '') });
                 }
               }
 
-         if (!chrome?.identity?.launchWebAuthFlow) {
-                return respondOnce({ ok: false, error: 'identity-api-missing', detail: 'launchWebAuthFlow unavailable' });
+              if (!chrome?.identity?.launchWebAuthFlow) {                return respondOnce({ ok: false, error: 'identity-api-missing', detail: 'launchWebAuthFlow unavailable' });
               }
 
-          const flow = await runGoogleWebAuthFlowInteractive();
-              if (!flow.ok) return respondOnce(flow);
+              const flow = await runGoogleWebAuthFlowInteractive();              if (!flow.ok) return respondOnce(flow);
 
               return respondOnce({
                 ...flow,

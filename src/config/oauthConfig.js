@@ -23,7 +23,7 @@ export const OAUTH_CLIENT_ID_BY_EXTENSION_ID = Object.freeze({
 
 // Browser-level fallback used for unpacked/dev IDs that are not in OAUTH_CLIENT_ID_BY_EXTENSION_ID.
 const OAUTH_CLIENT_ID_BY_BROWSER = Object.freeze({
-  chrome: CHROME_EXTENSION_OAUTH_CLIENT_I
+  chrome: CHROME_EXTENSION_OAUTH_CLIENT_ID
 });
 
 
