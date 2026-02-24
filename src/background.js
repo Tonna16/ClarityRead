@@ -5,6 +5,9 @@ import { GOOGLE_OAUTH_SCOPES, getOAuthClientIdForRuntime, getOAuthRuntimeSelecti
 
   const HANDSHAKE_KEY = '_handshakeSelection';
   const HANDSHAKE_TTL_MS = 30 * 1000; // 30s
+  const GOOGLE_OAUTH_STORE_KEY = 'google_oauth_token_metadata';
+  const GOOGLE_OAUTH_AUTHORIZE_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth';
+  const GOOGLE_OAUTH_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
 
 
 
@@ -15,21 +18,283 @@ import { GOOGLE_OAUTH_SCOPES, getOAuthClientIdForRuntime, getOAuthRuntimeSelecti
   const safeWarn = (...args) => { try { if (DEBUG) console.warn('[ClarityRead bg]', ...args); } catch (e) {} };
   const safeInfo = (...args) => { try { if (DEBUG) console.info('[ClarityRead bg]', ...args); } catch (e) {} };
 
-  const HOSTED_VIEWER_RE = /(?:^|\.)((docs\.google\.com)|(drive\.google\.com)|(googleusercontent\.com)|(office\.com)|(microsoftonline\.com)|(sharepoint\.com)|(slideshare\.net))/i;
 
-
-    try {
-    const oauthSelection = getOAuthRuntimeSelection(chrome?.runtime?.id || '');
-    console.info('[ClarityRead bg] OAuth runtime selection', oauthSelection);
-  } catch (e) {
-    console.warn('[ClarityRead bg] Failed to resolve OAuth runtime selection', e);
+   function base64UrlEncode(bytes) {
+    const bin = String.fromCharCode(...bytes);
+    return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
   }
+
+  function randomString(length = 64) {
+    const arr = new Uint8Array(length);
+    crypto.getRandomValues(arr);
+    return base64UrlEncode(arr).slice(0, length);
+  }
+
+  
+  function storageLocalGet(keys) {
+    return new Promise((resolve) => {
+      try {
+        chrome.storage.local.get(keys, (result) => resolve(result || {}));
+      } catch (e) {
+        resolve({});
+      }
+    });
+  }
+
+  function storageLocalSet(payload) {
+    return new Promise((resolve) => {
+      try {
+        chrome.storage.local.set(payload || {}, () => resolve());
+      } catch (e) {
+        resolve();
+      }
+    });
+  }
+
+  function getAuthTokenAsync(interactive = false) {
+    return new Promise((resolve) => {
+      try {
+        chrome.identity.getAuthToken({ interactive }, (token) => {
+          const err = chrome.runtime.lastError ? (chrome.runtime.lastError.message || 'getAuthToken_failed') : null;
+          resolve({ token: token || null, error: err });
+        });
+      } catch (e) {
+        resolve({ token: null, error: String(e) });
+      }
+    });
+  }
+
+  function launchWebAuthFlowAsync(authUrl, interactive = true) {
+    return new Promise((resolve) => {
+      try {
+        chrome.identity.launchWebAuthFlow({ url: authUrl, interactive }, (responseUrl) => {
+          const err = chrome.runtime.lastError ? (chrome.runtime.lastError.message || 'launchWebAuthFlow_failed') : null;
+          resolve({ responseUrl: responseUrl || null, error: err });
+        });
+      } catch (e) {
+        resolve({ responseUrl: null, error: String(e) });
+      }
+    });
+  }
+
+  function base64UrlEncode(bytes) {
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+  }
+
+  async function createPkcePair() {
+    const verifierBytes = new Uint8Array(32);
+    crypto.getRandomValues(verifierBytes);
+    const codeVerifier = base64UrlEncode(verifierBytes);
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(codeVerifier));
+    const codeChallenge = base64UrlEncode(new Uint8Array(digest));
+    return { codeVerifier, codeChallenge };
+  }
+
+  function buildGoogleAuthorizeUrl({ clientId, redirectUri, scopes, codeChallenge }) {
+    const url = new URL(GOOGLE_OAUTH_AUTHORIZE_ENDPOINT);
+    url.searchParams.set('client_id', clientId);
+    url.searchParams.set('response_type', 'code');
+    url.searchParams.set('redirect_uri', redirectUri);
+    url.searchParams.set('scope', (Array.isArray(scopes) ? scopes : []).join(' '));
+    url.searchParams.set('code_challenge', codeChallenge);
+    url.searchParams.set('code_challenge_method', 'S256');
+    url.searchParams.set('access_type', 'offline');
+    url.searchParams.set('prompt', 'consent');
+    return url.toString();
+  }
+
+  function normalizeGoogleTokenResponse(tokenResponse, extras = {}) {
+    const now = Date.now();
+    const expiresIn = Number(tokenResponse?.expires_in || tokenResponse?.expiresIn || 0) || 0;
+    const accessToken = tokenResponse?.access_token || tokenResponse?.accessToken || null;
+    const refreshToken = tokenResponse?.refresh_token || tokenResponse?.refreshToken || null;
+    return {
+      ok: !!accessToken,
+      accessToken,
+      refreshToken,
+      expiresIn,
+      expiresAt: expiresIn > 0 ? now + (expiresIn * 1000) : null,
+      tokenType: tokenResponse?.token_type || tokenResponse?.tokenType || null,
+      scope: tokenResponse?.scope || null,
+      via: extras.via || 'launchWebAuthFlow'
+    };
+  }
+
+  function normalizeAuthError(error, detail = '') {
+    const raw = `${error || ''} ${detail || ''}`.trim();
+    if (/access_denied/i.test(raw)) return { error: 'access_denied', detail: raw };
+    if (/invalid_grant/i.test(raw)) return { error: 'invalid_grant', detail: raw };
+    if (/user did not approve|cancel|closed|interaction_required/i.test(raw)) return { error: 'auth_cancelled', detail: raw };
+    if (/exchange|token endpoint|fetch/i.test(raw)) return { error: 'oauth_exchange_failed', detail: raw };
+    return { error: error || 'oauth_failed', detail: raw || 'unknown oauth error' };
+  }
+
+  async function exchangeCodeForTokens({ clientId, code, codeVerifier, redirectUri }) {
+    const body = new URLSearchParams();
+    body.set('client_id', clientId);
+    body.set('grant_type', 'authorization_code');
+    body.set('code', code);
+    body.set('code_verifier', codeVerifier);
+    body.set('redirect_uri', redirectUri);
+
+    const response = await fetch(GOOGLE_OAUTH_TOKEN_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString()
+    });
+    const json = await response.json().catch(() => ({}));
+    if (!response.ok || !json?.access_token) {
+      throw new Error(json?.error || `token endpoint ${response.status}`);
+    }
+    return json;
+  }
+
+  async function refreshTokensIfPossible(storedMeta) {
+    if (!storedMeta?.refreshToken) {
+      return { ok: false, error: 'reauth_required', detail: 'No refresh token available' };
+    }
+    try {
+      const clientId = getOAuthClientIdForRuntime(chrome?.runtime?.id || '');
+      const body = new URLSearchParams();
+      body.set('client_id', clientId);
+      body.set('grant_type', 'refresh_token');
+      body.set('refresh_token', storedMeta.refreshToken);
+
+      const response = await fetch(GOOGLE_OAUTH_TOKEN_ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body.toString()
+      });
+      const json = await response.json().catch(() => ({}));
+      if (!response.ok || !json?.access_token) {
+        return { ok: false, ...normalizeAuthError('oauth_exchange_failed', json?.error || `status_${response.status}`) };
+      }
+
+      const normalized = normalizeGoogleTokenResponse(json, { via: 'refresh_token' });
+      normalized.refreshToken = storedMeta.refreshToken;
+      await storageLocalSet({
+        [GOOGLE_OAUTH_STORE_KEY]: {
+          ...normalized,
+          obtainedAt: Date.now()
+        }
+      });
+      return normalized;
+    } catch (e) {
+      return { ok: false, ...normalizeAuthError('oauth_exchange_failed', String(e)) };
+    }
+  }
+
+  async function runGoogleWebAuthFlowInteractive() {
+    try {
+      const clientId = getOAuthClientIdForRuntime(chrome?.runtime?.id || '');
+      const redirectUri = chrome.identity.getRedirectURL();
+      const { codeVerifier, codeChallenge } = await createPkcePair();
+      const authUrl = buildGoogleAuthorizeUrl({
+        clientId,
+        redirectUri,
+        scopes: GOOGLE_OAUTH_SCOPES,
+        codeChallenge
+      });
+
+      const launched = await launchWebAuthFlowAsync(authUrl, true);
+      if (launched.error || !launched.responseUrl) {
+        return { ok: false, ...normalizeAuthError('launchWebAuthFlow_failed', launched.error || 'no response URL') };
+      }
+
+      const callbackUrl = new URL(launched.responseUrl);
+      const returnedError = callbackUrl.searchParams.get('error');
+      if (returnedError) {
+        return { ok: false, ...normalizeAuthError(returnedError, callbackUrl.searchParams.get('error_description') || '') };
+      }
+
+      const code = callbackUrl.searchParams.get('code');
+      if (!code) {
+        return { ok: false, error: 'oauth_missing_code', detail: 'Authorization code missing in callback.' };
+      }
+
+      const tokenJson = await exchangeCodeForTokens({ clientId, code, codeVerifier, redirectUri });
+      const normalized = normalizeGoogleTokenResponse(tokenJson, { via: 'launchWebAuthFlow' });
+      await storageLocalSet({
+        [GOOGLE_OAUTH_STORE_KEY]: {
+          ...normalized,
+          obtainedAt: Date.now()
+        }
+      });
+      return normalized;
+    } catch (e) {
+      return { ok: false, ...normalizeAuthError('oauth_exchange_failed', String(e)) };
+    }
+  }
+
+   async function sha256Base64Url(input) {
+    const data = new TextEncoder().encode(input);
+    const digest = await crypto.subtle.digest('SHA-256', data);
+    return base64UrlEncode(new Uint8Array(digest));
+  }
+
+   async function requestGoogleAuthViaLaunchWebAuthFlow(clientId) {
+    const redirectUri = chrome.identity.getRedirectURL('oauth2');
+    const codeVerifier = randomString(96);
+    const codeChallenge = await sha256Base64Url(codeVerifier);
+
+    const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+    authUrl.searchParams.set('client_id', clientId);
+    authUrl.searchParams.set('redirect_uri', redirectUri);
+    authUrl.searchParams.set('response_type', 'code');
+    authUrl.searchParams.set('scope', GOOGLE_OAUTH_SCOPES.join(' '));
+    authUrl.searchParams.set('access_type', 'offline');
+    authUrl.searchParams.set('prompt', 'consent');
+    authUrl.searchParams.set('code_challenge_method', 'S256');
+    authUrl.searchParams.set('code_challenge', codeChallenge);
+
+    return new Promise((resolve) => {
+      chrome.identity.launchWebAuthFlow({ url: authUrl.toString(), interactive: true }, (redirectedTo) => {
+        if (chrome.runtime.lastError) {
+          return resolve({ ok: false, error: 'launchWebAuthFlow_failed', detail: chrome.runtime.lastError.message || 'launchWebAuthFlow failed' });
+        }
+        if (!redirectedTo) {
+          return resolve({ ok: false, error: 'missing-redirect-url', detail: 'No redirect URL returned from launchWebAuthFlow' });
+        }
+
+        try {
+          const returned = new URL(redirectedTo);
+          const authCode = returned.searchParams.get('code');
+          const error = returned.searchParams.get('error');
+          if (error) {
+            return resolve({ ok: false, error, detail: returned.searchParams.get('error_description') || error });
+          }
+          if (!authCode) {
+            return resolve({ ok: false, error: 'missing-auth-code', detail: redirectedTo });
+          }
+
+          // Keep current behavior compatible with popup.js expectations.
+          return resolve({
+            ok: true,
+            via: 'launchWebAuthFlow',
+            clientId,
+            tokenResponse: {
+              code: authCode,
+              codeVerifier,
+              redirectUri,
+              scope: GOOGLE_OAUTH_SCOPES.join(' ')
+            }
+          });
+        } catch (e) {
+          return resolve({ ok: false, error: 'invalid-redirect-url', detail: String(e) });
+        }
+      });
+    });
+  }
+
+  const HOSTED_VIEWER_RE = /(?:^|\.)((docs\.google\.com)|(drive\.google\.com)|(googleusercontent\.com)|(office\.com)|(microsoftonline\.com)|(sharepoint\.com)|(slideshare\.net))/i;
 
   // init DEBUG from storage if set previously
   try {
     if (chrome && chrome.storage && chrome.storage.local && typeof chrome.storage.local.get === 'function') {
       chrome.storage.local.get(['clarityread_debug'], (res) => {
-        try { DEBUG = !!(res && res.clarityread_debug); if (DEBUG) safeLog('debug enabled from storage'); } catch(e) {}
+        try { DEBUG = !!(res && res.clarityread_debug); if (DEBUG) { safeLog('debug enabled from storage'); const oauthSelection = getOAuthRuntimeSelection(chrome?.runtime?.id || ''); safeInfo('OAuth runtime selection', oauthSelection); } } catch(e) {}
       });
     }
   } catch (e) { /* ignore */ }
@@ -797,44 +1062,80 @@ import { GOOGLE_OAUTH_SCOPES, getOAuthClientIdForRuntime, getOAuthRuntimeSelecti
 
         // requestGoogleAuth: performs interactive launchWebAuthFlow and responds via respondOnce
        case 'requestGoogleAuth': {
-  try {
-    // Try Chrome's getAuthToken first (works in Chrome)
-    if (chrome?.identity?.getAuthToken) {
-      chrome.identity.getAuthToken({ interactive: true }, (token) => {
-        if (!chrome.runtime.lastError && token) {
-          return respondOnce({ ok: true, token, via: 'getAuthToken' });
+ (async () => {
+            try {
+               const oauthClientId = getOAuthClientIdForRuntime(chrome?.runtime?.id || '');
+              if (chrome?.identity?.getAuthToken) {
+                      chrome.identity.getAuthToken({ interactive: true }, async (token) => {
+                const auth = await getAuthTokenAsync(true);
+                if (auth.token) {
+                  return respondOnce({
+                    ok: true,
+                    accessToken: auth.token,
+                    refreshToken: null,
+                    expiresIn: null,
+                    via: 'getAuthToken',
+                    token: auth.token,
+                    tokenResponse: { access_token: auth.token }
+                  });
+                }
+
+         if (!/not supported on microsoft edge/i.test(auth.error || '') && !/oauth2 not granted/i.test(auth.error || '')) {
+                  return respondOnce({ ok: false, ...normalizeAuthError('getAuthToken_failed', auth.error || '') });
+                }
+              }
+
+         if (!chrome?.identity?.launchWebAuthFlow) {
+                return respondOnce({ ok: false, error: 'identity-api-missing', detail: 'launchWebAuthFlow unavailable' });
+              }
+
+          const flow = await runGoogleWebAuthFlowInteractive();
+              if (!flow.ok) return respondOnce(flow);
+
+              return respondOnce({
+                ...flow,
+                token: flow.accessToken,
+                tokenResponse: {
+                  access_token: flow.accessToken,
+                  refresh_token: flow.refreshToken || undefined,
+                  expires_in: flow.expiresIn || undefined
+                }
+              });
+            } catch (e) {
+              return respondOnce({ ok: false, ...normalizeAuthError('exception', String(e)) });
+            }
+          })();
+          return true;
         }
-
-        // If Edge says unsupported, fall back:
-        const msg = chrome.runtime.lastError?.message || '';
-        if (/not supported on microsoft edge/i.test(msg) && chrome?.identity?.launchWebAuthFlow) {
-          // TODO: call your PKCE launchWebAuthFlow implementation here
-          return respondOnce({ ok: false, error: 'edge-needs-launchwebauthflow', detail: msg });
-        }
-
-        return respondOnce({ ok: false, error: 'getAuthToken_failed', detail: msg });
-      });
-      return true;
-    }
-
-    return respondOnce({ ok: false, error: 'identity-api-missing' });
-  } catch (e) {
-    return respondOnce({ ok: false, error: 'exception', detail: String(e) });
-  }
-}
 
         case 'getCachedToken': {
-          try {
-            chrome.identity.getAuthToken({ interactive: false }, (token) => {
-              if (chrome.runtime.lastError) {
-                respondOnce({ ok: false, error: chrome.runtime.lastError.message || 'no-token' });
-                return;
+          (async () => {
+            try {
+              if (chrome?.identity?.getAuthToken) {
+                const cached = await getAuthTokenAsync(false);
+                if (cached.token) {
+                  return respondOnce({ ok: true, token: cached.token, accessToken: cached.token, via: 'getAuthToken' });
+                }
               }
-              respondOnce({ ok: true, token: token || null });
-            });
-          } catch (e) {
-            respondOnce({ ok: false, error: String(e) });
-          }
+              const stored = await storageLocalGet([GOOGLE_OAUTH_STORE_KEY]);
+              const meta = stored?.[GOOGLE_OAUTH_STORE_KEY] || null;
+              if (!meta?.accessToken) {
+                return respondOnce({ ok: false, error: 'no-token' });
+              }
+
+              if (meta.expiresAt && Date.now() >= Number(meta.expiresAt)) {
+                const refreshed = await refreshTokensIfPossible(meta);
+                if (!refreshed.ok) {
+                  return respondOnce(refreshed);
+                }
+                return respondOnce({ ok: true, token: refreshed.accessToken, accessToken: refreshed.accessToken, via: refreshed.via });
+              }
+
+              return respondOnce({ ok: true, token: meta.accessToken, accessToken: meta.accessToken, via: meta.via || 'launchWebAuthFlow' });
+            } catch (e) {
+              return respondOnce({ ok: false, error: 'exception', detail: String(e) });
+            }
+          })();
           return true;
         }
 

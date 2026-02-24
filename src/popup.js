@@ -489,6 +489,7 @@ async function applyFontSizeToActiveTab(sizePx) {
       }
 
       // Generic failure - bubble message to the user and stop retrying
+            if (toastForBgError('clarity_apply_font_size', normalized)) break;
       toast('Unable to apply font on this page. Allow ClarityRead to access the site.', 'error', 6000);
       break;
     }
@@ -675,6 +676,25 @@ try {
       }
       return r;
     } catch (e) { safeLog('normalizeBgResponse threw', e); return res; }
+  }
+
+    function getGoogleDocsUnsupportedMessage(action = '') {
+    if (action === 'toggleFocusMode' || action === 'clarity_apply_font_size' || action === 'applySettings') {
+      return 'This display setting is not available directly on Google Docs yet. Use the extension reader view for style controls.';
+    }
+    if (action === 'stopReading' || action === 'pauseReading' || action === 'resumeReading') {
+      return 'Playback controls are not available on Google Docs unless reading was started in the extension reader view.';
+    }
+    return 'This action is not available directly on Google Docs yet. Use Read Aloud, Speed Read, or Summarize from the extension view.';
+  }
+
+  function toastForBgError(action, response) {
+    const r = normalizeBgResponse(response) || {};
+    if (r.error === 'unsupported-on-google-docs') {
+      toast(r.userFriendlyMessage || getGoogleDocsUnsupportedMessage(action), 'info', 7000);
+      return true;
+    }
+    return false;
   }
 
 function normalizeSelectionResponse(raw) {
@@ -1235,6 +1255,7 @@ sendMessageToActiveTabWithInject({ action: 'applySettings', dys: settings.dys, f
         const r = normalizeBgResponse(res);
         if (!r || !r.ok) {
           safeLog('speedRead failed', r);
+                    if (toastForBgError('speedRead', r)) return;
           toast('Speed-read failed. Falling back to normal read.', 'error', 3500);
           const fallback = await sendMessageToActiveTabWithInject({ action: 'readAloud', highlight: settings.highlight });
           if (normalizeBgResponse(fallback)?.ok) setReadingStatus('Reading...');
@@ -1252,6 +1273,7 @@ sendMessageToActiveTabWithInject({ action: 'applySettings', dys: settings.dys, f
       const r = normalizeBgResponse(result);
       if (!r || !r.ok) {
         safeLog('readAloud send failed:', JSON.stringify(r));
+                if (toastForBgError('readAloud', r)) return;
         if (r && r.error === 'no-host-permission') toast('Permission needed to access this site. Click the extension icon on the page and allow access.', 'error', 7000);
         else if (r && r.error === 'unsupported-page') toast('Cannot control this page (internal/extension page). Open the target tab and try again.', 'error', 6000);
         else if (r && r.error === 'tab-discarded') toast('Target tab is suspended. Reload the page and try again.', 'error', 6000);
@@ -1269,8 +1291,9 @@ sendMessageToActiveTabWithInject({ action: 'applySettings', dys: settings.dys, f
     stopBtn.disabled = false;
     safeLog('stopReading response', res);
     const r = normalizeBgResponse(res);
-    if (!r || (!r.ok && r.error === 'unsupported-page')) toast('Stop failed: cannot control this page.', 'error', 4500);
-    else toast('Stopped reading.', 'success', 1200);
+     if (!r || !r.ok) {
+      if (!toastForBgError('stopReading', r) && r && r.error === 'unsupported-page') toast('Stop failed: cannot control this page.', 'error', 4500);
+    } else toast('Stopped reading.', 'success', 1200);
     setReadingStatus('Not Reading');
   });
 
@@ -1284,15 +1307,14 @@ sendMessageToActiveTabWithInject({ action: 'applySettings', dys: settings.dys, f
       pauseBtn.disabled = false;
       safeLog('pauseReading response', r);
       if (normalizeBgResponse(r)?.ok) setReadingStatus('Paused');
-      else toast('Pause failed.', 'error');
+        else if (!toastForBgError('pauseReading', r)) toast('Pause failed.', 'error');
     } else {
       pauseBtn.disabled = true;
       const r2 = await sendMessageToActiveTabWithInject({ action: 'resumeReading' });
       pauseBtn.disabled = false;
       safeLog('resumeReading response', r2);
       if (normalizeBgResponse(r2)?.ok) setReadingStatus('Reading...');
-      else toast('Resume failed.', 'error');
-    }
+else if (!toastForBgError('resumeReading', r2)) toast('Resume failed.', 'error');    }
   });
 
   // Focus mode toggle — preserve original label (emoji) by only mutating .action-text
@@ -1315,7 +1337,9 @@ safeOn(focusModeBtn, 'click', async () => {
  if (!r || !r.ok) {
       if (textEl) textEl.textContent = originalText;
 
-      if (r && r.error === 'no-host-permission') {
+       if (toastForBgError('toggleFocusMode', r)) {
+        // already explained via toast
+      } else if (r && r.error === 'no-host-permission') {
         toast('Permission required. Click the extension icon on the page to grant access.', 'error', 7000);
       } else if (r && r.error === 'no-text') {
         toast('No readable text found. Try selecting text or opening an article page.', 'error', 6000);
