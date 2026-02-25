@@ -65,10 +65,10 @@ document.addEventListener('DOMContentLoaded', () => {
         connectBtn.textContent = 'Connecting…';
         statusEl.textContent = 'Connecting…';
       
-      }
+      
 
 
-       chrome.runtime.sendMessage({ action: 'requestGoogleAuth' }, (resp) => {
+  chrome.runtime.sendMessage({ action: 'requestGoogleAuth' }, (resp) => {
           if (chrome.runtime.lastError) {
             safeWarn('requestGoogleAuth runtime.lastError', chrome.runtime.lastError);
             setGoogleConnectionUi(false);
@@ -83,18 +83,21 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             safeWarn('requestGoogleAuth failed', resp);
             setGoogleConnectionUi(false);
-            statusEl.textContent = (resp && resp.error === 'access_denied') ? 'Connect failed (OAuth setup issue)' : 'Not connected';
-            alert('Failed to connect: ' + detail);
+statusEl.textContent = (resp && (resp.error === 'access_denied' || resp.error === 'redirect_uri_mismatch'))
+              ? 'Connect failed (OAuth setup issue)'
+              : 'Not connected';            alert('Failed to connect: ' + detail);
             return;
           }
 
-          const tokens = resp.tokenResponse || {};
-          safeLog('Google tokens', tokens);
+const tokens = resp.tokenResponse || {
+            access_token: resp.accessToken || resp.token || null,
+            refresh_token: resp.refreshToken || null,
+            expires_in: resp.expiresIn || null
+          };          safeLog('Google tokens', tokens);
           setGoogleConnectionUi(true);
 
 
-try { chrome.runtime.sendMessage({ action: 'googleConnected', tokens }, () => {}); } catch(e) {}
-        });
+   try { chrome.runtime.sendMessage({ action: 'googleConnected', tokens }, () => {}); } catch (e) {}        });
       } catch (e) {
         setGoogleConnectionUi(false);
         alert('Connect failed: ' + String(e));
@@ -182,7 +185,7 @@ try { queryOverlayStateOnActiveTab(); } catch(e) {}
 const CHUNK_SIZE_CHARS = 4000;
 const MAX_INPUT_CHARS = 120000;
 
- const IDF_FILENAME = 'idf.json'; // place idf.json in your extension's root/public so chrome.runtime.getURL finds it
+ const IDF_FILENAME = 'idf.json'; 
 
  let chart = null;
 
