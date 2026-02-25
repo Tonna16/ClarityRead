@@ -60,6 +60,33 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     connectBtn.addEventListener('click', () => {
+         const isEdgeBrowser = (() => {
+        try { return /edg\//i.test(String(globalThis?.navigator?.userAgent || '')); }
+        catch (e) { return false; }
+      })();
+
+      const getFriendlyConnectErrorMessage = (resp, runtimeErrorMessage = '') => {
+        const rawError = String((resp && resp.error) || runtimeErrorMessage || '').toLowerCase();
+        const rawDetail = String((resp && resp.detail) || runtimeErrorMessage || '').toLowerCase();
+        const isRedirectMismatch = rawError.includes('redirect_uri_mismatch') || rawDetail.includes('redirect_uri_mismatch');
+
+        if (isRedirectMismatch) {
+          return isEdgeBrowser
+            ? 'Could not connect Google on Edge yet. The Edge redirect URL is still being configured. Please update once a new release is available.'
+            : 'Google sign-in is not fully configured yet (redirect URL mismatch). Please try again after configuration is updated.';
+        }
+
+        if (isEdgeBrowser && (/oauth2 not granted|not supported on microsoft edge|browser not supported/.test(rawError) || /oauth2 not granted|not supported on microsoft edge|browser not supported/.test(rawDetail))) {
+          return 'Google sign-in is currently limited on this Edge build. Please use the latest extension update and try again.';
+        }
+
+        if (rawError.includes('access_denied')) {
+          return 'Google sign-in was cancelled. Please try again and approve access.';
+        }
+
+        return 'Failed to connect to Google. Please try again.';
+      };
+
       try {
         connectBtn.disabled = true;
         connectBtn.textContent = 'Connecting…';
@@ -72,8 +99,7 @@ document.addEventListener('DOMContentLoaded', () => {
           if (chrome.runtime.lastError) {
             safeWarn('requestGoogleAuth runtime.lastError', chrome.runtime.lastError);
             setGoogleConnectionUi(false);
-            alert('Failed to connect (runtime error): ' + (chrome.runtime.lastError.message || JSON.stringify(chrome.runtime.lastError)));
-            return;
+ alert(getFriendlyConnectErrorMessage(null, chrome.runtime.lastError.message || JSON.stringify(chrome.runtime.lastError)));            return;
           }
 
            if (!resp || !resp.ok) {
@@ -85,8 +111,8 @@ document.addEventListener('DOMContentLoaded', () => {
             setGoogleConnectionUi(false);
 statusEl.textContent = (resp && (resp.error === 'access_denied' || resp.error === 'redirect_uri_mismatch'))
               ? 'Connect failed (OAuth setup issue)'
-              : 'Not connected';            alert('Failed to connect: ' + detail);
-            return;
+: 'Not connected';
+            alert(`${getFriendlyConnectErrorMessage(resp)}\n\nDetails: ${detail}`);            return;
           }
 
 const tokens = resp.tokenResponse || {

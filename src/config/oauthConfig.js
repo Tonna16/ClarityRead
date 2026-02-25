@@ -11,14 +11,30 @@ export const CHROME_EXTENSION_OAUTH_CLIENT_ID = '506269343424-426l9lh5s460726j6d
 // TODO(release): replace with production Edge client once registered in Google Cloud.
 export const EDGE_EXTENSION_OAUTH_CLIENT_ID = '506269343424-426l9lh5s460726j6dpdgl5uu3f23qkm.apps.googleusercontent.com';
 
+
+
+// Extension runtime IDs.
+export const CHROME_EXTENSION_RUNTIME_ID = 'oamkfkffdbbhfnllhhjoklfknihebdhi';
+// TODO(edge-release): replace with the published Edge Add-ons runtime ID.
+export const EDGE_EXTENSION_RUNTIME_ID = 'oamkfkffdbbhfnllhhjoklfknihebdhi';
+
+// Local unpacked IDs are machine-specific unless manifest.json provides a stable `key`.
+// Keep this value empty and let each developer set their own ID + OAuth client mapping.
+export const LOCAL_UNPACKED_EXTENSION_RUNTIME_ID = '';
 // Known extension runtime IDs mapped to their dedicated OAuth client.
 // Keep this explicit so release IDs always resolve deterministically.
 
 export const OAUTH_CLIENT_ID_BY_EXTENSION_ID = Object.freeze({
-    // Chrome Web Store extension ID.
-  'oamkfkffdbbhfnllhhjoklfknihebdhi': CHROME_EXTENSION_OAUTH_CLIENT_ID
-  // Edge Add-ons extension ID should be added here once available.
-  // 'edge-extension-id-here': EDGE_EXTENSION_OAUTH_CLIENT_ID
+ // Chrome Web Store extension ID.
+  [CHROME_EXTENSION_RUNTIME_ID]: CHROME_EXTENSION_OAUTH_CLIENT_ID,
+
+  // Edge Add-ons extension ID.
+  [EDGE_EXTENSION_RUNTIME_ID]: EDGE_EXTENSION_OAUTH_CLIENT_ID,
+
+  // Local unpacked extension ID (optional per developer).
+  ...(LOCAL_UNPACKED_EXTENSION_RUNTIME_ID
+    ? { [LOCAL_UNPACKED_EXTENSION_RUNTIME_ID]: CHROME_EXTENSION_OAUTH_CLIENT_ID }
+    : {})
 });
 
 // Browser-level fallback used for unpacked/dev IDs that are not in OAUTH_CLIENT_ID_BY_EXTENSION_ID.

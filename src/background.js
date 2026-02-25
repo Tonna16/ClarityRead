@@ -105,6 +105,10 @@ import { GOOGLE_OAUTH_SCOPES, getOAuthClientIdForRuntime, getOAuthRuntimeSelecti
     });
   }
 
+ function getGoogleRedirectUri() {
+    return chrome.identity.getRedirectURL('oauth2');
+  } 
+
   function base64UrlEncode(bytes) {
     let binary = '';
     for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
@@ -218,7 +222,8 @@ import { GOOGLE_OAUTH_SCOPES, getOAuthClientIdForRuntime, getOAuthRuntimeSelecti
   async function runGoogleWebAuthFlowInteractive() {
     try {
       const clientId = getOAuthClientIdForRuntime(chrome?.runtime?.id || '');
-      const redirectUri = chrome.identity.getRedirectURL('oauth2');      const { codeVerifier, codeChallenge } = await createPkcePair();
+const redirectUri = getGoogleRedirectUri();
+      const { codeVerifier, codeChallenge } = await createPkcePair();
       const authUrl = buildGoogleAuthorizeUrl({
         clientId,
         redirectUri,
@@ -263,8 +268,7 @@ import { GOOGLE_OAUTH_SCOPES, getOAuthClientIdForRuntime, getOAuthRuntimeSelecti
   }
 
    async function requestGoogleAuthViaLaunchWebAuthFlow(clientId) {
-    const redirectUri = chrome.identity.getRedirectURL('oauth2');
-    const codeVerifier = randomString(96);
+    const redirectUri = getGoogleRedirectUri();    const codeVerifier = randomString(96);
     const codeChallenge = await sha256Base64Url(codeVerifier);
 
     const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
