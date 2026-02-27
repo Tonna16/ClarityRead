@@ -186,6 +186,22 @@
 <div class="panel focus-mode-highlight">
   <h2 class="panel-title">🎯 Focus Reading Overlay</h2>
   <p class="feature-description">Opens an immersive reading overlay that removes distractions and helps you focus on the text.</p>
+  <div class="controls-grid" style="margin: 10px 0 12px;">
+    <label class="control-label" for="focusDimStrengthSlider">
+      Dim strength: <span id="focusDimStrengthValue">55%</span>
+      <input id="focusDimStrengthSlider" class="size-slider" type="range" min="0" max="100" step="1" value="55">
+    </label>
+    <label class="toggle-control">
+      <input id="focusAutoNextParagraphToggle" type="checkbox">
+      <span class="toggle-slider"></span>
+      <span class="toggle-label">Auto-focus next paragraph</span>
+    </label>
+    <label class="toggle-control">
+      <input id="focusFadeBackgroundToggle" type="checkbox" checked>
+      <span class="toggle-slider"></span>
+      <span class="toggle-label">Fade background content</span>
+    </label>
+  </div>
   <button id="focusModeBtn" class="btn btn-primary focus-btn">
     <span class="btn-icon">🎯</span>
     <span class="btn-text">Open Focus Mode</span>

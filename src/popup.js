@@ -275,6 +275,10 @@ const requiredIds = ['reflowToggle','contrastToggle','invertToggle','readBtn','p
   const speedToggle = $('speedToggle');
   const chunkSizeInput = $('chunkSize');
   const speedRateInput = $('speedRate');
+  const focusDimStrengthSlider = $('focusDimStrengthSlider');
+  const focusDimStrengthValue = $('focusDimStrengthValue');
+  const focusAutoNextParagraphToggle = $('focusAutoNextParagraphToggle');
+  const focusFadeBackgroundToggle = $('focusFadeBackgroundToggle');
 
   const saveSelectionBtn = $('saveSelectionBtn');
   const openSavedManagerBtn = $('openSavedManagerBtn');
@@ -482,13 +486,57 @@ try {
  const _focusModeOriginalText = (focusModeBtn && (focusModeBtn.querySelector('.btn-text') || focusModeBtn.querySelector('.action-text')))
     ? (focusModeBtn.querySelector('.btn-text') || focusModeBtn.querySelector('.action-text')).textContent
     : 'Focus Mode';
-  const DEFAULTS = { dys: false, reflow: false, contrast: false, invert: false, fontSize: 20, fontFamily: 'system' };  const safeOn = (el, ev, fn) => { if (el) el.addEventListener(ev, fn); };
+  const DEFAULTS = { dys: false, reflow: false, contrast: false, invert: false, fontSize: 20, fontFamily: 'system' };
+  const FOCUS_MODE_SETTINGS_KEY = 'clarity_focus_mode_settings';
+  const DEFAULT_FOCUS_MODE_SETTINGS = {
+    dimStrength: 55,
+    autoFocusNextParagraph: false,
+    fadeBackgroundContent: true
+  };
+  const safeOn = (el, ev, fn) => { if (el) el.addEventListener(ev, fn); };
 
   let isReading = false;
   let isPaused = false;
   let currentHostname = '';
   let settingsDebounce = null;
   let lastStatus = null;         // dedupe repeated identical status updates
+  let focusModeSettings = { ...DEFAULT_FOCUS_MODE_SETTINGS };
+
+  function normalizeFocusModeSettings(raw = {}) {
+    const dim = Number(raw.dimStrength);
+    return {
+      dimStrength: Number.isFinite(dim) ? clamp(dim, 0, 100) : DEFAULT_FOCUS_MODE_SETTINGS.dimStrength,
+      autoFocusNextParagraph: !!raw.autoFocusNextParagraph,
+      fadeBackgroundContent: raw.fadeBackgroundContent !== false
+    };
+  }
+
+  function renderFocusModeSettingsUI(settings) {
+    if (focusDimStrengthSlider) focusDimStrengthSlider.value = String(settings.dimStrength);
+    if (focusDimStrengthValue) focusDimStrengthValue.textContent = `${settings.dimStrength}%`;
+    if (focusAutoNextParagraphToggle) focusAutoNextParagraphToggle.checked = !!settings.autoFocusNextParagraph;
+    if (focusFadeBackgroundToggle) focusFadeBackgroundToggle.checked = !!settings.fadeBackgroundContent;
+  }
+
+  async function loadFocusModeSettings() {
+    const stored = await getFromStorage([FOCUS_MODE_SETTINGS_KEY]);
+    focusModeSettings = normalizeFocusModeSettings(stored[FOCUS_MODE_SETTINGS_KEY] || {});
+    renderFocusModeSettingsUI(focusModeSettings);
+  }
+
+  function gatherFocusModeSettingsFromUI() {
+    return normalizeFocusModeSettings({
+      dimStrength: focusDimStrengthSlider ? Number(focusDimStrengthSlider.value) : focusModeSettings.dimStrength,
+      autoFocusNextParagraph: focusAutoNextParagraphToggle?.checked,
+      fadeBackgroundContent: focusFadeBackgroundToggle?.checked
+    });
+  }
+
+  async function persistFocusModeSettings(nextSettings) {
+    focusModeSettings = normalizeFocusModeSettings(nextSettings);
+    renderFocusModeSettingsUI(focusModeSettings);
+    await setToStorage({ [FOCUS_MODE_SETTINGS_KEY]: focusModeSettings });
+  }
 
   function formatTime(sec) {
     sec = Math.max(0, Math.round(sec || 0));
@@ -1197,6 +1245,20 @@ sendMessageToActiveTabWithInject({ action: 'applySettings', dys: settings.dys, f
 else if (!toastForBgError('resumeReading', r2)) toast('Resume failed.', 'error');    }
   });
 
+  safeOn(focusDimStrengthSlider, 'input', () => {
+    const next = gatherFocusModeSettingsFromUI();
+    renderFocusModeSettingsUI(next);
+  });
+  safeOn(focusDimStrengthSlider, 'change', async () => {
+    await persistFocusModeSettings(gatherFocusModeSettingsFromUI());
+  });
+  safeOn(focusAutoNextParagraphToggle, 'change', async () => {
+    await persistFocusModeSettings(gatherFocusModeSettingsFromUI());
+  });
+  safeOn(focusFadeBackgroundToggle, 'change', async () => {
+    await persistFocusModeSettings(gatherFocusModeSettingsFromUI());
+  });
+
   // Focus mode toggle — preserve original label (emoji) by only mutating .action-text
 // Update the focusModeBtn click handler:
 safeOn(focusModeBtn, 'click', async () => {
@@ -1208,7 +1270,9 @@ safeOn(focusModeBtn, 'click', async () => {
   const textEl = getFocusModeTextEl();
   if (textEl) textEl.textContent = 'Opening...';
   
-  const res = await sendMessageToActiveTabWithInject({ action: 'toggleFocusMode' });
+  const focusSettingsForMessage = gatherFocusModeSettingsFromUI();
+  await persistFocusModeSettings(focusSettingsForMessage);
+  const res = await sendMessageToActiveTabWithInject({ action: 'toggleFocusMode', focusModeSettings: focusSettingsForMessage });
   focusModeBtn.disabled = false;
   
   safeLog('toggleFocusMode response', res);
@@ -2967,13 +3031,13 @@ safeOn(saveSelectionBtn, 'click', async () => {
   loadStats();
   initPerSiteUI();
   wireSummaryDetailSelect();
+  loadFocusModeSettings().catch((e) => safeLog('loadFocusModeSettings failed', e));
   renderSavedList();
   setTimeout(() => { safeLog('delayed loadVoicesIntoSelect'); loadVoicesIntoSelect(); }, 300);
   // after the init() function body ends, add:
 init().catch(e => safeWarn('popup init failed', e));
 
 });
-
 
 
 

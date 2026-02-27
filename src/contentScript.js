@@ -356,6 +356,10 @@ html.readeasy-reflow h3 {
   let fallbackTickerRunning = false;
   let overlayActive = false;
   let overlayTextSplice = null;
+  const FOCUS_MODE_SETTINGS_KEY = 'clarity_focus_mode_settings';
+  const DEFAULT_FOCUS_MODE_SETTINGS = { dimStrength: 55, autoFocusNextParagraph: false, fadeBackgroundContent: true };
+  let activeFocusModeSettings = { ...DEFAULT_FOCUS_MODE_SETTINGS };
+  let paragraphBoundaryIndices = [];
 let __clarityread_nav_prevent_handler = null;
 
 
@@ -981,6 +985,60 @@ function getOverlayFontFamilyFallback() {
   return dys ? FONT_FAMILY_MAP.opendyslexic : FONT_FAMILY_MAP.system;
 }
 
+function normalizeFocusModeSettings(raw = {}) {
+  const dim = Number(raw.dimStrength);
+  return {
+    dimStrength: Number.isFinite(dim) ? clamp(dim, 0, 100) : DEFAULT_FOCUS_MODE_SETTINGS.dimStrength,
+    autoFocusNextParagraph: !!raw.autoFocusNextParagraph,
+    fadeBackgroundContent: raw.fadeBackgroundContent !== false
+  };
+}
+
+function computeParagraphBoundaryIndices() {
+  paragraphBoundaryIndices = [];
+  if (!Array.isArray(highlightSpans) || !highlightSpans.length) return;
+  for (let i = 0; i < highlightSpans.length - 1; i++) {
+    const txt = highlightSpans[i]?.textContent || '';
+    if (/\n\s*\n\s*$/.test(txt)) paragraphBoundaryIndices.push(i + 1);
+  }
+}
+
+function getNextParagraphBoundaryIndex(fromIndex) {
+  for (const idx of paragraphBoundaryIndices) {
+    if (idx > fromIndex) return idx;
+  }
+  return -1;
+}
+
+function applyFocusModeVisualSettings(settings = activeFocusModeSettings) {
+  const normalized = normalizeFocusModeSettings(settings);
+  activeFocusModeSettings = normalized;
+  const overlay = document.getElementById('readeasy-reader-overlay') || document.getElementById('clarityread-overlay');
+  const dimOpacity = Math.min(0.88, Math.max(0, normalized.dimStrength / 100));
+  if (overlay) {
+    overlay.style.setProperty('--clarity-focus-dim-opacity', String(dimOpacity));
+    overlay.style.setProperty('--clarity-focus-fade-opacity', normalized.fadeBackgroundContent ? '0.35' : '1');
+  }
+  const html = document.documentElement;
+  if (html) {
+    html.classList.toggle('clarity-focus-fade-enabled', !!normalized.fadeBackgroundContent);
+    html.classList.toggle('clarity-focus-fade-disabled', !normalized.fadeBackgroundContent);
+  }
+}
+
+async function resolveFocusModeSettings(incoming = null) {
+  if (incoming && typeof incoming === 'object') return normalizeFocusModeSettings(incoming);
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.local.get([FOCUS_MODE_SETTINGS_KEY], (res) => {
+        resolve(normalizeFocusModeSettings((res && res[FOCUS_MODE_SETTINGS_KEY]) || {}));
+      });
+    } catch (e) {
+      resolve({ ...DEFAULT_FOCUS_MODE_SETTINGS });
+    }
+  });
+}
+
 function createReaderOverlay(text) {
   removeReaderOverlay();
 
@@ -991,6 +1049,7 @@ function createReaderOverlay(text) {
   overlay.id = 'readeasy-reader-overlay';
   overlay.setAttribute('role','dialog');
   overlay.setAttribute('aria-label','Reader overlay');
+  overlay.classList.add('clarity-focus-overlay');
 
   overlay.style.position = 'fixed';
   overlay.style.inset = '6%';
@@ -1006,6 +1065,10 @@ function createReaderOverlay(text) {
   overlay.style.whiteSpace = 'pre-wrap';
   overlay.style.touchAction = 'manipulation';
   overlay.style.willChange = 'transform, opacity';
+  overlay.style.setProperty('--clarity-focus-dim-opacity', String(Math.min(0.88, Math.max(0, activeFocusModeSettings.dimStrength / 100))));
+  overlay.style.setProperty('--clarity-focus-fade-opacity', activeFocusModeSettings.fadeBackgroundContent ? '0.35' : '1');
+
+  applyFocusModeVisualSettings(activeFocusModeSettings);
 
   // close button
   try {
@@ -1079,6 +1142,7 @@ function createReaderOverlay(text) {
         try {
           highlightSpans = Array.from(inner.querySelectorAll('.readeasy-word'));
           buildCumLengths();
+          computeParagraphBoundaryIndices();
           safeLog('createReaderOverlay finished building spans', highlightSpans.length);
         } catch(e){ safeLog('createReaderOverlay finalization failed', e); }
         finished = true;
@@ -1093,6 +1157,7 @@ function createReaderOverlay(text) {
       try {
         highlightSpans = Array.from(inner.querySelectorAll('.readeasy-word'));
         buildCumLengths();
+        computeParagraphBoundaryIndices();
         notifyOverlayState(true);
       } catch(_) {}
       finished = true;
@@ -1157,6 +1222,10 @@ function removeReaderOverlay() {
 
     overlayActive = false;
     overlayTextSplice = null;
+    paragraphBoundaryIndices = [];
+    try {
+      document.documentElement.classList.remove('clarity-focus-fade-enabled', 'clarity-focus-fade-disabled');
+    } catch (e) {}
     safeLog('removeReaderOverlay executed (defensive)');
 
     try { notifyOverlayState(false); } catch(e){ safeLog('notify overlay remove failed', e); }
@@ -1164,6 +1233,8 @@ function removeReaderOverlay() {
     safeLog('removeReaderOverlay outer error', e);
     overlayActive = false;
     overlayTextSplice = null;
+    paragraphBoundaryIndices = [];
+    try { document.documentElement.classList.remove('clarity-focus-fade-enabled', 'clarity-focus-fade-disabled'); } catch (e) {}
     try { notifyOverlayState(false); } catch(_) {}
   }
 }
@@ -1181,6 +1252,7 @@ function removeReaderOverlay() {
     highlightSpans = [];
     highlightIndex = 0;
     cumLengths = [];
+    paragraphBoundaryIndices = [];
     overlayActive = false;
     overlayTextSplice = null;
     safeLog('clearHighlights cleared (overlay mode)');
@@ -1223,6 +1295,7 @@ function removeReaderOverlay() {
   highlightSpans = [];
   highlightIndex = 0;
   cumLengths = [];
+  paragraphBoundaryIndices = [];
   overlayActive = false;
   overlayTextSplice = null;
   safeLog('clearHighlights cleared', 'spansRemoved', (highlightSpans && highlightSpans.length) || 0);
@@ -1250,6 +1323,10 @@ function removeReaderOverlay() {
         if (cumLengths[mid] > charIndex) { idx = mid; hi = mid - 1; } else { lo = mid + 1; }
       }
       highlightIndex = idx;
+      if (activeFocusModeSettings.autoFocusNextParagraph) {
+        const nextBoundary = getNextParagraphBoundaryIndex(highlightIndex);
+        if (nextBoundary >= 0) highlightIndex = nextBoundary;
+      }
     }
     for (let i = 0; i < highlightSpans.length; i++) {
       const s = highlightSpans[i];
@@ -1263,7 +1340,10 @@ function removeReaderOverlay() {
 
   function advanceHighlightByOne() {
     if (!highlightSpans || !highlightSpans.length) return;
-    highlightIndex = Math.min(highlightIndex + 1, highlightSpans.length - 1);
+    const nextIndex = activeFocusModeSettings.autoFocusNextParagraph
+      ? getNextParagraphBoundaryIndex(highlightIndex)
+      : -1;
+    highlightIndex = Math.min(nextIndex >= 0 ? nextIndex : (highlightIndex + 1), highlightSpans.length - 1);
     for (let i = 0; i < highlightSpans.length; i++) {
       const s = highlightSpans[i];
       if (!s) continue;
@@ -1876,7 +1956,7 @@ function getTextToRead() {
   }
 
 // --- Focus-mode toggle (uses overlay)
-function toggleFocusMode() {
+async function toggleFocusMode(messageSettings) {
     try {
     safeLog()('[ClarityRead contentScript] toggleFocusMode called; overlayActive=', overlayActive);
     safeLog()('[ClarityRead contentScript] toggleFocusMode stack');
@@ -1920,7 +2000,10 @@ function toggleFocusMode() {
   // backup before opening focus mode
   __clarityread_backupMain();
 
+  const focusSettings = await resolveFocusModeSettings(messageSettings);
+  activeFocusModeSettings = focusSettings;
   createReaderOverlay(t);
+  applyFocusModeVisualSettings(focusSettings);
   sendState('Not Reading'); // overlay itself doesn't start reading
   safeLog('toggleFocusMode: opened overlay');
   return { ok: true, overlayActive: true, url: location.href || '' };
@@ -2491,10 +2574,15 @@ case 'readAloud': {
 }
 
         case 'toggleFocusMode': {
-          const res = toggleFocusMode();
-          sendResponse(res);
-          safeLog('toggleFocusMode responded', res);
-          break;
+          Promise.resolve(toggleFocusMode(msg && msg.focusModeSettings)).then((res) => {
+            sendResponse(res);
+            safeLog('toggleFocusMode responded', res);
+          }).catch((err) => {
+            const fail = { ok: false, error: String(err || 'toggle-focus-failed') };
+            sendResponse(fail);
+            safeLog('toggleFocusMode responded with error', fail);
+          });
+          return true;
         }
 
         case 'stopReading': {
