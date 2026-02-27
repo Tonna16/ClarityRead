@@ -14,8 +14,15 @@ ClarityRead is a lightweight browser extension that makes reading on the web eas
 - **Reading stats** (local-only) visualized in a chart.
 
 ## Privacy & Data
-ClarityRead is privacy-first. By default, all processing (summaries, TTS via browser, stats) happens locally in your browser. No page text or selections are transmitted to any external server. Saved reads and preferences are stored locally in `chrome.storage.local` and can be exported/imported by the user.
+ClarityRead is privacy-first. By default, all processing (summaries, explain/rewrite/define actions, TTS via browser, and stats) happens locally in your browser. Saved reads and preferences are stored locally in `chrome.storage.local` and can be exported/imported by the user.
 
+### Optional remote AI mode (off by default)
+If you switch **AI mode** to **Remote (optional)** and the `remoteAiEnabled` feature flag is enabled, ClarityRead may send only the text needed for that action to your configured remote AI endpoint:
+- **Explain selection**: selected text (or extracted page text if nothing is selected).
+- **Rewrite for grade level**: selected text/page text plus selected grade (3/6/9).
+- **Define selected word**: selected word (or first detected word from the selected text).
+
+When remote mode is disabled (default), these actions use local fallback logic and no page text is sent externally.
 
 ## Usage
 - Click the ClarityRead toolbar icon to open the popup.

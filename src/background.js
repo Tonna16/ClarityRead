@@ -48,6 +48,100 @@ import { GOOGLE_OAUTH_SCOPES, getOAuthClientIdForRuntime, getOAuthRuntimeSelecti
     });
   }
 
+
+
+  function localExplainText(text = '') {
+    const t = String(text || '').trim();
+    if (!t) return '';
+    const sentences = t.split(/(?<=[.?!])\s+/).filter(Boolean).slice(0, 3);
+    return `In simple terms: ${sentences.join(' ')}`.trim();
+  }
+
+  function localRewriteByGrade(text = '', grade = 6) {
+    const target = Number(grade) || 6;
+    let out = String(text || '').trim();
+    if (!out) return '';
+    if (target <= 3) {
+      out = out.replace(/\bapproximately\b/gi, 'about').replace(/\btherefore\b/gi, 'so').replace(/\bhowever\b/gi, 'but');
+      return out.split(/(?<=[.?!])\s+/).slice(0, 4).join(' ');
+    }
+    if (target <= 6) {
+      return out.replace(/\butilize\b/gi, 'use').replace(/\bfacilitate\b/gi, 'help');
+    }
+    return out;
+  }
+
+  function localDefineWord(word = '') {
+    const key = String(word || '').toLowerCase();
+    const localDict = {
+      context: 'The words and ideas around something that help explain its meaning.',
+      infer: 'To make a smart guess based on clues and evidence.',
+      summarize: 'To shorten information down to the most important points.',
+      evidence: 'Facts or details that support a claim or idea.',
+      analyze: 'To examine something carefully to understand it better.'
+    };
+    return localDict[key] || `${word}: likely a term whose exact meaning depends on nearby context.`;
+  }
+
+  async function runRemoteAiProvider(action, payload, options = {}) {
+    const endpoint = (options && options.endpoint) || '';
+    if (!endpoint) return { ok: false, error: 'remote-endpoint-missing' };
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, ...payload })
+      });
+      if (!response.ok) {
+        return { ok: false, error: `remote-status-${response.status}` };
+      }
+      const data = await response.json().catch(() => ({}));
+      return { ok: true, output: String(data.output || data.result || '').trim(), raw: data };
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
+  }
+
+  async function runAiAction(action, payload = {}) {
+    const prefs = await storageLocalGet(['aiModePreference', 'rewriteGradeLevel', 'featureFlags', 'remoteAiEndpoint']);
+    const aiMode = (prefs && prefs.aiModePreference) === 'remote' ? 'remote' : 'local';
+    const grade = Number(payload.gradeLevel || prefs.rewriteGradeLevel || 6) || 6;
+    const featureFlags = (prefs && prefs.featureFlags) || {};
+    const remoteEnabled = !!featureFlags.remoteAiEnabled;
+
+    const makeLocal = () => {
+      if (action === 'explainText') return localExplainText(payload.text || '');
+      if (action === 'rewriteByGrade') return localRewriteByGrade(payload.text || '', grade);
+      if (action === 'defineWord') return localDefineWord(payload.word || '');
+      return '';
+    };
+
+    if (aiMode === 'remote' && remoteEnabled) {
+      const remote = await runRemoteAiProvider(action, payload, { endpoint: prefs.remoteAiEndpoint || '' });
+      if (remote.ok && remote.output) {
+        return {
+          ok: true,
+          output: remote.output,
+          source: 'remote',
+          disclosure: 'Remote AI mode is enabled: selected text may be sent to your configured endpoint for this request.'
+        };
+      }
+      return {
+        ok: true,
+        output: makeLocal(),
+        source: 'local-fallback',
+        disclosure: 'Remote AI is unavailable right now. Result generated in local fallback mode.'
+      };
+    }
+
+    return {
+      ok: true,
+      output: makeLocal(),
+      source: 'local',
+      disclosure: 'Local-only mode: text was processed inside the extension.'
+    };
+  }
+
   function getAuthTokenAsync(interactive = false) {
     return new Promise((resolve) => {
       try {
@@ -1216,6 +1310,29 @@ const tokenJson = await exchangeCodeForTokens({ clientId, code, codeVerifier, re
               const state = await readOverlayStateForTab(tid);
               respondOnce({ ok: true, overlayState: state });
             } catch (e) { respondOnce({ ok: false, error: String(e) }); }
+          })();
+          return true;
+        }
+
+        case 'explainText':
+        case 'rewriteByGrade':
+        case 'defineWord': {
+          (async () => {
+            try {
+              if (msg.action === 'rewriteByGrade' && msg.gradeLevel) {
+                await storageLocalSet({ rewriteGradeLevel: String(msg.gradeLevel) });
+              }
+              const payload = {
+                text: String(msg.text || ''),
+                word: String(msg.word || ''),
+                gradeLevel: Number(msg.gradeLevel || 6) || 6,
+                context: msg.context || null
+              };
+              const result = await runAiAction(msg.action, payload);
+              respondOnce(result);
+            } catch (e) {
+              respondOnce({ ok: false, error: String(e) });
+            }
           })();
           return true;
         }

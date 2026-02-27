@@ -173,6 +173,33 @@
                 <span class="action-icon">📝</span>
                 <span class="action-text">Summarize Page</span>
               </button>
+              <button id="explainSelectionBtn" class="action-btn">
+                <span class="action-icon">💡</span>
+                <span class="action-text">Explain selection</span>
+              </button>
+              <button id="defineWordBtn" class="action-btn">
+                <span class="action-icon">📘</span>
+                <span class="action-text">Define selected word</span>
+              </button>
+              <button id="rewriteByGradeBtn" class="action-btn">
+                <span class="action-icon">✏️</span>
+                <span class="action-text">Rewrite for grade</span>
+              </button>
+              <label for="rewriteGradeSelect" style="display:inline-flex;align-items:center;gap:6px;margin-left:8px;">
+                <span style="font-size:12px;">Grade:</span>
+                <select id="rewriteGradeSelect" style="font-size:12px;padding:4px;border-radius:6px;min-width:72px;">
+                  <option value="3">3</option>
+                  <option value="6" selected>6</option>
+                  <option value="9">9</option>
+                </select>
+              </label>
+              <label for="aiModeSelect" style="display:inline-flex;align-items:center;gap:6px;margin-left:8px;">
+                <span style="font-size:12px;">AI mode:</span>
+                <select id="aiModeSelect" style="font-size:12px;padding:4px;border-radius:6px;min-width:96px;">
+                  <option value="local" selected>Local only</option>
+                  <option value="remote">Remote (optional)</option>
+                </select>
+              </label>
               <label for="summaryDetailSelect" style="display:inline-flex;align-items:center;gap:6px;margin-left:8px;">
                 <span style="font-size:12px;">Detail:</span>
                 <select id="summaryDetailSelect" style="font-size:12px;padding:4px;border-radius:6px;min-width:96px;">
