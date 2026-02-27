@@ -43,41 +43,6 @@ function wireSummaryDetailSelect() {
   });
 }
 
-function wireAiActionPreferences() {
-  const gradeSel = document.getElementById('rewriteGradeSelect');
-  const aiModeSel = document.getElementById('aiModeSelect');
-  const allowedGrades = new Set(['3', '6', '9']);
-  const allowedModes = new Set(['local', 'remote']);
-
-  chrome.storage.local.get(['rewriteGradeLevel', 'aiModePreference'], (res) => {
-    const grade = String((res && res.rewriteGradeLevel) || '6');
-    const mode = String((res && res.aiModePreference) || 'local');
-    if (gradeSel) gradeSel.value = allowedGrades.has(grade) ? grade : '6';
-    if (aiModeSel) aiModeSel.value = allowedModes.has(mode) ? mode : 'local';
-  });
-
-  if (gradeSel) {
-    gradeSel.addEventListener('change', () => {
-      const grade = allowedGrades.has(String(gradeSel.value)) ? String(gradeSel.value) : '6';
-      chrome.storage.local.set({ rewriteGradeLevel: grade }, () => {
-        toast(`Rewrite level: grade ${grade}`, 'info', 1500);
-      });
-    });
-  }
-
-  if (aiModeSel) {
-    aiModeSel.addEventListener('change', () => {
-      const mode = allowedModes.has(String(aiModeSel.value)) ? String(aiModeSel.value) : 'local';
-      chrome.storage.local.set({ aiModePreference: mode }, () => {
-        const detail = mode === 'remote'
-          ? 'Remote mode may send selected text to your configured AI endpoint.'
-          : 'Local-only mode keeps text in your browser extension.';
-        toast(detail, 'info', 3500);
-      });
-    });
-  }
-}
-
 
 async function queryOverlayStateOnActiveTab() {
   try {
@@ -310,6 +275,10 @@ const requiredIds = ['reflowToggle','contrastToggle','invertToggle','readBtn','p
   const speedToggle = $('speedToggle');
   const chunkSizeInput = $('chunkSize');
   const speedRateInput = $('speedRate');
+  const focusDimStrengthSlider = $('focusDimStrengthSlider');
+  const focusDimStrengthValue = $('focusDimStrengthValue');
+  const focusAutoNextParagraphToggle = $('focusAutoNextParagraphToggle');
+  const focusFadeBackgroundToggle = $('focusFadeBackgroundToggle');
 
   const saveSelectionBtn = $('saveSelectionBtn');
   const openSavedManagerBtn = $('openSavedManagerBtn');
@@ -517,13 +486,57 @@ try {
  const _focusModeOriginalText = (focusModeBtn && (focusModeBtn.querySelector('.btn-text') || focusModeBtn.querySelector('.action-text')))
     ? (focusModeBtn.querySelector('.btn-text') || focusModeBtn.querySelector('.action-text')).textContent
     : 'Focus Mode';
-  const DEFAULTS = { dys: false, reflow: false, contrast: false, invert: false, fontSize: 20, fontFamily: 'system' };  const safeOn = (el, ev, fn) => { if (el) el.addEventListener(ev, fn); };
+  const DEFAULTS = { dys: false, reflow: false, contrast: false, invert: false, fontSize: 20, fontFamily: 'system' };
+  const FOCUS_MODE_SETTINGS_KEY = 'clarity_focus_mode_settings';
+  const DEFAULT_FOCUS_MODE_SETTINGS = {
+    dimStrength: 55,
+    autoFocusNextParagraph: false,
+    fadeBackgroundContent: true
+  };
+  const safeOn = (el, ev, fn) => { if (el) el.addEventListener(ev, fn); };
 
   let isReading = false;
   let isPaused = false;
   let currentHostname = '';
   let settingsDebounce = null;
   let lastStatus = null;         // dedupe repeated identical status updates
+  let focusModeSettings = { ...DEFAULT_FOCUS_MODE_SETTINGS };
+
+  function normalizeFocusModeSettings(raw = {}) {
+    const dim = Number(raw.dimStrength);
+    return {
+      dimStrength: Number.isFinite(dim) ? clamp(dim, 0, 100) : DEFAULT_FOCUS_MODE_SETTINGS.dimStrength,
+      autoFocusNextParagraph: !!raw.autoFocusNextParagraph,
+      fadeBackgroundContent: raw.fadeBackgroundContent !== false
+    };
+  }
+
+  function renderFocusModeSettingsUI(settings) {
+    if (focusDimStrengthSlider) focusDimStrengthSlider.value = String(settings.dimStrength);
+    if (focusDimStrengthValue) focusDimStrengthValue.textContent = `${settings.dimStrength}%`;
+    if (focusAutoNextParagraphToggle) focusAutoNextParagraphToggle.checked = !!settings.autoFocusNextParagraph;
+    if (focusFadeBackgroundToggle) focusFadeBackgroundToggle.checked = !!settings.fadeBackgroundContent;
+  }
+
+  async function loadFocusModeSettings() {
+    const stored = await getFromStorage([FOCUS_MODE_SETTINGS_KEY]);
+    focusModeSettings = normalizeFocusModeSettings(stored[FOCUS_MODE_SETTINGS_KEY] || {});
+    renderFocusModeSettingsUI(focusModeSettings);
+  }
+
+  function gatherFocusModeSettingsFromUI() {
+    return normalizeFocusModeSettings({
+      dimStrength: focusDimStrengthSlider ? Number(focusDimStrengthSlider.value) : focusModeSettings.dimStrength,
+      autoFocusNextParagraph: focusAutoNextParagraphToggle?.checked,
+      fadeBackgroundContent: focusFadeBackgroundToggle?.checked
+    });
+  }
+
+  async function persistFocusModeSettings(nextSettings) {
+    focusModeSettings = normalizeFocusModeSettings(nextSettings);
+    renderFocusModeSettingsUI(focusModeSettings);
+    await setToStorage({ [FOCUS_MODE_SETTINGS_KEY]: focusModeSettings });
+  }
 
   function formatTime(sec) {
     sec = Math.max(0, Math.round(sec || 0));
@@ -1232,6 +1245,20 @@ sendMessageToActiveTabWithInject({ action: 'applySettings', dys: settings.dys, f
 else if (!toastForBgError('resumeReading', r2)) toast('Resume failed.', 'error');    }
   });
 
+  safeOn(focusDimStrengthSlider, 'input', () => {
+    const next = gatherFocusModeSettingsFromUI();
+    renderFocusModeSettingsUI(next);
+  });
+  safeOn(focusDimStrengthSlider, 'change', async () => {
+    await persistFocusModeSettings(gatherFocusModeSettingsFromUI());
+  });
+  safeOn(focusAutoNextParagraphToggle, 'change', async () => {
+    await persistFocusModeSettings(gatherFocusModeSettingsFromUI());
+  });
+  safeOn(focusFadeBackgroundToggle, 'change', async () => {
+    await persistFocusModeSettings(gatherFocusModeSettingsFromUI());
+  });
+
   // Focus mode toggle — preserve original label (emoji) by only mutating .action-text
 // Update the focusModeBtn click handler:
 safeOn(focusModeBtn, 'click', async () => {
@@ -1243,7 +1270,9 @@ safeOn(focusModeBtn, 'click', async () => {
   const textEl = getFocusModeTextEl();
   if (textEl) textEl.textContent = 'Opening...';
   
-  const res = await sendMessageToActiveTabWithInject({ action: 'toggleFocusMode' });
+  const focusSettingsForMessage = gatherFocusModeSettingsFromUI();
+  await persistFocusModeSettings(focusSettingsForMessage);
+  const res = await sendMessageToActiveTabWithInject({ action: 'toggleFocusMode', focusModeSettings: focusSettingsForMessage });
   focusModeBtn.disabled = false;
   
   safeLog('toggleFocusMode response', res);
@@ -2056,160 +2085,6 @@ async function fetchCleanPageText(tabId, tabUrl) {
 
 
 
-
-
-function extractSingleWord(text = '') {
-  const words = String(text || '').match(/[A-Za-z][A-Za-z'-]*/g) || [];
-  return words.length ? words[0] : '';
-}
-
-function localWordDefinition(word = '') {
-  const dict = {
-    context: 'The information around something that helps explain it.',
-    infer: 'To make a smart guess using clues and evidence.',
-    summarize: 'To tell the most important points in a shorter way.',
-    evidence: 'Facts or details that support an idea.',
-    analyze: 'To study something closely to understand it better.'
-  };
-  const key = String(word || '').toLowerCase();
-  return dict[key] || `${word}: A likely meaning based on context is the role this word plays in the sentence around it.`;
-}
-
-function rewriteTextGradeLocal(text = '', grade = 6) {
-  const target = Number(grade) || 6;
-  let out = String(text || '').trim();
-  if (!out) return '';
-  if (target <= 3) {
-    out = out.replace(/\bapproximately\b/gi, 'about')
-      .replace(/\butilize\b/gi, 'use')
-      .replace(/\btherefore\b/gi, 'so')
-      .replace(/\bhowever\b/gi, 'but');
-    return out.split(/(?<=[.?!])\s+/).slice(0, 4).join(' ');
-  }
-  if (target <= 6) {
-    return out.replace(/\butilize\b/gi, 'use').replace(/\bfacilitate\b/gi, 'help');
-  }
-  return out;
-}
-
-async function captureActionInputFromPage(options = {}) {
-  const requireWord = !!options.requireWord;
-  const tab = await findBestWebTab();
-  if (!tab || !tab.id || !isWebUrl(tab.url || '')) {
-    return { ok: false, error: 'invalid-tab' };
-  }
-
-  let text = '';
-  let usedSelection = false;
-  try {
-    const live = await new Promise((resolve) => {
-      chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        func: () => {
-          try { return (window.getSelection && window.getSelection().toString && window.getSelection().toString()) || ''; }
-          catch (e) { return ''; }
-        }
-      }, (res) => {
-        if (chrome.runtime.lastError) return resolve('');
-        if (Array.isArray(res) && res[0] && typeof res[0].result === 'string') return resolve(res[0].result);
-        resolve('');
-      });
-    });
-    if (live && live.trim()) {
-      text = live.trim();
-      usedSelection = true;
-    }
-  } catch (e) { safeLog('capture live selection failed', e); }
-
-  if (!text) {
-    const full = await fetchCleanPageText(tab.id, tab.url);
-    if (full && full.ok && full.text) {
-      text = String(full.text || '').trim();
-    }
-  }
-
-  if (!text) return { ok: false, error: 'no-text', tab };
-
-  if (requireWord) {
-    const word = extractSingleWord(text);
-    if (!word) return { ok: false, error: 'no-word', tab };
-    return { ok: true, tab, word, text, usedSelection };
-  }
-
-  return { ok: true, tab, text, usedSelection };
-}
-
-async function runQuickAiAction(kind) {
-  const explainSelectionBtn = $('explainSelectionBtn');
-  const rewriteByGradeBtn = $('rewriteByGradeBtn');
-  const defineWordBtn = $('defineWordBtn');
-  const rewriteGradeSelect = $('rewriteGradeSelect');
-
-  const btn = kind === 'explainText' ? explainSelectionBtn : (kind === 'rewriteByGrade' ? rewriteByGradeBtn : defineWordBtn);
-  if (btn) btn.disabled = true;
-
-  try {
-    const input = await captureActionInputFromPage({ requireWord: kind === 'defineWord' });
-    if (!input.ok) {
-      toast(kind === 'defineWord' ? 'Select a word first, then try Define.' : 'No readable text found on this page.', 'info', 4500);
-      return;
-    }
-
-    const gradeLevel = Number((rewriteGradeSelect && rewriteGradeSelect.value) || 6) || 6;
-    if (kind === 'rewriteByGrade') {
-      chrome.storage.local.set({ rewriteGradeLevel: String(gradeLevel) }, () => {});
-    }
-
-    const req = {
-      action: kind,
-      text: input.text,
-      word: input.word,
-      gradeLevel,
-      context: { url: input.tab && input.tab.url ? input.tab.url : '', usedSelection: !!input.usedSelection }
-    };
-
-    const pid = createProgressToast('Working on your request…', 60000);
-    let res = null;
-    try {
-      res = await new Promise((resolve) => chrome.runtime.sendMessage(req, (r) => {
-        if (chrome.runtime.lastError) return resolve({ ok: false, error: chrome.runtime.lastError.message || 'runtime-error' });
-        resolve(r || { ok: false, error: 'no-response' });
-      }));
-    } finally {
-      clearProgressToast();
-      if (pid) Toasts.clear(pid);
-    }
-
-    const titleMap = {
-      explainText: 'Explanation',
-      rewriteByGrade: `Rewritten for grade ${gradeLevel}`,
-      defineWord: `Definition: ${input.word}`
-    };
-
-    if (res && res.ok && res.output) {
-      createSummaryModal(titleMap[kind] || 'Result', res.output);
-      if (res.disclosure) toast(res.disclosure, 'info', 5000);
-      return;
-    }
-
-    let fallback = '';
-    if (kind === 'explainText') {
-      fallback = summarizeTextLocal(input.text, 3, 'normal') || input.text.slice(0, 500);
-    } else if (kind === 'rewriteByGrade') {
-      fallback = rewriteTextGradeLocal(input.text, gradeLevel);
-    } else {
-      fallback = localWordDefinition(input.word);
-    }
-    createSummaryModal(`${titleMap[kind] || 'Result'} (Local fallback)`, fallback || 'Feature unavailable right now.');
-    toast('Using local fallback for this action.', 'info', 2500);
-  } catch (e) {
-    safeLog('runQuickAiAction failed', e);
-    toast('Action failed. Please try again.', 'error', 3500);
-  } finally {
-    if (btn) btn.disabled = false;
-  }
-}
-
 async function summarizeCurrentPageOrSelection_AiAware() {
   safeLog('summarizeCurrentPageOrSelection_AiAware (local-only) start');
   if (!summarizePageBtn) { safeLog('summarizePageBtn missing'); return; }
@@ -2402,14 +2277,8 @@ try {
   }
 } catch (e) { safeLog('hook summarize button failed', e); }
 
-try {
-  const explainBtn = $('explainSelectionBtn');
-  const rewriteBtn = $('rewriteByGradeBtn');
-  const defineBtn = $('defineWordBtn');
-  if (explainBtn) safeOn(explainBtn, 'click', () => runQuickAiAction('explainText'));
-  if (rewriteBtn) safeOn(rewriteBtn, 'click', () => runQuickAiAction('rewriteByGrade'));
-  if (defineBtn) safeOn(defineBtn, 'click', () => runQuickAiAction('defineWord'));
-} catch (e) { safeLog('hook quick action buttons failed', e); }
+
+
 
 
   function updateProfileDropdown(profiles = {}, selectedName = '') { if (!profileSelect) return; profileSelect.innerHTML = '<option value="">Select profile</option>'; for (const name in profiles) { const opt=document.createElement('option'); opt.value=name; opt.textContent=name; profileSelect.appendChild(opt);} if (selectedName) profileSelect.value = selectedName; }
@@ -3162,14 +3031,13 @@ safeOn(saveSelectionBtn, 'click', async () => {
   loadStats();
   initPerSiteUI();
   wireSummaryDetailSelect();
-  wireAiActionPreferences();
+  loadFocusModeSettings().catch((e) => safeLog('loadFocusModeSettings failed', e));
   renderSavedList();
   setTimeout(() => { safeLog('delayed loadVoicesIntoSelect'); loadVoicesIntoSelect(); }, 300);
   // after the init() function body ends, add:
 init().catch(e => safeWarn('popup init failed', e));
 
 });
-
 
 
 
