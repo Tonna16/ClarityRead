@@ -61,6 +61,7 @@ import { GOOGLE_OAUTH_SCOPES, getOAuthClientIdForRuntime, getOAuthRuntimeSelecti
     });
   }
 
+
   function removeCachedAuthTokenAsync(token) {
     return new Promise((resolve) => {
       try {
@@ -105,9 +106,11 @@ import { GOOGLE_OAUTH_SCOPES, getOAuthClientIdForRuntime, getOAuthRuntimeSelecti
     });
   }
 
- function getGoogleRedirectUri() {
-    return chrome.identity.getRedirectURL('oauth2');
-  } 
+ function getGoogleRedirectUriCandidates() {
+    const direct = chrome.identity.getRedirectURL();
+    const legacyPath = chrome.identity.getRedirectURL('oauth2');
+    return [direct, legacyPath].filter((uri, index, arr) => !!uri && arr.indexOf(uri) === index);
+  }
 
   function base64UrlEncode(bytes) {
     let binary = '';
@@ -222,40 +225,50 @@ import { GOOGLE_OAUTH_SCOPES, getOAuthClientIdForRuntime, getOAuthRuntimeSelecti
   async function runGoogleWebAuthFlowInteractive() {
     try {
       const clientId = getOAuthClientIdForRuntime(chrome?.runtime?.id || '');
-const redirectUri = getGoogleRedirectUri();
-      const { codeVerifier, codeChallenge } = await createPkcePair();
-      const authUrl = buildGoogleAuthorizeUrl({
-        clientId,
-        redirectUri,
-        scopes: GOOGLE_OAUTH_SCOPES,
-        codeChallenge
-      });
+  const redirectUris = getGoogleRedirectUriCandidates();
+      let lastResult = { ok: false, error: 'missing-redirect-uri', detail: 'No extension redirect URL available.' };
 
-      const launched = await launchWebAuthFlowAsync(authUrl, true);
-      if (launched.error || !launched.responseUrl) {
-        return { ok: false, ...normalizeAuthError('launchWebAuthFlow_failed', launched.error || 'no response URL') };
-      }
+      for (const redirectUri of redirectUris) {
+        const { codeVerifier, codeChallenge } = await createPkcePair();
+        const authUrl = buildGoogleAuthorizeUrl({
+          clientId,
+          redirectUri,
+          scopes: GOOGLE_OAUTH_SCOPES,
+          codeChallenge
+        });
+
+       const launched = await launchWebAuthFlowAsync(authUrl, true);
+        if (launched.error || !launched.responseUrl) {
+          lastResult = { ok: false, ...normalizeAuthError('launchWebAuthFlow_failed', launched.error || 'no response URL') };
+          if (lastResult.error === 'redirect_uri_mismatch') continue;
+          return lastResult;
+        }
 
       const callbackUrl = new URL(launched.responseUrl);
-      const returnedError = callbackUrl.searchParams.get('error');
-      if (returnedError) {
-        return { ok: false, ...normalizeAuthError(returnedError, callbackUrl.searchParams.get('error_description') || '') };
-      }
-
-      const code = callbackUrl.searchParams.get('code');
-      if (!code) {
-        return { ok: false, error: 'oauth_missing_code', detail: 'Authorization code missing in callback.' };
-      }
-
-      const tokenJson = await exchangeCodeForTokens({ clientId, code, codeVerifier, redirectUri });
-      const normalized = normalizeGoogleTokenResponse(tokenJson, { via: 'launchWebAuthFlow' });
-      await storageLocalSet({
-        [GOOGLE_OAUTH_STORE_KEY]: {
-          ...normalized,
-          obtainedAt: Date.now()
+        const returnedError = callbackUrl.searchParams.get('error');
+        if (returnedError) {
+          lastResult = { ok: false, ...normalizeAuthError(returnedError, callbackUrl.searchParams.get('error_description') || '') };
+          if (lastResult.error === 'redirect_uri_mismatch') continue;
+          return lastResult;
         }
-      });
-      return normalized;
+
+        const code = callbackUrl.searchParams.get('code');
+        if (!code) {
+          return { ok: false, error: 'oauth_missing_code', detail: 'Authorization code missing in callback.' };
+        }
+
+const tokenJson = await exchangeCodeForTokens({ clientId, code, codeVerifier, redirectUri });
+        const normalized = normalizeGoogleTokenResponse(tokenJson, { via: 'launchWebAuthFlow' });
+        await storageLocalSet({
+          [GOOGLE_OAUTH_STORE_KEY]: {
+            ...normalized,
+            obtainedAt: Date.now()
+          }
+        });
+        return normalized;
+      }
+
+      return lastResult;
     } catch (e) {
       return { ok: false, ...normalizeAuthError('oauth_exchange_failed', String(e)) };
     }
@@ -268,7 +281,8 @@ const redirectUri = getGoogleRedirectUri();
   }
 
    async function requestGoogleAuthViaLaunchWebAuthFlow(clientId) {
-    const redirectUri = getGoogleRedirectUri();    const codeVerifier = randomString(96);
+    const redirectUri = getGoogleRedirectUriCandidates()[0];
+    const codeVerifier = randomString(96);
     const codeChallenge = await sha256Base64Url(codeVerifier);
 
     const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
@@ -387,12 +401,11 @@ const redirectUri = getGoogleRedirectUri();
     } catch (e) { return obj; }
   }
 
-  function isHostedDocumentViewer(url = '') {
-    try {
-      if (!url) return false;
-      return HOSTED_VIEWER_RE.test(String(url));
-    } catch (e) { return false; }
-  }
+  function isHostedDocumentViewer(url='') {
+  if (!url) return false;
+  if (/docs\.google\.com/i.test(url)) return false; // <-- allow injection on Docs
+  return HOSTED_VIEWER_RE.test(String(url));
+}
 
   // --- Google Docs API helper (expects src/googleDocsApi.js to export fetchGoogleDocText)
   async function tryHandleGoogleDocsViaApi(tab, message) {

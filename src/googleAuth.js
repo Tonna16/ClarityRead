@@ -1,4 +1,4 @@
-// src/googleAuth.js
+
 // Helper wrapper for chrome.identity-based Google OAuth in MV3
 export async function getGoogleAuthTokenInteractive(interactive = false) {
   return new Promise((resolve, reject) => {
@@ -28,7 +28,7 @@ export async function removeCachedGoogleAuthToken(token) {
   });
 }
 
-// Revoke token (optional)
+// Revoke token
 export async function revokeGoogleAuthToken(token) {
   try {
     if (!token) return;
