@@ -53,8 +53,17 @@ import { GOOGLE_OAUTH_SCOPES, getOAuthClientIdForRuntime, getOAuthRuntimeSelecti
   function localExplainText(text = '') {
     const t = String(text || '').trim();
     if (!t) return '';
-    const sentences = t.split(/(?<=[.?!])\s+/).filter(Boolean).slice(0, 3);
-    return `In simple terms: ${sentences.join(' ')}`.trim();
+    const sentences = t.split(/(?<=[.?!])\s+/).map(s => s.trim()).filter(Boolean);
+    const key = sentences.slice(0, 2).map((s) => s
+      .replace(/\bin order to\b/gi, 'to')
+      .replace(/\bdue to the fact that\b/gi, 'because')
+      .replace(/\bhowever\b/gi, 'but')
+      .replace(/\btherefore\b/gi, 'so')
+      .replace(/\s{2,}/g, ' ')
+      .trim()
+    );
+    const core = key.join(' ');
+    return `Simple explanation: ${core}`.trim();
   }
 
   function localRewriteByGrade(text = '', grade = 6) {
@@ -62,13 +71,25 @@ import { GOOGLE_OAUTH_SCOPES, getOAuthClientIdForRuntime, getOAuthRuntimeSelecti
     let out = String(text || '').trim();
     if (!out) return '';
     if (target <= 3) {
-      out = out.replace(/\bapproximately\b/gi, 'about').replace(/\btherefore\b/gi, 'so').replace(/\bhowever\b/gi, 'but');
+      out = out
+        .replace(/\bapproximately\b/gi, 'about')
+        .replace(/\btherefore\b/gi, 'so')
+        .replace(/\bhowever\b/gi, 'but')
+        .replace(/\butilize\b/gi, 'use')
+        .replace(/\bdemonstrate\b/gi, 'show')
+        .replace(/\s+(?:which|that)\s+[^.?!]+/gi, '');
       return out.split(/(?<=[.?!])\s+/).slice(0, 4).join(' ');
     }
     if (target <= 6) {
-      return out.replace(/\butilize\b/gi, 'use').replace(/\bfacilitate\b/gi, 'help');
+      return out
+        .replace(/\butilize\b/gi, 'use')
+        .replace(/\bfacilitate\b/gi, 'help')
+        .replace(/\bsubsequent\b/gi, 'next')
+        .replace(/\bcommence\b/gi, 'start')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
     }
-    return out;
+    return out.replace(/\butilize\b/gi, 'use').replace(/\s{2,}/g, ' ').trim();
   }
 
   function localDefineWord(word = '') {
