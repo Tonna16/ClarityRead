@@ -1483,6 +1483,44 @@ function mmrSelectLocal(candidates, scoresArr, k = 3, lambda = 0.62) {
   return selected;
 }
 
+function rewriteSummarySentenceLocal(sentence = '') {
+  let out = String(sentence || '').trim();
+  if (!out) return '';
+
+  // Keep the strongest clause and simplify common academic phrasing.
+  out = out.split(/\s+(?:which|that)\s+/i)[0] || out;
+  out = out
+    .replace(/\bin order to\b/gi, 'to')
+    .replace(/\bdue to the fact that\b/gi, 'because')
+    .replace(/\bis able to\b/gi, 'can')
+    .replace(/\bhas the ability to\b/gi, 'can')
+    .replace(/\ba large number of\b/gi, 'many')
+    .replace(/\bin the event that\b/gi, 'if')
+    .replace(/\bit is important to note that\b/gi, '')
+    .replace(/\bit should be noted that\b/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+
+  // Prefer a concise lead-in for long sentences so output feels rewritten.
+  if (out.length > 180) {
+    const clauses = out.split(/[,;:]\s+/).filter(Boolean);
+    if (clauses.length > 1) out = `${clauses[0]}.`;
+  }
+
+  if (!/[.?!]$/.test(out)) out += '.';
+  return out;
+}
+
+function rewriteSummaryOutputLocal(summary = '', pref = 'normal') {
+  const parts = String(summary || '').split(/(?<=[.?!])\s+/).map(s => s.trim()).filter(Boolean);
+  if (!parts.length) return '';
+
+  // Keep concise/detailed differences, but still ensure non-verbatim output.
+  const rewritten = parts.map(rewriteSummarySentenceLocal).filter(Boolean);
+  const maxSentences = pref === 'concise' ? Math.min(3, rewritten.length) : rewritten.length;
+  return rewritten.slice(0, maxSentences).join(' ').trim();
+}
+
 /** Main summarizer: uses the above helpers and adaptive sentence count.
  *  maxSentencesArg: if number>0, will be used (but still clamped).
  *  userPref: 'concise'|'normal'|'detailed' - affects adaptive decisions and post-filtering.
@@ -1584,11 +1622,7 @@ function summarizeTextLocal(rawText, maxSentencesArg = null, userPref = 'normal'
   const orderedSelected = docSents.filter(s => selected.includes(s));
   let final = (orderedSelected.length ? orderedSelected.join(' ') : selected.join(' ')).trim();
 
-  // --- Replace incorrect post-filter that references `final` with this block ---
-try {
-  // Use the summary we produced above as source text for post-filter
-  let final = (summary || '').toString();
-
+  try {
   const parts = final.split(/(?<=[.?!])\s+/).map(s => s.trim()).filter(Boolean);
   const filtered = parts.filter(s => {
     if (s.length < 12) return false;  // only drop very tiny fragments
@@ -1602,10 +1636,9 @@ try {
   if (filtered.length >= Math.max(1, Math.floor(plannedK * 0.6))) {
     final = filtered.join(' ');
   }
-
-  // replace summary with final for display
-  summary = final;
 } catch (e) { safeLog('post-filter threw', e); }
+
+  final = rewriteSummaryOutputLocal(final, userPref);
 
 
   try {
@@ -2227,25 +2260,6 @@ safeLog && safeLog('summarizer invoked', { usedK: adaptiveMaxForCall, pref });
       clearProgressToast();
     }
 
-try {
-  const parts = final.split(/(?<=[.?!])\s+/).map(s => s.trim()).filter(Boolean);
-  const filtered = parts.filter(s => {
-    if (s.length < 12) return false;  // only drop very tiny fragments
-    
-   if (/^(Outline|History|See also|References|External links|Category|vte|Navigation|Contents|Jump to)\b/i.test(s)) return false;
-    
-    const nonAlphaRatio = (s.replace(/[A-Za-z0-9]/g,'').length) / Math.max(1, s.length);
-    if (s.length >= 30 && nonAlphaRatio > 0.35) return false;
-    
-    if (/^[\u2000-\u206F\u2E00-\u2E7F\W]+$/.test(s)) return false;
-    
-    return true;
-  });
-  
-  if (filtered.length >= Math.max(1, Math.floor(plannedK * 0.6))) {
-    final = filtered.join(' ');
-  }
-} catch (e) { safeLog('post-filter threw', e); }
    
     const modeSubtitle = usedSelection ? 'Selection' : 'Full page';
     const actualSentences = (summary || '').split(/(?<=[.?!])\s+/).map(s => s.trim()).filter(Boolean).length || 0;
@@ -3038,7 +3052,5 @@ safeOn(saveSelectionBtn, 'click', async () => {
 init().catch(e => safeWarn('popup init failed', e));
 
 });
-
-
 
 
