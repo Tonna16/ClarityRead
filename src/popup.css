@@ -631,63 +631,24 @@ html, body {
 }
 
 /* Accounts & Support Panel */
-.google-panel {
+.support-panel {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+ gap: 12px;
 }
 
-  .google-controls {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.google-connect-section,
-.google-connect-area {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 14px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-}
-
-  .connection-status,
-.google-status-text {
-  font-size: 12px;
-  color: var(--text-muted);
-  text-align: center;
-  padding: 4px 0;
-}
-
-  .support-section,
 .support-actions {
   display: flex;
   flex-direction: column;
   gap: 8px;
-   padding-top: 14px;
-  border-top: 1px solid var(--border);
+
 }
 
-#connectGoogleBtn,
-#disconnectGoogleBtn,
+
 #copyDiagnosticsBtn {
   width: 100%;
 }
 
-#disconnectGoogleBtn {
-  border-color: #ef4444;
-  color: #b91c1c;
-}
-
-.btn-primary.connect-active {
-  background: var(--primary-color);
-  border-color: var(--primary-color);
-  color: #fff;
-  box-shadow: var(--shadow-md);
-}
 
 /* Quick Actions */
 .quick-actions {
