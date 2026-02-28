@@ -2316,40 +2316,63 @@ const adaptiveMaxForCall = Math.max(1, Math.min(25, Math.floor(plannedK)));
 
     const pid = createProgressToast('Generating summary — please wait...', 60000);
     let summary = '(no summary produced)';
+    let summarySource = 'local-fallback';
+    let disclosure = '';
     try {
-try {
-  text = text.replace(/([a-z0-9])([A-Z][a-z])/g, '$1 $2');
-  text = text.replace(/([^\s])By([A-Z])/g, '$1 By $2');
-  text = text.replace(/(Updated on|updated on)([A-Z0-9])/g, '$1 $2');
+      const aiRes = await new Promise((resolve) => {
+        chrome.runtime.sendMessage({
+          action: 'summarizeText',
+          text,
+          detailPref: pref,
+          context: { url: tab && tab.url ? tab.url : '', usedSelection: !!usedSelection }
+        }, (r) => {
+          if (chrome.runtime.lastError) return resolve({ ok: false, error: chrome.runtime.lastError.message || 'runtime-error' });
+          resolve(r || { ok: false, error: 'no-response' });
+        });
+      });
 
-  text = text.replace(/^\s*(By|Author:|Written by)\s+[^\n]{0,200}$/gim, ' ');
-  text = text.replace(/\b(last edited|last updated|published on|©|copyright|all rights reserved)\b[^\n]*/gi, ' ');
-  text = text.replace(/^\s*(Contact|Contact us|Subscribe|Follow (us|@)|Related articles|Read more|Advert(isement)?|Sponsored)\b[^\n]*$/gim, ' ');
-  text = text.replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, ' ');
-  text = text.replace(/\b(?:https?:\/\/|www\.)\S+\b/gi, ' ');
-  text = text.replace(/(?:\+?\d[\d() .-]{7,}\d)/g, ' ');
-
-  // drop very short nav lines
-  text = text.split(/\n/).filter(line => {
-    const t = line.trim();
-    if (!t) return false;
-    if (t.length < 20 && /^(Read|More|Share|Related|Jump|Contents|Table of contents|Menu|Skip to|Explore|Diet & Nutrition)/i.test(t)) return false;
-    if (/^(\/|#|\-|\*|:){2,}/.test(t)) return false;
-    return true;
-  }).join('\n');
-} catch (e) { safeLog('prescrub threw', e); }
-
-
-      if (typeof summarizeTextLocal === 'function') {
-summary = summarizeTextLocal(text, adaptiveMaxForCall, pref) || summary;
-safeLog && safeLog('summarizer invoked', { usedK: adaptiveMaxForCall, pref });
+      if (aiRes && aiRes.ok && aiRes.output && aiRes.source !== 'local-fallback') {
+        summary = aiRes.output;
+        summarySource = aiRes.source || 'local';
+        disclosure = aiRes.disclosure || '';
       } else {
-        summary = '(summarizer not available)';
+        if (aiRes && aiRes.disclosure) disclosure = aiRes.disclosure;
+        try {
+          text = text.replace(/([a-z0-9])([A-Z][a-z])/g, '$1 $2');
+          text = text.replace(/([^\s])By([A-Z])/g, '$1 By $2');
+          text = text.replace(/(Updated on|updated on)([A-Z0-9])/g, '$1 $2');
+
+          text = text.replace(/^\s*(By|Author:|Written by)\s+[^\n]{0,200}$/gim, ' ');
+          text = text.replace(/\b(last edited|last updated|published on|©|copyright|all rights reserved)\b[^\n]*/gi, ' ');
+          text = text.replace(/^\s*(Contact|Contact us|Subscribe|Follow (us|@)|Related articles|Read more|Advert(isement)?|Sponsored)\b[^\n]*$/gim, ' ');
+          text = text.replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, ' ');
+          text = text.replace(/\b(?:https?:\/\/|www\.)\S+\b/gi, ' ');
+          text = text.replace(/(?:\+?\d[\d() .-]{7,}\d)/g, ' ');
+
+          // drop very short nav lines
+          text = text.split(/\n/).filter(line => {
+            const t = line.trim();
+            if (!t) return false;
+            if (t.length < 20 && /^(Read|More|Share|Related|Jump|Contents|Table of contents|Menu|Skip to|Explore|Diet & Nutrition)/i.test(t)) return false;
+            if (/^(\/|#|\-|\*|:){2,}/.test(t)) return false;
+            return true;
+          }).join('\n');
+        } catch (e) { safeLog('prescrub threw', e); }
+
+        if (typeof summarizeTextLocal === 'function') {
+          summary = summarizeTextLocal(text, adaptiveMaxForCall, pref) || summary;
+          summarySource = 'local-fallback';
+          safeLog && safeLog('summarizer invoked', { usedK: adaptiveMaxForCall, pref });
+        } else {
+          summary = '(summarizer not available)';
+          summarySource = 'local-fallback';
+        }
       }
     } catch (e) {
       safeLog('summarizer error', e);
     } finally {
       clearProgressToast();
+      if (pid) Toasts.clear(pid);
     }
 
 try {
@@ -2374,10 +2397,12 @@ try {
    
     const modeSubtitle = usedSelection ? 'Selection' : 'Full page';
     const actualSentences = (summary || '').split(/(?<=[.?!])\s+/).map(s => s.trim()).filter(Boolean).length || 0;
-    const headerTitle = `Page Summary — ${actualSentences} sentence${actualSentences === 1 ? '' : 's'} (${modeSubtitle})`;
+    const sourceLabel = summarySource === 'remote' ? 'Remote' : (summarySource === 'local' ? 'Local' : 'Local fallback');
+    const headerTitle = `Page Summary — ${actualSentences} sentence${actualSentences === 1 ? '' : 's'} (${modeSubtitle}, ${sourceLabel})`;
     createSummaryModal(headerTitle, summary);
 
     toast('Summary ready', 'success', 3000);
+    if (disclosure) toast(disclosure, 'info', 5000);
 
   } catch (err) {
     safeLog('summarize error', err && (err.stack || err));
@@ -3169,7 +3194,5 @@ safeOn(saveSelectionBtn, 'click', async () => {
 init().catch(e => safeWarn('popup init failed', e));
 
 });
-
-
 
 

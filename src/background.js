@@ -104,6 +104,16 @@ import { GOOGLE_OAUTH_SCOPES, getOAuthClientIdForRuntime, getOAuthRuntimeSelecti
     return localDict[key] || `${word}: likely a term whose exact meaning depends on nearby context.`;
   }
 
+  function localSummarizeText(text = '', detailPref = 'normal') {
+    const cleaned = String(text || '').replace(/\s+/g, ' ').trim();
+    if (!cleaned) return '';
+    const sentences = cleaned.split(/(?<=[.?!])\s+/).map((s) => s.trim()).filter(Boolean);
+    if (!sentences.length) return cleaned.slice(0, 700);
+    const pref = String(detailPref || 'normal').toLowerCase();
+    const maxSentences = pref === 'short' ? 2 : (pref === 'detailed' ? 6 : 4);
+    return sentences.slice(0, Math.max(1, Math.min(maxSentences, sentences.length))).join(' ');
+  }
+
   async function runRemoteAiProvider(action, payload, options = {}) {
     const endpoint = (options && options.endpoint) || '';
     if (!endpoint) return { ok: false, error: 'remote-endpoint-missing' };
@@ -134,6 +144,7 @@ import { GOOGLE_OAUTH_SCOPES, getOAuthClientIdForRuntime, getOAuthRuntimeSelecti
       if (action === 'explainText') return localExplainText(payload.text || '');
       if (action === 'rewriteByGrade') return localRewriteByGrade(payload.text || '', grade);
       if (action === 'defineWord') return localDefineWord(payload.word || '');
+      if (action === 'summarizeText') return localSummarizeText(payload.text || '', payload.detailPref || 'normal');
       return '';
     };
 
@@ -1337,7 +1348,8 @@ const tokenJson = await exchangeCodeForTokens({ clientId, code, codeVerifier, re
 
         case 'explainText':
         case 'rewriteByGrade':
-        case 'defineWord': {
+        case 'defineWord':
+        case 'summarizeText': {
           (async () => {
             try {
               if (msg.action === 'rewriteByGrade' && msg.gradeLevel) {
@@ -1347,6 +1359,7 @@ const tokenJson = await exchangeCodeForTokens({ clientId, code, codeVerifier, re
                 text: String(msg.text || ''),
                 word: String(msg.word || ''),
                 gradeLevel: Number(msg.gradeLevel || 6) || 6,
+                detailPref: String(msg.detailPref || 'normal'),
                 context: msg.context || null
               };
               const result = await runAiAction(msg.action, payload);

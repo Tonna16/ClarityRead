@@ -652,9 +652,51 @@ html, body {
 
 /* Quick Actions */
 .quick-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.quick-actions-buttons {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
   gap: 12px;
+}
+
+.quick-actions-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.quick-setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.quick-setting-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.quick-setting-select {
+  font-size: 12px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-primary);
+  min-width: 120px;
+  transition: var(--transition);
+}
+
+.quick-setting-select:focus {
+  outline: none;
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.08);
 }
 
 .action-btn {
@@ -908,6 +950,10 @@ html, body {
   
   .controls-panel {
     order: 1;
+  }
+
+  .quick-actions-buttons {
+    grid-template-columns: 1fr;
   }
 
 }
