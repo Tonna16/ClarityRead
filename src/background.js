@@ -105,8 +105,8 @@ import { GOOGLE_OAUTH_SCOPES, getOAuthClientIdForRuntime, getOAuthRuntimeSelecti
   }
 
   async function runRemoteAiProvider(action, payload, options = {}) {
-    const endpoint = (options && options.endpoint) || '';
-    if (!endpoint) return { ok: false, error: 'remote-endpoint-missing' };
+    const endpoint = String((options && options.endpoint) || '').trim();
+    if (!endpoint) return { ok: false, errorCode: 'remote-endpoint-missing', disclosure: 'Remote AI endpoint is not configured. Using local fallback.' };
     try {
       const response = await fetch(endpoint, {
         method: 'POST',
@@ -114,12 +114,17 @@ import { GOOGLE_OAUTH_SCOPES, getOAuthClientIdForRuntime, getOAuthRuntimeSelecti
         body: JSON.stringify({ action, ...payload })
       });
       if (!response.ok) {
-        return { ok: false, error: `remote-status-${response.status}` };
+        return {
+          ok: false,
+          errorCode: 'remote-non-2xx-response',
+          status: response.status,
+          disclosure: `Remote AI endpoint responded with HTTP ${response.status}. Using local fallback.`
+        };
       }
       const data = await response.json().catch(() => ({}));
       return { ok: true, output: String(data.output || data.result || '').trim(), raw: data };
     } catch (e) {
-      return { ok: false, error: String(e) };
+      return { ok: false, errorCode: 'remote-network-error', error: String(e), disclosure: 'Remote AI request failed due to a network or CORS issue. Using local fallback.' };
     }
   }
 
@@ -127,8 +132,9 @@ import { GOOGLE_OAUTH_SCOPES, getOAuthClientIdForRuntime, getOAuthRuntimeSelecti
     const prefs = await storageLocalGet(['aiModePreference', 'rewriteGradeLevel', 'featureFlags', 'remoteAiEndpoint']);
     const aiMode = (prefs && prefs.aiModePreference) === 'remote' ? 'remote' : 'local';
     const grade = Number(payload.gradeLevel || prefs.rewriteGradeLevel || 6) || 6;
-    const featureFlags = (prefs && prefs.featureFlags) || {};
+    const featureFlags = (prefs && typeof prefs.featureFlags === 'object' && prefs.featureFlags) ? prefs.featureFlags : {};
     const remoteEnabled = !!featureFlags.remoteAiEnabled;
+    const remoteEndpoint = String((prefs && prefs.remoteAiEndpoint) || '').trim();
 
     const makeLocal = () => {
       if (action === 'explainText') return localExplainText(payload.text || '');
@@ -137,13 +143,32 @@ import { GOOGLE_OAUTH_SCOPES, getOAuthClientIdForRuntime, getOAuthRuntimeSelecti
       return '';
     };
 
-    if (aiMode === 'remote' && remoteEnabled) {
-      const remote = await runRemoteAiProvider(action, payload, { endpoint: prefs.remoteAiEndpoint || '' });
+    if (aiMode === 'remote') {
+      if (!remoteEnabled) {
+        return {
+          ok: true,
+          output: makeLocal(),
+          source: 'local-fallback',
+          errorCode: 'remote-disabled-flag',
+          disclosure: 'Remote AI mode is selected, but the remote feature flag is disabled. Using local fallback.'
+        };
+      }
+      if (!remoteEndpoint) {
+        return {
+          ok: true,
+          output: makeLocal(),
+          source: 'local-fallback',
+          errorCode: 'remote-endpoint-missing',
+          disclosure: 'Remote AI mode is selected, but no endpoint is configured. Using local fallback.'
+        };
+      }
+      const remote = await runRemoteAiProvider(action, payload, { endpoint: remoteEndpoint });
       if (remote.ok && remote.output) {
         return {
           ok: true,
           output: remote.output,
           source: 'remote',
+          errorCode: null,
           disclosure: 'Remote AI mode is enabled: selected text may be sent to your configured endpoint for this request.'
         };
       }
@@ -151,7 +176,8 @@ import { GOOGLE_OAUTH_SCOPES, getOAuthClientIdForRuntime, getOAuthRuntimeSelecti
         ok: true,
         output: makeLocal(),
         source: 'local-fallback',
-        disclosure: 'Remote AI is unavailable right now. Result generated in local fallback mode.'
+        errorCode: remote.errorCode || 'remote-request-failed',
+        disclosure: remote.disclosure || 'Remote AI is unavailable right now. Result generated in local fallback mode.'
       };
     }
 
@@ -159,6 +185,7 @@ import { GOOGLE_OAUTH_SCOPES, getOAuthClientIdForRuntime, getOAuthRuntimeSelecti
       ok: true,
       output: makeLocal(),
       source: 'local',
+      errorCode: null,
       disclosure: 'Local-only mode: text was processed inside the extension.'
     };
   }

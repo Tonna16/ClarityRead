@@ -28,6 +28,12 @@ When remote mode is disabled (default), these actions use local fallback logic a
 - Click the ClarityRead toolbar icon to open the popup.
 - Toggle dyslexia font / reflow / high contrast/ invert colors.
 - Select text on any webpage and press **Summarize Page** to summarize either the selection or the full page.
+- To enable **remote AI mode** for Explain/Rewrite/Define actions:
+  1. In **Quick Actions**, set **AI mode** to **Remote (optional)**.
+  2. In **Remote AI settings** (under Quick Actions), enter your endpoint URL in **Endpoint**.
+  3. Enable **Enable remote AI feature flag**.
+  4. (Optional) Click **Test connection** to verify the endpoint is reachable.
+- When any of the required remote settings above are missing, ClarityRead automatically falls back to local processing and shows a user-safe diagnostic message.
 - Use the export/import buttons to back up or restore saved content and preferences.
 - Additional features are shown in the demo.
 - I created a webpage for this app, which includes the privacy policy, terms of service, demo video, and more. The link to view it is here:https://tonna16.github.io/clarityread-site/ 

@@ -209,6 +209,20 @@
                 </select>
               </label>
 
+              <div style="margin-top:10px;padding:10px;border:1px solid rgba(127,127,127,0.3);border-radius:8px;display:flex;flex-direction:column;gap:8px;">
+                <strong style="font-size:12px;">Remote AI settings</strong>
+                <label for="remoteAiEndpointInput" style="display:flex;flex-direction:column;gap:4px;">
+                  <span style="font-size:12px;">Endpoint</span>
+                  <input id="remoteAiEndpointInput" type="url" placeholder="https://api.example.com/ai" style="font-size:12px;padding:6px;border-radius:6px;border:1px solid rgba(127,127,127,0.4);">
+                </label>
+                <label for="remoteAiEnabledToggle" class="toggle-control" style="margin:0;">
+                  <input id="remoteAiEnabledToggle" type="checkbox">
+                  <span class="toggle-slider"></span>
+                  <span class="toggle-label">Enable remote AI feature flag</span>
+                </label>
+                <button id="testRemoteAiConnectionBtn" class="btn btn-secondary" type="button" style="font-size:12px;padding:6px 10px;align-self:flex-start;">Test connection</button>
+              </div>
+
               <!-- Update the Focus Mode button section to be more visible -->
 <div class="panel focus-mode-highlight">
   <h2 class="panel-title">🎯 Focus Reading Overlay</h2>

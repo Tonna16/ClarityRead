@@ -46,14 +46,21 @@ function wireSummaryDetailSelect() {
 function wireAiActionPreferences() {
   const gradeSel = document.getElementById('rewriteGradeSelect');
   const aiModeSel = document.getElementById('aiModeSelect');
+  const remoteAiEndpointInput = document.getElementById('remoteAiEndpointInput');
+  const remoteAiEnabledToggle = document.getElementById('remoteAiEnabledToggle');
+  const testRemoteAiConnectionBtn = document.getElementById('testRemoteAiConnectionBtn');
   const allowedGrades = new Set(['3', '6', '9']);
   const allowedModes = new Set(['local', 'remote']);
 
-  chrome.storage.local.get(['rewriteGradeLevel', 'aiModePreference'], (res) => {
+  chrome.storage.local.get(['rewriteGradeLevel', 'aiModePreference', 'featureFlags', 'remoteAiEndpoint'], (res) => {
     const grade = String((res && res.rewriteGradeLevel) || '6');
     const mode = String((res && res.aiModePreference) || 'local');
+    const featureFlags = (res && typeof res.featureFlags === 'object' && res.featureFlags) ? res.featureFlags : {};
+    const remoteAiEndpoint = String((res && res.remoteAiEndpoint) || '');
     if (gradeSel) gradeSel.value = allowedGrades.has(grade) ? grade : '6';
     if (aiModeSel) aiModeSel.value = allowedModes.has(mode) ? mode : 'local';
+    if (remoteAiEnabledToggle) remoteAiEnabledToggle.checked = !!featureFlags.remoteAiEnabled;
+    if (remoteAiEndpointInput) remoteAiEndpointInput.value = remoteAiEndpoint;
   });
 
   if (gradeSel) {
@@ -74,6 +81,59 @@ function wireAiActionPreferences() {
           : 'Local-only mode keeps text in your browser extension.';
         toast(detail, 'info', 3500);
       });
+    });
+  }
+
+  if (remoteAiEnabledToggle) {
+    remoteAiEnabledToggle.addEventListener('change', () => {
+      chrome.storage.local.get(['featureFlags'], (res) => {
+        const featureFlags = (res && typeof res.featureFlags === 'object' && res.featureFlags) ? res.featureFlags : {};
+        const updatedFeatureFlags = { ...featureFlags, remoteAiEnabled: !!remoteAiEnabledToggle.checked };
+        chrome.storage.local.set({ featureFlags: updatedFeatureFlags }, () => {
+          toast(`Remote AI feature flag ${remoteAiEnabledToggle.checked ? 'enabled' : 'disabled'}.`, 'info', 2000);
+        });
+      });
+    });
+  }
+
+  if (remoteAiEndpointInput) {
+    let lastSavedEndpoint = null;
+    const persistRemoteAiEndpoint = () => {
+      const endpoint = String(remoteAiEndpointInput.value || '').trim();
+      if (endpoint === lastSavedEndpoint) return;
+      lastSavedEndpoint = endpoint;
+      chrome.storage.local.set({ remoteAiEndpoint: endpoint }, () => {
+        toast(endpoint ? 'Remote AI endpoint saved.' : 'Remote AI endpoint cleared.', 'info', 1800);
+      });
+    };
+    remoteAiEndpointInput.addEventListener('change', persistRemoteAiEndpoint);
+    remoteAiEndpointInput.addEventListener('blur', persistRemoteAiEndpoint);
+  }
+
+  if (testRemoteAiConnectionBtn) {
+    testRemoteAiConnectionBtn.addEventListener('click', async () => {
+      const endpoint = String((remoteAiEndpointInput && remoteAiEndpointInput.value) || '').trim();
+      if (!endpoint) {
+        toast('Set a remote endpoint before testing.', 'info', 2500);
+        return;
+      }
+      testRemoteAiConnectionBtn.disabled = true;
+      try {
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'healthCheck', ping: true })
+        });
+        if (!response.ok) {
+          toast(`Remote endpoint responded with HTTP ${response.status}.`, 'error', 3500);
+          return;
+        }
+        toast('Remote endpoint reachable.', 'success', 2500);
+      } catch (e) {
+        toast('Connection test failed. Check endpoint and CORS/network settings.', 'error', 4000);
+      } finally {
+        testRemoteAiConnectionBtn.disabled = false;
+      }
     });
   }
 }
@@ -3169,7 +3229,6 @@ safeOn(saveSelectionBtn, 'click', async () => {
 init().catch(e => safeWarn('popup init failed', e));
 
 });
-
 
 
 
