@@ -169,56 +169,62 @@
           <div class="panel quick-actions-panel">
             <h2 class="panel-title">Quick Actions</h2>
             <div class="quick-actions">
-              <button id="summarizePageBtn" class="action-btn">
-                <span class="action-icon">📝</span>
-                <span class="action-text">Summarize Page</span>
-              </button>
-              <button id="explainSelectionBtn" class="action-btn">
-                <span class="action-icon">💡</span>
-                <span class="action-text">Explain selection</span>
-              </button>
-              <button id="defineWordBtn" class="action-btn">
-                <span class="action-icon">📘</span>
-                <span class="action-text">Define selected word</span>
-              </button>
-              <button id="rewriteByGradeBtn" class="action-btn">
-                <span class="action-icon">✏️</span>
-                <span class="action-text">Rewrite for grade</span>
-              </button>
-              <label for="rewriteGradeSelect" style="display:inline-flex;align-items:center;gap:6px;margin-left:8px;">
-                <span style="font-size:12px;">Grade:</span>
-                <select id="rewriteGradeSelect" style="font-size:12px;padding:4px;border-radius:6px;min-width:72px;">
-                  <option value="3">3</option>
-                  <option value="6" selected>6</option>
-                  <option value="9">9</option>
-                </select>
-              </label>
-              <label for="aiModeSelect" style="display:inline-flex;align-items:center;gap:6px;margin-left:8px;">
-                <span style="font-size:12px;">AI mode:</span>
-                <select id="aiModeSelect" style="font-size:12px;padding:4px;border-radius:6px;min-width:96px;">
-                  <option value="local" selected>Local only</option>
-                  <option value="remote">Remote (optional)</option>
-                </select>
-              </label>
-              <label for="summaryDetailSelect" style="display:inline-flex;align-items:center;gap:6px;margin-left:8px;">
-                <span style="font-size:12px;">Detail:</span>
-                <select id="summaryDetailSelect" style="font-size:12px;padding:4px;border-radius:6px;min-width:96px;">
-                  <option value="concise">Concise</option>
-                  <option value="normal" selected>Normal</option>
-                  <option value="detailed">Detailed</option>
-                </select>
-              </label>
+              <div class="quick-actions-buttons">
+                <button id="summarizePageBtn" class="action-btn">
+                  <span class="action-icon">📝</span>
+                  <span class="action-text">Summarize Page</span>
+                </button>
+                <button id="explainSelectionBtn" class="action-btn">
+                  <span class="action-icon">💡</span>
+                  <span class="action-text">Explain selection</span>
+                </button>
+                <button id="defineWordBtn" class="action-btn">
+                  <span class="action-icon">📘</span>
+                  <span class="action-text">Define selected word</span>
+                </button>
+                <button id="rewriteByGradeBtn" class="action-btn">
+                  <span class="action-icon">✏️</span>
+                  <span class="action-text">Rewrite for grade</span>
+                </button>
+              </div>
 
-              <!-- Update the Focus Mode button section to be more visible -->
-<div class="panel focus-mode-highlight">
-  <h2 class="panel-title">🎯 Focus Reading Overlay</h2>
-  <p class="feature-description">Opens an immersive reading overlay that removes distractions and helps you focus on the text.</p>
-  <button id="focusModeBtn" class="btn btn-primary focus-btn">
-    <span class="btn-icon">🎯</span>
-    <span class="btn-text">Open Focus Mode</span>
-  </button>
-  <p class="feature-hint">💡 Tip: Click this to see the overlay featured in the screenshots!</p>
-</div>
+              <div class="quick-actions-settings">
+                <label for="rewriteGradeSelect" class="quick-setting-row">
+                  <span class="quick-setting-label">Grade</span>
+                  <select id="rewriteGradeSelect" class="quick-setting-select">
+                    <option value="3">3</option>
+                    <option value="6" selected>6</option>
+                    <option value="9">9</option>
+                  </select>
+                </label>
+                <label for="aiModeSelect" class="quick-setting-row">
+                  <span class="quick-setting-label">AI mode</span>
+                  <select id="aiModeSelect" class="quick-setting-select">
+                    <option value="local" selected>Local only</option>
+                    <option value="remote">Remote (optional)</option>
+                  </select>
+                </label>
+                <label for="summaryDetailSelect" class="quick-setting-row">
+                  <span class="quick-setting-label">Detail</span>
+                  <select id="summaryDetailSelect" class="quick-setting-select">
+                    <option value="concise">Concise</option>
+                    <option value="normal" selected>Normal</option>
+                    <option value="detailed">Detailed</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel focus-mode-highlight focus-mode-panel">
+            <h2 class="panel-title">🎯 Focus Reading Overlay</h2>
+            <p class="feature-description">Opens an immersive reading overlay that removes distractions and helps you focus on the text.</p>
+            <button id="focusModeBtn" class="btn btn-primary focus-btn">
+              <span class="btn-icon">🎯</span>
+              <span class="btn-text">Open Focus Mode</span>
+            </button>
+            <p class="feature-hint">💡 Tip: Click this to see the overlay featured in the screenshots!</p>
+          </div>
 
           <!-- stats, saved content, shortcuts panels unchanged -->
           <div class="panel stats-panel">
