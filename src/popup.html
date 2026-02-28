@@ -215,6 +215,22 @@
                   <span style="font-size:12px;">Endpoint</span>
                   <input id="remoteAiEndpointInput" type="url" placeholder="https://api.example.com/ai" style="font-size:12px;padding:6px;border-radius:6px;border:1px solid rgba(127,127,127,0.4);">
                 </label>
+                <label for="remoteAiAuthTypeSelect" style="display:flex;flex-direction:column;gap:4px;">
+                  <span style="font-size:12px;">Auth type</span>
+                  <select id="remoteAiAuthTypeSelect" style="font-size:12px;padding:6px;border-radius:6px;border:1px solid rgba(127,127,127,0.4);">
+                    <option value="none" selected>None</option>
+                    <option value="bearer">Bearer token</option>
+                    <option value="x-api-key">x-api-key header</option>
+                  </select>
+                </label>
+                <label for="remoteAiApiKeyInput" style="display:flex;flex-direction:column;gap:4px;">
+                  <span style="font-size:12px;">API key/token (optional)</span>
+                  <input id="remoteAiApiKeyInput" type="password" placeholder="Prefer server-side keys when possible" style="font-size:12px;padding:6px;border-radius:6px;border:1px solid rgba(127,127,127,0.4);">
+                </label>
+                <p style="margin:0;font-size:11px;line-height:1.4;opacity:0.85;">
+                  Expected request JSON: <code>{ action, text?, word?, gradeLevel?, detailPref?, context? }</code><br>
+                  Expected response JSON: <code>{ output: "..." }</code> (or <code>{ result: "..." }</code>)
+                </p>
                 <label for="remoteAiEnabledToggle" class="toggle-control" style="margin:0;">
                   <input id="remoteAiEnabledToggle" type="checkbox">
                   <span class="toggle-slider"></span>

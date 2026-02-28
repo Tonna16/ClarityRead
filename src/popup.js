@@ -78,6 +78,106 @@ function wireAiActionPreferences() {
   }
 }
 
+function getRemoteAiErrorMessage(remoteError) {
+  const code = String(remoteError && remoteError.code || '');
+  if (code === 'remote-endpoint-missing') {
+    return 'Remote AI endpoint is missing. Add it in Remote AI settings, or switch AI mode to Local only.';
+  }
+  if (code === 'remote-auth-missing-key') {
+    return 'Remote AI auth is configured without an API key/token. Add one or switch auth type to None.';
+  }
+  if (code === 'remote-auth-failed') {
+    return 'Remote AI authentication failed (401/403). Verify your auth type and credentials.';
+  }
+  if (/^remote-status-\d+$/.test(code)) {
+    return `Remote AI returned a non-success status (${(remoteError && remoteError.status) || code.replace('remote-status-', '')}). Check server logs and response schema.`;
+  }
+  return (remoteError && remoteError.message) || 'Remote AI request failed. Using local fallback.';
+}
+
+function showRemoteAiErrorToast(remoteError) {
+  if (!remoteError) return;
+  toast(getRemoteAiErrorMessage(remoteError), 'error', 7000);
+}
+
+function wireRemoteAiSettings() {
+  const endpointInput = document.getElementById('remoteAiEndpointInput');
+  const authTypeSelect = document.getElementById('remoteAiAuthTypeSelect');
+  const apiKeyInput = document.getElementById('remoteAiApiKeyInput');
+  const enabledToggle = document.getElementById('remoteAiEnabledToggle');
+  const testBtn = document.getElementById('testRemoteAiConnectionBtn');
+  const allowedAuthTypes = new Set(['none', 'bearer', 'x-api-key']);
+
+  chrome.storage.local.get(['remoteAiEndpoint', 'remoteAiAuthType', 'remoteAiApiKey', 'featureFlags'], (res) => {
+    if (endpointInput) endpointInput.value = String((res && res.remoteAiEndpoint) || '');
+    if (authTypeSelect) {
+      const authType = String((res && res.remoteAiAuthType) || 'none').toLowerCase();
+      authTypeSelect.value = allowedAuthTypes.has(authType) ? authType : 'none';
+    }
+    if (apiKeyInput) apiKeyInput.value = String((res && res.remoteAiApiKey) || '');
+    if (enabledToggle) enabledToggle.checked = !!(res && res.featureFlags && res.featureFlags.remoteAiEnabled);
+  });
+
+  if (endpointInput) {
+    endpointInput.addEventListener('change', () => {
+      const endpoint = String(endpointInput.value || '').trim();
+      chrome.storage.local.set({ remoteAiEndpoint: endpoint }, () => {
+        toast(endpoint ? 'Remote endpoint saved.' : 'Remote endpoint cleared.', 'info', 1800);
+      });
+    });
+  }
+
+  if (authTypeSelect) {
+    authTypeSelect.addEventListener('change', () => {
+      const authTypeRaw = String(authTypeSelect.value || 'none').toLowerCase();
+      const authType = allowedAuthTypes.has(authTypeRaw) ? authTypeRaw : 'none';
+      chrome.storage.local.set({ remoteAiAuthType: authType }, () => {
+        toast(`Remote auth type: ${authType}`, 'info', 1800);
+      });
+    });
+  }
+
+  if (apiKeyInput) {
+    apiKeyInput.addEventListener('change', () => {
+      chrome.storage.local.set({ remoteAiApiKey: String(apiKeyInput.value || '').trim() }, () => {
+        toast('Remote API key/token saved locally.', 'info', 1800);
+      });
+    });
+  }
+
+  if (enabledToggle) {
+    enabledToggle.addEventListener('change', async () => {
+      const settings = await getFromStorage(['featureFlags']);
+      const featureFlags = Object.assign({}, settings && settings.featureFlags ? settings.featureFlags : {});
+      featureFlags.remoteAiEnabled = !!enabledToggle.checked;
+      await setToStorage({ featureFlags });
+      toast(enabledToggle.checked ? 'Remote AI feature flag enabled.' : 'Remote AI feature flag disabled.', 'info', 2200);
+    });
+  }
+
+  if (testBtn) {
+    testBtn.addEventListener('click', async () => {
+      testBtn.disabled = true;
+      const pid = createProgressToast('Testing remote AI endpoint…', 20000);
+      try {
+        const res = await new Promise((resolve) => chrome.runtime.sendMessage({ action: 'testRemoteAiConnection' }, (r) => {
+          if (chrome.runtime.lastError) return resolve({ ok: false, error: chrome.runtime.lastError.message || 'runtime-error' });
+          resolve(r || { ok: false, error: 'no-response' });
+        }));
+        if (res && res.ok) {
+          toast('Remote AI endpoint test succeeded.', 'success', 3000);
+        } else {
+          showRemoteAiErrorToast({ code: (res && res.error) || 'remote-test-failed', status: res && res.status, message: res && res.userMessage });
+        }
+      } finally {
+        clearProgressToast();
+        if (pid) Toasts.clear(pid);
+        testBtn.disabled = false;
+      }
+    });
+  }
+}
+
 
 async function queryOverlayStateOnActiveTab() {
   try {
@@ -2189,8 +2289,11 @@ async function runQuickAiAction(kind) {
     if (res && res.ok && res.output) {
       createSummaryModal(titleMap[kind] || 'Result', res.output);
       if (res.disclosure) toast(res.disclosure, 'info', 5000);
+      if (res.remoteError) showRemoteAiErrorToast(res.remoteError);
       return;
     }
+
+    if (res && res.remoteError) showRemoteAiErrorToast(res.remoteError);
 
     let fallback = '';
     if (kind === 'explainText') {
@@ -2403,6 +2506,7 @@ try {
 
     toast('Summary ready', 'success', 3000);
     if (disclosure) toast(disclosure, 'info', 5000);
+    if (aiRes && aiRes.remoteError) showRemoteAiErrorToast(aiRes.remoteError);
 
   } catch (err) {
     safeLog('summarize error', err && (err.stack || err));
@@ -3188,6 +3292,7 @@ safeOn(saveSelectionBtn, 'click', async () => {
   initPerSiteUI();
   wireSummaryDetailSelect();
   wireAiActionPreferences();
+  wireRemoteAiSettings();
   renderSavedList();
   setTimeout(() => { safeLog('delayed loadVoicesIntoSelect'); loadVoicesIntoSelect(); }, 300);
   // after the init() function body ends, add:

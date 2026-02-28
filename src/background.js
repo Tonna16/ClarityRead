@@ -8,6 +8,7 @@ import { GOOGLE_OAUTH_SCOPES, getOAuthClientIdForRuntime, getOAuthRuntimeSelecti
   const GOOGLE_OAUTH_STORE_KEY = 'google_oauth_token_metadata';
   const GOOGLE_OAUTH_AUTHORIZE_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth';
   const GOOGLE_OAUTH_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
+  const REMOTE_AI_AUTH_TYPES = new Set(['none', 'bearer', 'x-api-key']);
 
 
 
@@ -115,26 +116,78 @@ import { GOOGLE_OAUTH_SCOPES, getOAuthClientIdForRuntime, getOAuthRuntimeSelecti
   }
 
   async function runRemoteAiProvider(action, payload, options = {}) {
-    const endpoint = (options && options.endpoint) || '';
-    if (!endpoint) return { ok: false, error: 'remote-endpoint-missing' };
+    const endpoint = String((options && options.endpoint) || '').trim();
+    const authTypeRaw = String((options && options.authType) || 'none').toLowerCase();
+    const authType = REMOTE_AI_AUTH_TYPES.has(authTypeRaw) ? authTypeRaw : 'none';
+    const apiKey = String((options && options.apiKey) || '').trim();
+
+    if (!endpoint) {
+      return {
+        ok: false,
+        error: 'remote-endpoint-missing',
+        userMessage: 'Remote AI endpoint is missing. Add a valid endpoint URL in Popup → Remote AI settings.'
+      };
+    }
+
+    const headers = { 'Content-Type': 'application/json' };
+    if (authType === 'bearer') {
+      if (!apiKey) {
+        return {
+          ok: false,
+          error: 'remote-auth-missing-key',
+          userMessage: 'Bearer auth is selected but no API key/token is configured.'
+        };
+      }
+      headers.Authorization = `Bearer ${apiKey}`;
+    } else if (authType === 'x-api-key') {
+      if (!apiKey) {
+        return {
+          ok: false,
+          error: 'remote-auth-missing-key',
+          userMessage: 'x-api-key auth is selected but no API key is configured.'
+        };
+      }
+      headers['x-api-key'] = apiKey;
+    }
+
     try {
       const response = await fetch(endpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ action, ...payload })
       });
       if (!response.ok) {
-        return { ok: false, error: `remote-status-${response.status}` };
+        const responseText = await response.text().catch(() => '');
+        if (response.status === 401 || response.status === 403) {
+          return {
+            ok: false,
+            error: 'remote-auth-failed',
+            status: response.status,
+            userMessage: `Remote AI authentication failed (${response.status}). Verify auth type and key/token.`
+          };
+        }
+        return {
+          ok: false,
+          error: `remote-status-${response.status}`,
+          status: response.status,
+          detail: responseText.slice(0, 300),
+          userMessage: `Remote AI request failed with status ${response.status}${response.statusText ? ` (${response.statusText})` : ''}.`
+        };
       }
       const data = await response.json().catch(() => ({}));
       return { ok: true, output: String(data.output || data.result || '').trim(), raw: data };
     } catch (e) {
-      return { ok: false, error: String(e) };
+      return {
+        ok: false,
+        error: 'remote-network-error',
+        detail: String(e),
+        userMessage: 'Could not reach the Remote AI endpoint. Check URL, CORS, and network availability.'
+      };
     }
   }
 
   async function runAiAction(action, payload = {}) {
-    const prefs = await storageLocalGet(['aiModePreference', 'rewriteGradeLevel', 'featureFlags', 'remoteAiEndpoint']);
+    const prefs = await storageLocalGet(['aiModePreference', 'rewriteGradeLevel', 'featureFlags', 'remoteAiEndpoint', 'remoteAiAuthType', 'remoteAiApiKey']);
     const aiMode = (prefs && prefs.aiModePreference) === 'remote' ? 'remote' : 'local';
     const grade = Number(payload.gradeLevel || prefs.rewriteGradeLevel || 6) || 6;
     const featureFlags = (prefs && prefs.featureFlags) || {};
@@ -149,7 +202,11 @@ import { GOOGLE_OAUTH_SCOPES, getOAuthClientIdForRuntime, getOAuthRuntimeSelecti
     };
 
     if (aiMode === 'remote' && remoteEnabled) {
-      const remote = await runRemoteAiProvider(action, payload, { endpoint: prefs.remoteAiEndpoint || '' });
+      const remote = await runRemoteAiProvider(action, payload, {
+        endpoint: prefs.remoteAiEndpoint || '',
+        authType: prefs.remoteAiAuthType || 'none',
+        apiKey: prefs.remoteAiApiKey || ''
+      });
       if (remote.ok && remote.output) {
         return {
           ok: true,
@@ -162,7 +219,13 @@ import { GOOGLE_OAUTH_SCOPES, getOAuthClientIdForRuntime, getOAuthRuntimeSelecti
         ok: true,
         output: makeLocal(),
         source: 'local-fallback',
-        disclosure: 'Remote AI is unavailable right now. Result generated in local fallback mode.'
+        disclosure: 'Remote AI is unavailable right now. Result generated in local fallback mode.',
+        remoteError: {
+          code: remote.error || 'remote-failed',
+          message: remote.userMessage || 'Remote AI request failed.',
+          status: remote.status || null,
+          detail: remote.detail || ''
+        }
       };
     }
 
@@ -1342,6 +1405,27 @@ const tokenJson = await exchangeCodeForTokens({ clientId, code, codeVerifier, re
               const state = await readOverlayStateForTab(tid);
               respondOnce({ ok: true, overlayState: state });
             } catch (e) { respondOnce({ ok: false, error: String(e) }); }
+          })();
+          return true;
+        }
+
+        case 'testRemoteAiConnection': {
+          (async () => {
+            try {
+              const prefs = await storageLocalGet(['remoteAiEndpoint', 'remoteAiAuthType', 'remoteAiApiKey']);
+              const remote = await runRemoteAiProvider('healthCheck', { context: { source: 'popup-test' } }, {
+                endpoint: prefs.remoteAiEndpoint || '',
+                authType: prefs.remoteAiAuthType || 'none',
+                apiKey: prefs.remoteAiApiKey || ''
+              });
+              if (remote.ok) {
+                respondOnce({ ok: true, output: remote.output || '', raw: remote.raw || {} });
+                return;
+              }
+              respondOnce({ ok: false, error: remote.error || 'remote-test-failed', userMessage: remote.userMessage || 'Remote AI test failed.', status: remote.status || null });
+            } catch (e) {
+              respondOnce({ ok: false, error: 'remote-test-exception', userMessage: String(e) });
+            }
           })();
           return true;
         }

@@ -17,12 +17,30 @@ ClarityRead is a lightweight browser extension that makes reading on the web eas
 ClarityRead is privacy-first. By default, all processing (summaries, explain/rewrite/define actions, TTS via browser, and stats) happens locally in your browser. Saved reads and preferences are stored locally in `chrome.storage.local` and can be exported/imported by the user.
 
 ### Optional remote AI mode (off by default)
-If you switch **AI mode** to **Remote (optional)** and the `remoteAiEnabled` feature flag is enabled, ClarityRead may send only the text needed for that action to your configured remote AI endpoint:
-- **Explain selection**: selected text (or extracted page text if nothing is selected).
-- **Rewrite for grade level**: selected text/page text plus selected grade (3/6/9).
-- **Define selected word**: selected word (or first detected word from the selected text).
+If you switch **AI mode** to **Remote (optional)** and enable the `remoteAiEnabled` feature flag, ClarityRead can send only the text needed for each AI action to your configured endpoint.
 
-When remote mode is disabled (default), these actions use local fallback logic and no page text is sent externally.
+#### Setup
+1. Open the extension popup → **Remote AI settings**.
+2. Set **Endpoint** (`remoteAiEndpoint`), for example `https://api.example.com/clarityread`.
+3. Choose **Auth type** (`remoteAiAuthType`): `none`, `bearer`, or `x-api-key`.
+4. (Optional) Set **API key/token** (`remoteAiApiKey`). For stronger security, prefer server-side secrets whenever possible.
+5. Toggle **Enable remote AI feature flag** and set **AI mode** to **Remote (optional)**.
+6. Click **Test connection**.
+
+#### Expected payload contract
+Request JSON (POST body):
+```json
+{ "action": "summarizeText", "text": "...", "word": "...", "gradeLevel": 6, "detailPref": "normal", "context": { "url": "https://example.com" } }
+```
+`action` is always present. Other fields are optional depending on the action.
+
+Response JSON:
+```json
+{ "output": "Your generated answer here" }
+```
+`{ "result": "..." }` is also accepted.
+
+If remote mode fails (missing endpoint, auth failure, or non-2xx), ClarityRead shows an actionable error toast and falls back to local processing.
 
 ## Usage
 - Click the ClarityRead toolbar icon to open the popup.
