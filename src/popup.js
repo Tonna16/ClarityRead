@@ -46,14 +46,64 @@ function wireSummaryDetailSelect() {
 function wireAiActionPreferences() {
   const gradeSel = document.getElementById('rewriteGradeSelect');
   const aiModeSel = document.getElementById('aiModeSelect');
+  const remoteEndpointInput = document.getElementById('remoteAiEndpointInput');
+  const remoteEnabledToggle = document.getElementById('remoteAiEnabledToggle');
+  const testRemoteBtn = document.getElementById('testRemoteAiConnectionBtn');
+  const remoteConfigStatusEl = document.getElementById('remoteAiConfigStatus');
   const allowedGrades = new Set(['3', '6', '9']);
   const allowedModes = new Set(['local', 'remote']);
 
-  chrome.storage.local.get(['rewriteGradeLevel', 'aiModePreference'], (res) => {
+  const getTrimmedEndpoint = () => String((remoteEndpointInput && remoteEndpointInput.value) || '').trim();
+  const isRemoteEnabled = () => !!(remoteEnabledToggle && remoteEnabledToggle.checked);
+  const isRemoteModeSelected = () => !!(aiModeSel && aiModeSel.value === 'remote');
+  const updateRemoteConfigStatus = () => {
+    if (!remoteConfigStatusEl) return;
+    const inRemoteMode = isRemoteModeSelected();
+    const endpoint = getTrimmedEndpoint();
+    const enabled = isRemoteEnabled();
+    if (!inRemoteMode) {
+      remoteConfigStatusEl.textContent = 'Remote AI is optional. Local mode is currently selected.';
+      remoteConfigStatusEl.style.color = '#2f6f3e';
+      return;
+    }
+    if (!enabled && !endpoint) {
+      remoteConfigStatusEl.textContent = 'Remote mode selected: enable the feature flag and provide an endpoint to use remote AI.';
+      remoteConfigStatusEl.style.color = '#9f1239';
+      return;
+    }
+    if (!enabled) {
+      remoteConfigStatusEl.textContent = 'Remote mode selected: turn on “Enable remote AI feature flag” to activate remote AI.';
+      remoteConfigStatusEl.style.color = '#9f1239';
+      return;
+    }
+    if (!endpoint) {
+      remoteConfigStatusEl.textContent = 'Remote mode selected: enter a valid remote AI endpoint URL.';
+      remoteConfigStatusEl.style.color = '#9f1239';
+      return;
+    }
+    remoteConfigStatusEl.textContent = 'Remote mode ready: endpoint and feature flag are configured.';
+    remoteConfigStatusEl.style.color = '#2f6f3e';
+  };
+
+  const persistRemoteEndpoint = () => {
+    if (!remoteEndpointInput) return;
+    const endpoint = getTrimmedEndpoint();
+    chrome.storage.local.set({ remoteAiEndpoint: endpoint }, () => {
+      updateRemoteConfigStatus();
+      toast(endpoint ? 'Remote AI endpoint saved.' : 'Remote AI endpoint cleared.', 'info', 1300);
+    });
+  };
+
+  chrome.storage.local.get(['rewriteGradeLevel', 'aiModePreference', 'remoteAiEndpoint', 'featureFlags'], (res) => {
     const grade = String((res && res.rewriteGradeLevel) || '6');
     const mode = String((res && res.aiModePreference) || 'local');
+    const endpoint = String((res && res.remoteAiEndpoint) || '');
+    const flags = (res && typeof res.featureFlags === 'object' && res.featureFlags) ? res.featureFlags : {};
     if (gradeSel) gradeSel.value = allowedGrades.has(grade) ? grade : '6';
     if (aiModeSel) aiModeSel.value = allowedModes.has(mode) ? mode : 'local';
+    if (remoteEndpointInput) remoteEndpointInput.value = endpoint;
+    if (remoteEnabledToggle) remoteEnabledToggle.checked = !!flags.remoteAiEnabled;
+    updateRemoteConfigStatus();
   });
 
   if (gradeSel) {
@@ -73,6 +123,51 @@ function wireAiActionPreferences() {
           ? 'Remote mode may send selected text to your configured AI endpoint.'
           : 'Local-only mode keeps text in your browser extension.';
         toast(detail, 'info', 3500);
+        updateRemoteConfigStatus();
+      });
+    });
+  }
+
+  if (remoteEndpointInput) {
+    remoteEndpointInput.addEventListener('change', persistRemoteEndpoint);
+    remoteEndpointInput.addEventListener('blur', persistRemoteEndpoint);
+    remoteEndpointInput.addEventListener('input', updateRemoteConfigStatus);
+  }
+
+  if (remoteEnabledToggle) {
+    remoteEnabledToggle.addEventListener('change', () => {
+      chrome.storage.local.get(['featureFlags'], (res) => {
+        const existingFlags = (res && typeof res.featureFlags === 'object' && res.featureFlags) ? res.featureFlags : {};
+        const nextFlags = { ...existingFlags, remoteAiEnabled: !!remoteEnabledToggle.checked };
+        chrome.storage.local.set({ featureFlags: nextFlags }, () => {
+          toast(`Remote AI feature flag ${remoteEnabledToggle.checked ? 'enabled' : 'disabled'}.`, 'info', 1600);
+          updateRemoteConfigStatus();
+        });
+      });
+    });
+  }
+
+  if (testRemoteBtn) {
+    testRemoteBtn.addEventListener('click', () => {
+      const endpoint = getTrimmedEndpoint();
+      if (!endpoint) {
+        toast('Set a remote AI endpoint before testing the connection.', 'error', 2200);
+        updateRemoteConfigStatus();
+        return;
+      }
+      testRemoteBtn.disabled = true;
+      chrome.runtime.sendMessage({ action: 'testRemoteAiConnection', endpoint }, (response) => {
+        testRemoteBtn.disabled = false;
+        if (chrome.runtime.lastError) {
+          toast(`Remote test failed: ${chrome.runtime.lastError.message || 'connection error'}`, 'error', 2800);
+          return;
+        }
+        if (response && response.ok) {
+          toast('Remote AI endpoint is reachable.', 'success', 2200);
+          return;
+        }
+        const reason = (response && response.error) ? String(response.error) : 'unknown error';
+        toast(`Remote AI test failed: ${reason}`, 'error', 2800);
       });
     });
   }
@@ -3194,5 +3289,4 @@ safeOn(saveSelectionBtn, 'click', async () => {
 init().catch(e => safeWarn('popup init failed', e));
 
 });
-
 

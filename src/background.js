@@ -1346,6 +1346,23 @@ const tokenJson = await exchangeCodeForTokens({ clientId, code, codeVerifier, re
           return true;
         }
 
+        case 'testRemoteAiConnection': {
+          (async () => {
+            try {
+              const endpoint = String(msg.endpoint || '').trim();
+              const remote = await runRemoteAiProvider('ping', { probe: true, ts: Date.now() }, { endpoint });
+              if (remote.ok) {
+                respondOnce({ ok: true });
+                return;
+              }
+              respondOnce({ ok: false, error: remote.error || 'remote-unreachable' });
+            } catch (e) {
+              respondOnce({ ok: false, error: String(e) });
+            }
+          })();
+          return true;
+        }
+
         case 'explainText':
         case 'rewriteByGrade':
         case 'defineWord':
