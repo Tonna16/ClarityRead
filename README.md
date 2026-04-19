@@ -14,7 +14,20 @@ ClarityRead is a lightweight browser extension that makes reading on the web eas
 - **Reading stats** (local-only) visualized in a chart.
 
 ## Privacy & Data
-ClarityRead is privacy-first. By default, all processing (summaries, TTS via browser, stats) happens locally in your browser. No page text or selections are transmitted to any external server. Saved reads and preferences are stored locally in `chrome.storage.local` and can be exported/imported by the user.
+ClarityRead is privacy-first.
+
+- **Standard page features run locally.** Reading mode, styling controls, text-to-speech controls, local summarization, and reading stats execute in the extension/browser context on your device.
+- **Google Docs integration is optional and user-initiated.** When you choose to connect Google Docs, ClarityRead sends authenticated HTTPS requests to Google APIs (for example, Google Docs API endpoints) to retrieve document content for the signed-in user.
+- **Clear handling/storage boundaries for this flow:**
+  - ClarityRead stores local extension settings, saved reads, and OAuth token metadata in browser storage (`chrome.storage.local`).
+  - Document retrieval for Google Docs occurs between the extension and Google APIs using that user’s OAuth token.
+  - ClarityRead does not run a remote ClarityRead backend that stores Google Doc text by default; content is used in-extension for features you trigger.
+  - You can disconnect Google access, and local extension data remains under your browser profile unless you export it.
+
+## Store listing copy (privacy summary)
+Use this short copy for marketplace/store descriptions:
+
+> ClarityRead runs standard reading features locally in your browser. If you choose Google Docs integration, the extension sends authenticated requests to Google APIs to fetch your document content for your account. ClarityRead stores settings/token metadata locally in your browser and does not use a ClarityRead-hosted backend to store Google Doc text by default.
 
 ## Permissions rationale
 ClarityRead keeps extension permissions as narrow as possible:
@@ -44,4 +57,3 @@ ClarityRead keeps extension permissions as narrow as possible:
 
 ## Support
 If you have problems, use the repository issues page or email `ttonnaagburu@gmail.com`.
-
