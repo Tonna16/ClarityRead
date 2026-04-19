@@ -14,7 +14,8 @@
     "scripting",
     "tabs",
     "contextMenus",
-    "identity"
+    "identity",
+    "notifications"
   ],
   "host_permissions": [
     "https://accounts.google.com/*",

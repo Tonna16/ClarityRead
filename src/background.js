@@ -452,7 +452,7 @@ const tokenJson = await exchangeCodeForTokens({ clientId, code, codeVerifier, re
         try {
           chrome.notifications.create('', {
             type: 'basic',
-            iconUrl: chrome.runtime.getURL('icons/icon48.png'),
+            iconUrl: chrome.runtime.getURL('assets/icons/icon48.png'),
             title: 'ClarityRead',
             message: message
           }, () => {});
