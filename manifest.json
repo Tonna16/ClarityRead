@@ -17,7 +17,9 @@
     "identity"
   ],
   "host_permissions": [
-    "https://*/*"
+    "https://accounts.google.com/*",
+    "https://oauth2.googleapis.com/*",
+    "https://docs.googleapis.com/*"
   ],
   "action": {
     "default_icon": {
@@ -29,24 +31,6 @@
     "service_worker": "src/background.js",
     "type": "module"
   },
-  "content_scripts": [
-    {
-      "matches": [
-        "http://*/*",
-        "https://*/*"
-      ],
-      "js": [
-        "src/lib/Readability.js",
-        "src/contentScript.js"
-      ],
-      "css": [
-        "src/inject.css"
-      ],
-      "run_at": "document_idle",
-      "all_frames": true,
-      "match_about_blank": true
-    }
-  ],
   "web_accessible_resources": [
     {
       "resources": [

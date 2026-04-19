@@ -16,6 +16,23 @@ ClarityRead is a lightweight browser extension that makes reading on the web eas
 ## Privacy & Data
 ClarityRead is privacy-first. By default, all processing (summaries, TTS via browser, stats) happens locally in your browser. No page text or selections are transmitted to any external server. Saved reads and preferences are stored locally in `chrome.storage.local` and can be exported/imported by the user.
 
+## Permissions rationale
+ClarityRead keeps extension permissions as narrow as possible:
+
+- `activeTab` + `scripting`: generic page features (reflow, font toggle, contrast, summarize, read-aloud controls) are injected **only after user action** from the popup/command/context menu. The extension no longer declares persistent global content script matches for every site.
+- `storage`: saves user preferences, stats, saved reads, and OAuth token metadata locally.
+- `tabs`: needed to locate and target the active browser tab when user actions are triggered.
+- `contextMenus`: provides right-click actions for ClarityRead controls.
+- `identity`: enables Google OAuth for optional Google Docs integration.
+- Host permissions are restricted to Google OAuth/Docs API endpoints required for the built-in Google Docs integration:
+  - `https://accounts.google.com/*`
+  - `https://oauth2.googleapis.com/*`
+  - `https://docs.googleapis.com/*`
+
+### Content script footprint
+- `content_scripts` global auto-injection has been removed.
+- `all_frames` and `match_about_blank` are not declared because injection is performed on demand via `chrome.scripting.executeScript` in the active tab flow instead of persistent blanket matching.
+
 
 ## Usage
 - Click the ClarityRead toolbar icon to open the popup.
@@ -27,5 +44,4 @@ ClarityRead is privacy-first. By default, all processing (summaries, TTS via bro
 
 ## Support
 If you have problems, use the repository issues page or email `ttonnaagburu@gmail.com`.
-
 
