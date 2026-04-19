@@ -1,10 +1,19 @@
 
+import { GOOGLE_OAUTH_SCOPES, getOAuthClientIdForRuntime } from './config/oauthConfig.js';
+
 // Helper wrapper for chrome.identity-based Google OAuth in MV3
 export async function getGoogleAuthTokenInteractive(interactive = false) {
+  const oauthClientId = getOAuthClientIdForRuntime(chrome?.runtime?.id || '');
+  const tokenRequest = {
+    interactive,
+    scopes: [...GOOGLE_OAUTH_SCOPES]
+  };
+  if (oauthClientId) tokenRequest.client_id = oauthClientId;
+
   return new Promise((resolve, reject) => {
     try {
       // chrome.identity.getAuthToken will use the oauth2 block from manifest.json
-      chrome.identity.getAuthToken({ interactive }, (token) => {
+      chrome.identity.getAuthToken(tokenRequest, (token) => {
         if (chrome.runtime.lastError) {
           return reject(new Error(chrome.runtime.lastError.message || 'getAuthToken failed'));
         }
