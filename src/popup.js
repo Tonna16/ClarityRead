@@ -448,6 +448,7 @@ if (fontSlider) {
   }
 
  let summarizePageBtn = $('summarizePageBtn');
+ const googleDocsDisclosureEl = $('googleDocsDisclosure');
 try {
   if (!summarizePageBtn) {
     const container = document.querySelector('.themeRow') || document.querySelector('.toolbar') || document.body;
@@ -544,6 +545,20 @@ try {
         resolve(null);
       });
     });
+  }
+
+  function isGoogleDocsUrl(url = '') {
+    return /https?:\/\/docs\.google\.com\//i.test(String(url || ''));
+  }
+
+  async function updateGoogleDocsDisclosureVisibility() {
+    try {
+      if (!googleDocsDisclosureEl) return;
+      const tab = await findBestWebTab();
+      googleDocsDisclosureEl.hidden = !(tab && isGoogleDocsUrl(tab.url));
+    } catch (e) {
+      safeLog('updateGoogleDocsDisclosureVisibility failed', e);
+    }
   }
 
   function normalizeBgResponse(res) {
@@ -2038,6 +2053,11 @@ async function summarizeCurrentPageOrSelection_AiAware() {
       return;
     }
 
+    if (isGoogleDocsUrl(tab.url)) {
+      if (googleDocsDisclosureEl) googleDocsDisclosureEl.hidden = false;
+      toast('Google Docs access is optional: connecting sends authenticated requests to Google APIs for your account.', 'info', 5500);
+    }
+
 try {
   const stored = await new Promise(resolve => chrome.storage.local.get(['clarity_last_selection'], r => resolve(r && r.clarity_last_selection)));
   if (stored && stored.text && stored.ts && ((Date.now() - stored.ts) < 120000) // allow 2 minutes freshness
@@ -2212,6 +2232,8 @@ try {
     if (newBtn) safeOn(newBtn, 'click', summarizeCurrentPageOrSelection_AiAware);
   }
 } catch (e) { safeLog('hook summarize button failed', e); }
+
+updateGoogleDocsDisclosureVisibility().catch(() => {});
 
 
 
@@ -2973,9 +2995,5 @@ safeOn(saveSelectionBtn, 'click', async () => {
 init().catch(e => safeWarn('popup init failed', e));
 
 });
-
-
-
-
 
 

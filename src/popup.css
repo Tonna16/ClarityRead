@@ -703,6 +703,18 @@ html, body {
   min-width: 84px;
 }
 
+.google-docs-disclosure {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 /* Chart Container */
 .chart-container {
   width: 100%;
