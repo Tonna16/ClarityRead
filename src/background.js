@@ -582,7 +582,7 @@ const tokenJson = await exchangeCodeForTokens({ clientId, code, codeVerifier, re
               safeWarn('initial sendMessage error', errMsg);
             }
 
-            const jsFiles = ['src/toast.js', 'src/contentScript.js'];
+            const jsFiles = ['src/lib/Readability.js', 'src/toast.js', 'src/contentScript.js'];
             const cssFiles = ['src/inject.css', 'src/toast.css'];
 
             let cssErrorMsg = null;
