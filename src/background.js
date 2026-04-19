@@ -49,9 +49,15 @@ import { GOOGLE_OAUTH_SCOPES, getOAuthClientIdForRuntime, getOAuthRuntimeSelecti
   }
 
   function getAuthTokenAsync(interactive = false) {
+    const oauthClientId = getOAuthClientIdForRuntime(chrome?.runtime?.id || '');
+    const tokenRequest = {
+      interactive,
+      scopes: [...GOOGLE_OAUTH_SCOPES]
+    };
+    if (oauthClientId) tokenRequest.client_id = oauthClientId;
     return new Promise((resolve) => {
       try {
-        chrome.identity.getAuthToken({ interactive }, (token) => {
+        chrome.identity.getAuthToken(tokenRequest, (token) => {
           const err = chrome.runtime.lastError ? (chrome.runtime.lastError.message || 'getAuthToken_failed') : null;
           resolve({ token: token || null, error: err });
         });
